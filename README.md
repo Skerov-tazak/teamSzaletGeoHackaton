@@ -14,17 +14,30 @@ Hackathon: [Field Under Pressure](https://geo-hackathon.g.location360.ag/), 20�
 | Decision engine | Bartek | [`engine/`](engine/) |
 | AI assistant | Ola | [`assistant/`](assistant/) |
 
+## Documentation
+
+| Document | What's in it |
+|----------|--------------|
+| [architecture_overview.md](architecture_overview.md) | The product, the five components and how they work together |
+| [docs/database.md](docs/database.md) | Every table, column and unit; rules for every component; query helpers |
+| [docs/interfaces.md](docs/interfaces.md) | How the components talk: frontend modules, map–chat events, platform API, chat, assistant data access, `predict()` |
+| [engine/README.md](engine/README.md) | Decision engine: what it must provide and how it reads and writes data |
+| [assistant/README.md](assistant/README.md) | AI assistant: the `answer()` function, chat tables, MCP rules |
+| [frontend/src/map/README.md](frontend/src/map/README.md) | Map: `initMap()`, events, data endpoints |
+| <http://localhost:8000/api/docs/> | Live API documentation, generated from the code (while the server runs) |
+| [Organiser dataset docs](field-under-pressure-materials/data/README.md) | The hackathon datasets: weather, soil, cropland, satellite, crop-protection guides |
+
 ## Repository layout
 
 ```text
 fieldpressure/      Django project: settings, root URLs
-core/               platform: every model, data import commands, API
+core/               platform: every farm data model, data import commands, API
 engine/             decision engine (Django app, no models of its own)
-assistant/          AI assistant (Django app, no models of its own)
+assistant/          AI assistant (Django app; owns only the chat tables)
 frontend/           dashboard page (Django template) + TypeScript
   src/              TypeScript sources, built into static/frontend/dist/
   src/map/          map module
-docs/               shared documentation (database.md: every table)
+docs/               shared documentation (database.md, interfaces.md)
 field-under-pressure-materials/   organiser materials (git submodule): guide PDFs, risk spreadsheet, dataset docs
 docker-compose.yml  local Postgres
 ```
@@ -73,11 +86,12 @@ Useful pages while the server runs:
 
 ## Team conventions
 
-- **All models live in [`core/`](core/)** and are described in [docs/database.md](docs/database.md). Only Jan and Szymek create migrations, so migrations never conflict. Need a new table or column? Ask them.
+- **Farm data models live in [`core/`](core/)** and are described in [docs/database.md](docs/database.md). Only Jan and Szymek create migrations there, so migrations never conflict. Need a new table or column? Ask them. The one exception: the chat tables live in [`assistant/`](assistant/) and belong to Ola.
 - **Never use `date.today()`.** The demo replays a past season; get the current date from `core.clock.today()` (in the frontend: from the API, never `new Date()`).
 - **Read weather through the helpers:** `WeatherDaily.objects.observed()` (never past today) and `WeatherForecastDaily.objects.current()` (the next 7 days). All helpers, the rules and who writes which table: [docs/database.md → Rules for every component](docs/database.md#rules-for-every-component).
 - **Values are in source units** (e.g. wind in km/h). Convert in your own code, never in the database.
-- **Work in your own folder.** Each component's README says how it talks to the rest of the system.
+- **Work in your own folder.** Each component's README says how it talks to the rest of the system; the full contracts are in [docs/interfaces.md](docs/interfaces.md).
+- **No logins, no tokens.** The API is open: it's a demo, not a product.
 - **Python packages:** add yours to your section of [`requirements.txt`](requirements.txt).
 - **Never commit data or secrets.** Downloaded datasets go in `DATA_DIR` (outside the repo, see `.env.example`); keys go in `.env`.
 - The Postgres container listens on **port 5433**, so it doesn't clash with a locally installed Postgres on 5432.

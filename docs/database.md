@@ -2,7 +2,7 @@
 
 Field Under Pressure · owners: Jan + Szymek · last updated 20 Nov 2026
 
-This document defines every table of the platform. Each section is marked **Certain** (agreed, build against it) or **Open** (not decided yet; see [Open questions](#open-questions)). All tables are Django models in [`core/models.py`](../core/models.py); other components import them and never create their own migrations. Need a table or column? Ask Jan or Szymek.
+This document defines every table of the platform. Each section is marked **Certain** (agreed, build against it) or **Open** (not decided yet; see [Open questions](#open-questions)). All farm data tables are Django models in [`core/models.py`](../core/models.py); other components import them and never create their own migrations. Need a table or column? Ask Jan or Szymek. The one exception is the assistant's chat tables, which live in the `assistant` app and belong to Ola (see [interfaces.md](interfaces.md#chat-tables)). How the components use these tables is in [interfaces.md](interfaces.md).
 
 ## Principles
 
@@ -61,14 +61,16 @@ erDiagram
 3. **Each table has one writer** (below). Everyone else only reads it.
 4. **Values are stored in source units.** Convert in your own code when a rule needs another unit (e.g. wind km/h → m/s), never in the database.
 5. **Refer to threats by `code`** (e.g. `wheat.septoria_leaf_blotch`), never by `id`: ids differ between databases. Use `CropClass.WHEAT` / `CropClass.MAIZE` instead of raw codes.
-6. **Schema changes go through Jan or Szymek.** Nobody else adds models or migrations.
+6. **Schema changes go through Jan or Szymek.** Nobody else adds models or migrations to `core`. The chat tables in `assistant` are Ola's.
 
 | Table | Written by | Read by |
 |-------|------------|---------|
 | Clock | platform (seed), anyone by hand in `/admin/` | everyone |
 | WeatherGrid, WeatherDaily, WeatherHourly, SoilCell, CropClass, Field, FieldCropYear, Threat | platform (seed / import) | everyone |
 | WeatherForecastDaily | platform (seeded from WeatherDaily) | everyone |
-| Risk | decision engine | map (via API), assistant |
+| Risk | decision engine (`predict()`) | map (via API), assistant |
+| Observation (planned, columns open) | assistant, only through its "record an observation" tool | decision engine, assistant |
+| Conversation, Message (`assistant` app) | platform chat endpoint | chat window (via API), assistant |
 
 ## Using the models
 
@@ -86,6 +88,8 @@ The helpers below are the supported way to read and write. They all live in [`co
 | `field.soil_cells()` | The SoilCell rows under the field (average them) |
 | `field.crop_years` | The field's FieldCropYear rows (crop history) |
 | `field.risks` / `threat.risks` | Related risks; `.season_so_far()` and `.coming_days()` work on them too |
+
+**Planned:** `.observed()` and `.current()` get an optional `as_of` date (default `clock.today()`), so the engine's `predict()` can work through a whole season one day at a time. Only the engine passes it. See [interfaces.md](interfaces.md#as_of-on-the-helpers).
 
 ```python
 from datetime import timedelta
@@ -319,7 +323,7 @@ CLMS "Wheat" does not separate winter and spring wheat; we treat it as winter wh
 | `h3_cells` | `ArrayField(CharField)` | – | H3 level-10 cells whose centre lies inside the polygon (or the centroid's cell if none). `field.soil_cells()` returns the matching [SoilCell](#soilcell) rows |
 | `crop` | `ForeignKey(CropClass)` | – | This season's crop: the class with the largest share in this season's [FieldCropYear](#fieldcropyear) rows; can be corrected by hand |
 
-**Open:** sowing date or growth stage, and the field's current condition (for example infestations reported by the farmer through the assistant). These wait for the decision engine's needs. See [Open questions](#open-questions).
+**Open:** sowing date or growth stage. These wait for the decision engine's needs. Reports from the farmer (for example infestations) go into a separate `Observation` table, see [Open questions](#open-questions).
 
 ### FieldCropYear
 
@@ -391,10 +395,10 @@ The wheat sheet lists diseases only, no pests. Wheat pests would have to come fr
 |-------|----------|-----|
 | Risk score | What does the score mean (a probability or an index), and what are the cut-offs for the map colours? | Bartek, Kuba |
 | Risk explanation | The format of `Risk.explanation`, shared by the map and the assistant. Starting point: `{"summary": "...", "factors": [{"variable": "avg_relative_humidity", "value": 94, "unit": "%", "threshold": "> 90"}], "source": "ryzyka_zebrane.xlsx / pszenica"}` | Bartek, Kuba, Ola |
-| Field state | Sowing date / growth stage, and the field's current condition (infestations reported by the farmer). Possible shapes: a JSON column on Field, or an `Observation` table (field, date, threat, text, severity), which keeps the date of every report | Bartek, Ola |
+| Field state | Sowing date / growth stage on Field. Farmer reports go into an `Observation` table in `core` (agreed): written only by the assistant's tool, read by the engine. Its columns are open, e.g. field, date, threat, text, severity, details (JSON) | Bartek, Ola |
 | Hourly forecast | Does the engine need an hourly forecast table as well as the daily one? | Bartek |
 | Satellite | If the engine uses Sentinel-2, add a per-field table (field, date, mean NDVI, cloud share). The organisers don't host this data | Bartek |
-| Assistant storage | Where the RAG index of the guide PDFs lives (pgvector is available in our Postgres), and whether chat history is stored | Ola |
+| Assistant storage | Where the RAG index of the guide PDFs lives (pgvector is available in our Postgres). Chat history is agreed: `Conversation` and `Message` in the `assistant` app | Ola |
 | Threat names | Do threats need English names for the interface? | All |
 | Data checks | After download: soil units and `om` (see [SoilCell](#soilcell)); `weather.md` lists no hourly 2021 folder although it states 2020–2025 coverage | Jan, Szymek |
 

@@ -4,13 +4,42 @@
 
 The interactive map of the farm: fields, their crops, their risk per threat, how that risk changes over the season, and the details of a selected field.
 
-## Talking to the rest of the system
+## What the rest of the page expects
+
+**One function, `initMap()`,** exported from `frontend/src/map/index.ts`. `main.ts` calls it once. Details: [docs/interfaces.md → Frontend modules](../../../docs/interfaces.md#frontend-modules).
+
+```ts
+export function initMap(container: HTMLElement, ctx: AppContext): void;
+// ctx.api     typed calls to the platform API
+// ctx.events  the event bus shared with the chat
+// ctx.clock   { today, forecastDays }: the demo's date, never new Date()
+```
+
+The map draws itself inside `container` and talks to the rest of the page only through `ctx`.
+
+**Events** ([docs/interfaces.md → Events](../../../docs/interfaces.md#events-between-map-and-chat)):
+
+| You send | When |
+|----------|------|
+| `field:selected` `{ fieldId }` | the user clicks a field; `{ fieldId: null }` when they click empty map |
+
+| You handle | What to do |
+|------------|------------|
+| `field:focus` `{ fieldId }` | zoom to and highlight the field, then send `field:selected` for it |
+| `date:changed` `{ today }` | reload the risks for the new date (`ctx.clock` is already updated) |
+| `risks:updated` `{ fieldIds }` | reload those fields' risks |
+
+**Data** ([docs/interfaces.md → Platform API](../../../docs/interfaces.md#platform-api), example responses included):
+
+- `GET /api/fields/`: every field as GeoJSON (EPSG:4326, coordinates **[lon, lat]**), with name, crop and area;
+- `GET /api/risks/?date=`: every field's risk per threat on one day, for colouring;
+- `GET /api/fields/{id}/`, `/risks/?from=&to=`, `/risks/{date}/`: details, the season chart and the "why" panel;
+- `GET /api/threats/`: names and categories for the legend.
+
+Risk scores are 0–1. "Season so far" is up to today; "coming days" are today + 1 … today + 7. The API never returns anything later.
+
+## Building
 
 - **Plain TypeScript, no framework.** Map libraries (Leaflet, MapLibre, …) are fine: install them with `npm install` in [`frontend/`](../../), and esbuild bundles them into `static/frontend/dist/main.js`.
-- **Data comes from the platform's JSON API,** not the database directly; see <http://localhost:8000/api/docs/> while the server runs. What's behind it (fields, risks, units) is described in [docs/database.md](../../../docs/database.md).
-- **The date is the platform's "today" (from the API), never the browser's `new Date()`.** The demo replays a past season.
-- **What to expect from the data:**
-  - field shapes are GeoJSON in EPSG:4326, with coordinates in **[lon, lat]** order;
-  - a risk score is a number from 0 to 1, one per field, threat and day;
-  - "season so far" means up to today, "coming days" means today + 1 … today + 7.
-- *To be defined in the interfaces step:* how the map mounts into the page, the exact data endpoints and their format, the colour cut-offs for risk scores, and the events shared with the chat (for example, a field being selected).
+- **API types are generated** from the backend's schema, so they always match it; don't write them by hand.
+- *Still open:* the colour cut-offs for risk scores (with Bartek) and the `explanation` format shown in the "why" panel.
