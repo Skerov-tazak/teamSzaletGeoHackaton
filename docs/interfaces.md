@@ -27,7 +27,6 @@ How the components talk to each other: the frontend modules, the events between 
 - **JSON** with snake_case keys; dates as `YYYY-MM-DD`; timestamps in ISO 8601, UTC.
 - **Units** are the database's (source units), under the database column names. See [database.md](database.md#unit-traps).
 - **GeoJSON** coordinates are **[lon, lat]**, EPSG:4326.
-- **Nothing after the forecast.** The API never returns data after today + 7. A range's `to` is cut off there; a single `date` after it is a 400 error.
 - **Errors** use Django REST Framework's format: `{"detail": "..."}` with a 4xx status.
 - **TypeScript types are generated, not written.** `openapi-typescript` turns `/api/schema/` into `frontend/src/api/schema.d.ts` (one npm script). If the backend changes, regenerate; the type checker shows what broke.
 
@@ -239,7 +238,7 @@ Chats are stored like in any chat app. The HTTP endpoints, the tables and a plac
 | `GET /api/chat/conversations/` | `[{id, title, updated_at}]`, newest first. The title is the start of the first message |
 | `GET /api/chat/conversations/{id}/` | `{id, title, messages: [...]}`, each message in the shape above (user messages have empty `citations`) |
 
-**Citations** are agreed by Jan + Szymek; **Ola to confirm.** Two types:
+**Citations - for Ola to confirm.** Two types:
 
 - `guide`: a passage of a guide PDF. `document` is the file name in `field-under-pressure-materials/metodyki/`, `page` is the page number (1-based).
 - `risk`: a risk row the answer relies on (`field_id`, `threat_code`, `date`). The chat shows it as a link; clicking it sends `field:focus`.
