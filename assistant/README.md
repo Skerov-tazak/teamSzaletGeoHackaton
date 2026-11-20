@@ -18,13 +18,13 @@ def answer(conversation: Conversation, message: str, selected_field: Field | Non
     # Reply: text (markdown), citations, focus_field_id (optional), updated_field_ids
 ```
 
-- `selected_field` is `None` when the farmer hasn't selected a field.
-- `focus_field_id` makes the map zoom to a field; `updated_field_ids` makes it reload fields whose risks changed.
+- `selected_field` is `None` when the farmer hasn't selected a field (On the frontend map by clicking).
+- `focus_field_id` makes the map zoom to a field (if for example the chatbot mentions it); `updated_field_ids` makes the frontend reload fields whose risks changed (requeries the db for new risk assessment).
 - Not in this version: charts and streaming. The answer appears all at once after a "thinking…" indicator.
 
 ## Talking to the rest of the system
 
-- **Chat tables are yours:** `Conversation` and `Message` live in this app (not `core`). Jan + Szymek create the first version (see [docs/interfaces.md → Chat tables](../docs/interfaces.md#chat-tables)); after that, you change them.
+- **Chat tables are yours:** `Conversation` and `Message` live in this app (not `core`). The first version is included for convienence - after that, you change them.
 - **MCP is yours:** which tools exist, what they allow and what they refuse.
   - **Free-form lookups** run as **SQL through the read-only connection** `django.db.connections["readonly"]`: that database user can only `SELECT`, and queries are time-limited and row-capped. Never run model-written ORM/Python code: that is arbitrary code execution. The platform provides the read-only user.
   - **Changes** only through narrow tools, e.g. "record an observation" into the planned `Observation` table in `core`. After recording one, call `engine.predict(field_ids=[field.id], start=observation_date)` and return the field in `updated_field_ids`.
