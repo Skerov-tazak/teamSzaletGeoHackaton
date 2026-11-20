@@ -6,7 +6,7 @@ This document defines every table of the platform. Each section is marked **Cert
 
 ## Principles
 
-- **Source names and source units.** Columns copied from a dataset keep the dataset's column name and unit. Nothing is converted at import (the one possible exception is soil, see [SoilCell](#soilcell)). Every unit is listed below.
+- **Source names and source units.** Columns copied from a dataset keep the dataset's column name and unit. Nothing is converted at import (the one possible exception is soil, see [SoilCell](#soilcell)). Every unit is listed below, and also in each column's help text in the code and in `/admin/`.
 - **One "today".** The demo replays a past season. The current date always comes from `core.clock.today()`, never from `date.today()`.
 - **No future weather.** Observed weather is only read up to `today()`. The next 7 days come from the forecast table.
 - **Geometry is resolved once, at import.** Each field stores the weather cell, soil cells and crop shares that belong to it. After import everything is a plain key lookup; nothing does geometry at runtime (no PostGIS).
@@ -48,10 +48,86 @@ erDiagram
 ## Time: today, observed weather and forecast
 
 - `Clock` holds exactly one row with the current date of the demo. It is never empty and there is no fallback to the real date. The seed creates it; moving the demo forward means updating that row (by hand in `/admin/`, or by a daily job).
-- `core.clock.today()` returns that date and raises an error if the row is missing.
-- **Observed** weather means `date <= today()`. Query helpers enforce this, for example `WeatherDaily.objects.observed()`.
-- **Forecast** means the 7 days after today: `WeatherForecastDaily` rows with `issued_on = today()` (helper: `WeatherForecastDaily.objects.current()`).
+- `core.clock.today()` returns that date and raises `ClockNotSetError` if the row is missing. `core.clock.FORECAST_DAYS` is 7.
+- **Observed** weather means `date <= today()`. Always read it through `WeatherDaily.objects.observed()` / `WeatherHourly.objects.observed()`.
+- **Forecast** means the 7 days after today: `WeatherForecastDaily` rows with `issued_on = today()`, read through `WeatherForecastDaily.objects.current()`.
+- **Risks** split the same way: `Risk.objects.season_so_far()` (`date <= today()`) and `Risk.objects.coming_days()` (today + 1 … today + 7).
 - The forecast is seeded in advance for every day of the season, so moving the clock is instant.
+
+## Rules for every component
+
+1. **The date is `core.clock.today()`,** never `date.today()` or `timezone.now()`. In the frontend, it is the date the API reports, never the browser's `new Date()`.
+2. **Observed weather is read through `.observed()`, the forecast through `.current()`.** Never filter weather by date yourself without them.
+3. **Each table has one writer** (below). Everyone else only reads it.
+4. **Values are stored in source units.** Convert in your own code when a rule needs another unit (e.g. wind km/h → m/s), never in the database.
+5. **Refer to threats by `code`** (e.g. `wheat.septoria_leaf_blotch`), never by `id`: ids differ between databases. Use `CropClass.WHEAT` / `CropClass.MAIZE` instead of raw codes.
+6. **Schema changes go through Jan or Szymek.** Nobody else adds models or migrations.
+
+| Table | Written by | Read by |
+|-------|------------|---------|
+| Clock | platform (seed), anyone by hand in `/admin/` | everyone |
+| WeatherGrid, WeatherDaily, WeatherHourly, SoilCell, CropClass, Field, FieldCropYear, Threat | platform (seed / import) | everyone |
+| WeatherForecastDaily | platform (seeded from WeatherDaily) | everyone |
+| Risk | decision engine | map (via API), assistant |
+
+## Using the models
+
+The helpers below are the supported way to read and write. They all live in [`core/models.py`](../core/models.py) and [`core/clock.py`](../core/clock.py).
+
+| Helper | Returns |
+|--------|---------|
+| `clock.today()` | The demo's current date. Raises `clock.ClockNotSetError` if the Clock row is missing |
+| `clock.FORECAST_DAYS` | 7 |
+| `WeatherDaily.objects.observed()` | Daily weather up to and including today |
+| `WeatherHourly.objects.observed()` | Hourly weather up to and including today |
+| `WeatherForecastDaily.objects.current()` | The forecast issued today: today + 1 … today + 7 |
+| `Risk.objects.season_so_far()` | Risks up to and including today |
+| `Risk.objects.coming_days()` | Risks for today + 1 … today + 7 |
+| `field.soil_cells()` | The SoilCell rows under the field (average them) |
+| `field.crop_years` | The field's FieldCropYear rows (crop history) |
+| `field.risks` / `threat.risks` | Related risks; `.season_so_far()` and `.coming_days()` work on them too |
+
+```python
+from datetime import timedelta
+
+from core import clock
+from core.models import CropClass, Field, Risk, Threat, WeatherDaily, WeatherForecastDaily
+
+today = clock.today()
+field = Field.objects.get(name="North field")
+
+# Inputs for one field
+last_two_weeks = WeatherDaily.objects.observed().filter(grid=field.weather_grid, date__gt=today - timedelta(days=14))
+forecast = WeatherForecastDaily.objects.current().filter(grid=field.weather_grid).order_by("date")  # 7 rows
+soil = field.soil_cells()
+previous_crops = field.crop_years.filter(year__lt=today.year).order_by("year", "-share")
+threats = Threat.objects.filter(crop=field.crop)
+
+# Writing a risk (engine only): one row per field, threat and day, overwritten
+Risk.objects.update_or_create(
+    field=field,
+    threat=Threat.objects.get(code="wheat.septoria_leaf_blotch"),
+    date=today,
+    defaults={"score": 0.72, "explanation": {"summary": "..."}},
+)
+
+# Reading risks (map, assistant)
+history = field.risks.season_so_far().select_related("threat").order_by("date")
+coming = field.risks.coming_days().select_related("threat").order_by("date")
+```
+
+Many risks at once (season backfill), as one upsert instead of a loop:
+
+```python
+Risk.objects.bulk_create(
+    rows,  # list of unsaved Risk objects
+    update_conflicts=True,
+    unique_fields=["field", "threat", "date"],
+    update_fields=["score", "explanation", "computed_at"],
+)
+```
+
+The database rejects a score outside 0–1, a crop share outside 0–1, a forecast date outside issue + 1 … + 7, and a second Clock row.
 
 ## How positions work
 
@@ -240,7 +316,7 @@ CLMS "Wheat" does not separate winter and spring wheat; we treat it as winter wh
 | `area_ha` | `FloatField` | ha | Computed in a metric projection (EPSG:2180, the Polish national grid), never from degrees |
 | `centroid_lat`, `centroid_lon` | `FloatField` | ° (WGS84) | |
 | `weather_grid` | `ForeignKey(WeatherGrid)` | – | Grid point nearest the centroid |
-| `h3_cells` | `ArrayField(CharField)` | – | H3 level-10 cells whose centre lies inside the polygon (or the centroid's cell if none); look up in [SoilCell](#soilcell) |
+| `h3_cells` | `ArrayField(CharField)` | – | H3 level-10 cells whose centre lies inside the polygon (or the centroid's cell if none). `field.soil_cells()` returns the matching [SoilCell](#soilcell) rows |
 | `crop` | `ForeignKey(CropClass)` | – | This season's crop: the class with the largest share in this season's [FieldCropYear](#fieldcropyear) rows; can be corrected by hand |
 
 **Open:** sowing date or growth stage, and the field's current condition (for example infestations reported by the farmer through the assistant). These wait for the decision engine's needs. See [Open questions](#open-questions).
@@ -295,7 +371,7 @@ The wheat sheet lists diseases only, no pests. Wheat pests would have to come fr
 
 - Key: `field` + `threat` + `date`, unique. Index on `field` + `date`.
 - **One row per field, threat and day, overwritten** whenever the engine recomputes it. Earlier calculations are not kept.
-- Readers: the season so far is `date <= today()`; the coming days are `today() + 1` … `today() + 7`. Rows further ahead may exist (the season can be precomputed) and are ignored until the clock reaches them.
+- Readers: the season so far is `Risk.objects.season_so_far()`; the coming days are `Risk.objects.coming_days()`. Rows further ahead may exist (the season can be precomputed) and are ignored until the clock reaches them.
 
 ## Unit traps
 

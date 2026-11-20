@@ -47,6 +47,7 @@ You need Python 3.10+, Node.js 18+ and Docker (Docker Desktop on Mac/Windows).
 3. **Settings:** `cp .env.example .env` (the defaults work as-is for local development).
 4. **Database:** `docker compose up -d`, then `python manage.py migrate`.
 5. **Admin user** (to browse data at `/admin/`): `python manage.py createsuperuser`.
+   Then set the demo date: run the server (step 7), open <http://localhost:8000/admin/> → Platform → Clocks → Add. Until a seed does this for you, anything that needs "today" raises `ClockNotSetError`.
 6. **Frontend build:**
    ```bash
    cd frontend && npm install && npm run build && cd ..
@@ -73,7 +74,9 @@ Useful pages while the server runs:
 ## Team conventions
 
 - **All models live in [`core/`](core/)** and are described in [docs/database.md](docs/database.md). Only Jan and Szymek create migrations, so migrations never conflict. Need a new table or column? Ask them.
-- **Never use `date.today()`.** The demo replays a past season; get the current date from `core.clock.today()`.
+- **Never use `date.today()`.** The demo replays a past season; get the current date from `core.clock.today()` (in the frontend: from the API, never `new Date()`).
+- **Read weather through the helpers:** `WeatherDaily.objects.observed()` (never past today) and `WeatherForecastDaily.objects.current()` (the next 7 days). All helpers, the rules and who writes which table: [docs/database.md → Rules for every component](docs/database.md#rules-for-every-component).
+- **Values are in source units** (e.g. wind in km/h). Convert in your own code, never in the database.
 - **Work in your own folder.** Each component's README says how it talks to the rest of the system.
 - **Python packages:** add yours to your section of [`requirements.txt`](requirements.txt).
 - **Never commit data or secrets.** Downloaded datasets go in `DATA_DIR` (outside the repo, see `.env.example`); keys go in `.env`.
