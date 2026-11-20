@@ -1,0 +1,30 @@
+# Local development database. Only Postgres runs in Docker; Django runs in your venv.
+# Values come from .env (copy .env.example), with the defaults below as fallback.
+#
+#   docker compose up -d      start in the background
+#   docker compose ps         check it is running
+#   docker compose stop       stop (data is kept)
+#   docker compose down -v    stop and wipe all data
+
+services:
+  db:
+    # Plain Postgres 16 with the pgvector extension available (optional, for the assistant's RAG index).
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fieldpressure}
+      POSTGRES_USER: ${POSTGRES_USER:-fieldpressure}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fieldpressure}
+    ports:
+      # Host port 5433, so it does not clash with a locally installed Postgres on 5432.
+      # Bound to 127.0.0.1 only: the database is not reachable from the venue Wi-Fi.
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
