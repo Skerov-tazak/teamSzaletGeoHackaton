@@ -24,6 +24,7 @@ assistant/          AI assistant (Django app, no models of its own)
 frontend/           dashboard page (Django template) + TypeScript
   src/              TypeScript sources, built into static/frontend/dist/
   src/map/          map module
+docs/               shared documentation (database.md: every table)
 field-under-pressure-materials/   organiser materials (git submodule): guide PDFs, risk spreadsheet, dataset docs
 docker-compose.yml  local Postgres
 ```
@@ -71,7 +72,8 @@ Useful pages while the server runs:
 
 ## Team conventions
 
-- **All models live in [`core/`](core/).** Only Jan and Szymek create migrations, so migrations never conflict. Need a new table or column? Ask them.
+- **All models live in [`core/`](core/)** and are described in [docs/database.md](docs/database.md). Only Jan and Szymek create migrations, so migrations never conflict. Need a new table or column? Ask them.
+- **Never use `date.today()`.** The demo replays a past season; get the current date from `core.clock.today()`.
 - **Work in your own folder.** Each component's README says how it talks to the rest of the system.
 - **Python packages:** add yours to your section of [`requirements.txt`](requirements.txt).
 - **Never commit data or secrets.** Downloaded datasets go in `DATA_DIR` (outside the repo, see `.env.example`); keys go in `.env`.
