@@ -4,7 +4,7 @@
 
 The chatbot. It answers from the official guides (RAG) and from the platform's data (through MCP): it explains risks, answers questions with citations, and records the farmer's observations.
 
-> **Ola, please confirm or change** (agreed by Jan + Szymek, details in [docs/interfaces.md → Chat](../docs/interfaces.md#chat)):
+> **Ola, please confirm or change** (details in [docs/interfaces.md → Chat](../docs/interfaces.md#chat)):
 > 1. The **citation format**: `{"type": "guide", "document": "<pdf file name>", "page": 34}` and `{"type": "risk", "field_id": 3, "threat_code": "...", "date": "YYYY-MM-DD"}`.
 > 2. The **`answer()` function** you implement (below), with the platform owning the HTTP endpoints and the chat tables.
 > 3. **Free-form lookups as read-only SQL**, not ORM code (below).
