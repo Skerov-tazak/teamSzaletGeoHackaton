@@ -24,7 +24,7 @@ def answer(conversation: Conversation, message: str, selected_field: Field | Non
 
 ## Talking to the rest of the system
 
-- **Chat tables are yours:** `Conversation` and `Message` live in this app (not `core`). The first version is included for convienence - after that, you change them.
+- **Chat tables are yours:** `Conversation` and `Message` live in this app (not `core`). The first version is in [`models.py`](models.py) for convenience (details in [docs/interfaces.md → Chat tables](../docs/interfaces.md#chat-tables)); from now on you change them and create their migrations.
 - **MCP is yours:** which tools exist, what they allow and what they refuse.
   - **Free-form lookups** run as **SQL through the read-only connection** `django.db.connections["readonly"]`: that database user can only `SELECT`, and queries are time-limited and row-capped. Never run model-written ORM/Python code: that is arbitrary code execution. The platform provides the read-only user.
   - **Changes** only through narrow tools, e.g. "record an observation" into the planned `Observation` table in `core`. After recording one, call `engine.predict(field_ids=[field.id], start=observation_date)` and return the field in `updated_field_ids`.

@@ -8,7 +8,7 @@ Units: columns copied from a dataset keep the dataset's name and unit. Each colu
 its help_text, shown in /admin/.
 """
 
-from datetime import timedelta
+from datetime import date, timedelta
 
 from django.contrib.postgres.fields import ArrayField
 from django.db import models
@@ -120,9 +120,12 @@ class DailyWeatherColumns(models.Model):
 
 
 class ObservedWeatherQuerySet(models.QuerySet):
-    def observed(self):
-        """Only weather up to and including the demo's today. Never read observed weather without this."""
-        return self.filter(date__lte=clock.today())
+    def observed(self, as_of: date | None = None):
+        """
+        Only weather up to and including `as_of` (default: the demo's today).
+        Never read observed weather without this. Only the engine passes `as_of`, to assess past days.
+        """
+        return self.filter(date__lte=as_of or clock.today())
 
 
 class WeatherDaily(DailyWeatherColumns):
@@ -145,9 +148,12 @@ class WeatherDaily(DailyWeatherColumns):
 
 
 class ForecastQuerySet(models.QuerySet):
-    def current(self):
-        """The forecast issued on the demo's today: the next FORECAST_DAYS days."""
-        return self.filter(issued_on=clock.today())
+    def current(self, as_of: date | None = None):
+        """
+        The forecast issued on `as_of` (default: the demo's today): the next FORECAST_DAYS days.
+        Only the engine passes `as_of`, to assess past days.
+        """
+        return self.filter(issued_on=as_of or clock.today())
 
 
 class WeatherForecastDaily(DailyWeatherColumns):

@@ -92,6 +92,19 @@ class WeatherTests(FarmTestCase):
         current = WeatherForecastDaily.objects.current().values_list("date", flat=True)
         self.assertEqual(list(current), [TODAY + timedelta(days=1)])
 
+    def test_observed_as_of_cuts_at_the_given_day(self):
+        for offset in (-2, -1, 0):
+            WeatherDaily.objects.create(grid=self.grid, date=TODAY + timedelta(days=offset))
+        observed = WeatherDaily.objects.observed(as_of=TODAY - timedelta(days=1)).values_list("date", flat=True)
+        self.assertEqual(sorted(observed), [TODAY - timedelta(days=2), TODAY - timedelta(days=1)])
+
+    def test_current_as_of_returns_the_forecast_issued_that_day(self):
+        issued = TODAY - timedelta(days=3)
+        WeatherForecastDaily.objects.create(grid=self.grid, issued_on=issued, date=issued + timedelta(days=1))
+        WeatherForecastDaily.objects.create(grid=self.grid, issued_on=TODAY, date=TODAY + timedelta(days=1))
+        dates = WeatherForecastDaily.objects.current(as_of=issued).values_list("date", flat=True)
+        self.assertEqual(list(dates), [issued + timedelta(days=1)])
+
     def test_forecast_must_be_1_to_7_days_after_issue(self):
         WeatherForecastDaily.objects.create(grid=self.grid, issued_on=TODAY, date=TODAY + timedelta(days=7))
         for bad_offset in (0, 8):

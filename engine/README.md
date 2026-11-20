@@ -13,7 +13,7 @@ def predict(field_ids: list[int] | None = None, start: date | None = None, end: 
     """Compute risks (default: all fields, whole season up to today + 7), bulk-overwrite them in Risk, return rows written."""
 ```
 
-- **Work through the days in order, each one as of that day:** only the weather observed up to that day, plus the forecast issued that day. The query helpers will take an `as_of` date for this (the platform adds it).
+- **Work through the days in order, each one as of that day:** only the weather observed up to that day, plus the forecast issued that day. The query helpers take an `as_of` date for this: `WeatherDaily.objects.observed(as_of=day)`, `WeatherForecastDaily.objects.current(as_of=day)`.
 - **It's called** after the seed (whole season, so moving the demo date is instant), after the assistant records an observation (that field, from the observation's date), and by hand. A management command such as `python manage.py predict` would be handy.
 
 ## Talking to the rest of the system

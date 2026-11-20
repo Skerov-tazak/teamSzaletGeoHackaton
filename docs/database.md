@@ -54,6 +54,22 @@ erDiagram
 - **Risks** split the same way: `Risk.objects.season_so_far()` (`date <= today()`) and `Risk.objects.coming_days()` (today + 1 … today + 7).
 - The forecast is seeded in advance for every day of the season, so moving the clock is instant.
 
+### How the demo is filled
+
+The demo replays a past season, and the whole season is loaded up front:
+
+1. **Observed weather** (`WeatherDaily`, `WeatherHourly`) for every day of the season, for the farm's grid cells.
+2. **Forecast** (`WeatherForecastDaily`): for every day D of the season, the observed rows for D + 1 … D + 7 are copied with `issued_on = D`. In a live system a real forecast would be written here instead.
+3. **Risks** (`Risk`): `predict()` runs once over the whole season, each day as of that day.
+4. **Clock**: set to the day the demo starts.
+
+So the database always contains rows dated after the demo's today. They stay hidden in two places:
+
+- **in Python code**, by the query helpers above, which never return anything after today (weather) or today + 7 (forecast, risks);
+- **for the frontend**, by the API, which refuses or cuts off any date after today + 7 ([interfaces.md](interfaces.md#no-data-after-the-forecast)).
+
+Moving the demo date (`PUT /api/clock/`, or `/admin/`) moves both limits; nothing needs recomputing.
+
 ## Rules for every component
 
 1. **The date is `core.clock.today()`,** never `date.today()` or `timezone.now()`. In the frontend, it is the date the API reports, never the browser's `new Date()`.
@@ -89,7 +105,7 @@ The helpers below are the supported way to read and write. They all live in [`co
 | `field.crop_years` | The field's FieldCropYear rows (crop history) |
 | `field.risks` / `threat.risks` | Related risks; `.season_so_far()` and `.coming_days()` work on them too |
 
-**Planned:** `.observed()` and `.current()` get an optional `as_of` date (default `clock.today()`), so the engine's `predict()` can work through a whole season one day at a time. Only the engine passes it. See [interfaces.md](interfaces.md#as_of-on-the-helpers).
+`.observed()` and `.current()` take an optional `as_of` date (default `clock.today()`), so the engine's `predict()` can work through a whole season one day at a time: `WeatherDaily.objects.observed(as_of=day)`, `WeatherForecastDaily.objects.current(as_of=day)`. Only the engine passes it. See [interfaces.md](interfaces.md#as_of-on-the-helpers).
 
 ```python
 from datetime import timedelta

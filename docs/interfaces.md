@@ -13,13 +13,15 @@ How the components talk to each other: the frontend modules, the events between 
 | [Map module](#the-map-module) (`initMap`) | To build | Kuba |
 | [Platform API](#platform-api) | `GET /api/health/` exists; the rest to build | Jan + Szymek |
 | [Demo date control](#clock) (`PUT /api/clock/` + header control) | To build | Jan + Szymek |
-| [Chat endpoints, chat tables, placeholder answer](#chat) | To build | Jan + Szymek |
+| [Chat tables](#chat-tables) (`Conversation`, `Message`) | Exists | Jan + Szymek (first version), then Ola |
+| [Chat endpoints, placeholder answer](#chat) | To build | Jan + Szymek |
 | [`answer()`](#the-answer-function), MCP tools, RAG | To build | Ola |
 | [Read-only database user](#free-form-lookups-read-only-sql) | To build | Jan + Szymek |
 | [Observation table](#writing-observations) | Open: columns wait for the engine's needs | Jan + Szymek (schema), Ola (writes), Bartek (reads) |
-| [`as_of` on the query helpers](#as_of-on-the-helpers) | To build | Jan + Szymek |
+| [`as_of` on the query helpers](#as_of-on-the-helpers) | Exists | Jan + Szymek |
 | [`predict()`](#decision-engine) | To build | Bartek |
 | [API without authentication](#general-rules) | To build (settings change) | Jan + Szymek |
+| [API cut-off at today + 7](#no-data-after-the-forecast) | To build (part of every date-based endpoint) | Jan + Szymek |
 
 ## General rules
 
@@ -27,8 +29,30 @@ How the components talk to each other: the frontend modules, the events between 
 - **JSON** with snake_case keys; dates as `YYYY-MM-DD`; timestamps in ISO 8601, UTC.
 - **Units** are the database's (source units), under the database column names. See [database.md](database.md#unit-traps).
 - **GeoJSON** coordinates are **[lon, lat]**, EPSG:4326.
+- **Nothing after the forecast.** The API never returns data dated after today + 7; see [below](#no-data-after-the-forecast).
 - **Errors** use Django REST Framework's format: `{"detail": "..."}` with a 4xx status.
 - **TypeScript types are generated, not written.** `openapi-typescript` turns `/api/schema/` into `frontend/src/api/schema.d.ts` (one npm script). If the backend changes, regenerate; the type checker shows what broke.
+
+### No data after the forecast
+
+**How the demo is filled.** The demo replays a past season, so the database holds the whole season from the start (details in [database.md](database.md#how-the-demo-is-filled)):
+
+- observed weather for every day of the season;
+- a 7-day forecast for every day of the season, copied from the observed weather;
+- risks for every day of the season, precomputed once by `predict()`;
+- the `Clock` row, set to the day the demo starts.
+
+So rows dated after the demo's today (say June, when today is 15 May) are already in the database, although a farmer on 15 May could only know the weather and risks up to 15 May plus the forecast for 16–22 May.
+
+**Who keeps them hidden.**
+
+- **Python code** (engine, assistant) reads through the query helpers (`.observed()`, `.current()`, `season_so_far()`, `coming_days()`), which never return anything later.
+- **The frontend** reads only through the API, and the helpers don't protect it. So **the API must enforce the same limit on every endpoint that takes a date**:
+  - a single `date` after today + 7 is an error: `400 {"detail": "date is after today + 7"}`;
+  - a range's `to` is cut off at today + 7, and the response's `to` says where it stopped;
+  - with no dates given, the defaults never go past today + 7.
+
+The frontend can rely on this and doesn't need its own checks: a chart or date slider simply can't receive data past the forecast. The legitimate way to see later days is to **move the demo date** ([`PUT /api/clock/`](#clock)); then the limit moves with it.
 
 ## Frontend modules
 
@@ -249,12 +273,17 @@ Chats are stored like in any chat app. The HTTP endpoints, the tables and a plac
 
 ### Chat tables
 
-They live in the `assistant` app, not `core`: they are specific to the assistant, so Ola owns them. Jan + Szymek create the first version; after that only Ola changes them.
+They live in [`assistant/models.py`](../assistant/models.py), not `core`: they are specific to the assistant, so Ola owns them. Jan + Szymek created the first version; from now on only Ola changes them (and creates their migrations).
 
 | Table | Columns |
 |-------|---------|
 | `Conversation` | `title`, `created_at`, `updated_at` |
-| `Message` | `conversation`, `role` (`user` / `assistant`), `text`, `citations` (JSON), `field` (the field selected when sent, nullable), `focus_field` (nullable), `created_at` |
+| `Message` | `conversation`, `role` (`user` / `assistant`), `text`, `citations` (JSON, empty list by default), `field` (the field selected when sent, nullable), `focus_field` (nullable), `created_at` |
+
+- `conversation.messages` lists a conversation's messages, oldest first; `Conversation.objects` lists conversations newest first.
+- Saving a message moves its conversation's `updated_at` forward, so the conversation list stays in order.
+- `Conversation.title_from(text)` makes a title from the first message (its first line, at most 80 characters).
+- If a field is deleted, messages keep their text and the field columns become empty.
 
 ### The `answer()` function
 
@@ -324,7 +353,7 @@ It works through the days in order, each one **as of that day**: only the weathe
 
 ### `as_of` on the helpers
 
-`.observed()` and `.current()` cut at the clock's today, which would stop `predict()` from working through a whole season. So they get an optional `as_of` date that defaults to `clock.today()`:
+`.observed()` and `.current()` cut at the clock's today, which would stop `predict()` from working through a whole season. So they take an optional `as_of` date that defaults to `clock.today()`:
 
 ```python
 WeatherDaily.objects.observed(as_of=day)          # weather up to that day
