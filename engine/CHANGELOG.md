@@ -2,6 +2,13 @@
 
 History of the engine's versions and the findings behind them. The reference documentation is [README.md](README.md).
 
+## v0.10: demo farm 2024 and a stand-in API for the map
+
+- `engine_dev_seed --crop-from-map`: parcels of all seven engine crops, crop from the crop map of the season itself
+  (2024), Polish field names; no crop model, no network. The 2024 demo farm: 11 fields near Krapkowice.
+- `engine_mock_api`: development-only server with the agreed platform endpoints and shapes (interfaces.md), used to
+  build the map before the platform API exists; `PUT /api/clock/` calls `clock_moved()`. Tests: `engine/test_mock_api.py`.
+
 ## v0.9: predict() contract from the platform review
 
 Closes the seven gaps in `docs/engine-predict-review.md`; its contract tests are `engine/test_predict_contract.py` (all pass).

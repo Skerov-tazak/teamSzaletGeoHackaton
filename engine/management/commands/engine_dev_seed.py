@@ -1,13 +1,16 @@
 """
 python manage.py engine_dev_seed [--bbox W S E N] [--season 2025] [--today 2025-06-15] [--fields-per-crop 3]
+python manage.py engine_dev_seed --season 2024 --today 2024-06-15 --crop-from-map --fields-per-crop 2   # demo farm
 
 FOR ENGINE DEVELOPMENT ONLY. Fills an empty database with a small demo farm so predict() can run end
 to end before the platform's import exists. The platform's import (Jan + Szymek) replaces it; it
-touches only rows it creates (fields named "dev: ..."), plus the Clock and the threats.
+touches only rows it creates (fields named "dev: ..." or with a DEMO_NAMES name), plus the Clock and the threats.
 
 - Fields: wheat and maize parcels of the crop map of season-1 inside --bbox (connected pixels of one
   class, >= 3 ha), simplified to polygons. Their crop for --season comes from the Sentinel-2 NDVI
   curve of that season up to --today (engine.cropmodel when trained, else a simple rule).
+  --crop-from-map: parcels of all seven engine crops, crop = the crop map of --season itself (no satellite,
+  no network; for a season whose crop map exists, e.g. 2024); fields get Polish names (DEMO_NAMES).
 - FieldCropYear from the crop maps 2020-2024, the nearest weather grid cell, H3 level-10 soil cells.
 - Weather daily + hourly (+ IMERG precipitation) for the fields' grid cells, seasons season-1 and season.
 - Forecast seeded from observed weather (issued D -> D+1..D+7), as the platform does.
@@ -47,6 +50,10 @@ LEGEND = {0: "No cropland", 1110: "Wheat", 1120: "Barley", 1130: "Maize", 1140: 
           2310: "Fruits", 2320: "Nuts", 3100: "Unclassified arable crop", 3200: "Unclassified permanent crop",
           65535: "Outside area"}
 TEST_BBOX = (17.62, 50.32, 17.74, 50.40)  # farmland SW of Krapkowice, Opolskie
+ENGINE_CROPS = (1110, 1120, 1130, 1150, 1310, 1320, 1430)
+# Field names of the demo farm (--crop-from-map), in the order the fields are made.
+DEMO_NAMES = ["Pod Lasem", "Za Stodołą", "Długie", "Przy Drodze", "Nad Stawem", "Klin", "Górka", "Za Torami",
+              "Wygon", "Dolne", "Krzyżówka", "Kamionka", "Pod Wierzbami", "Łęgi", "Rozdroże", "Zagonki"]
 TO_2180 = Transformer.from_crs("EPSG:4326", "EPSG:2180", always_xy=True).transform
 
 
@@ -65,18 +72,25 @@ class Command(BaseCommand):
         p.add_argument("--today", type=date.fromisoformat, default=date(2025, 6, 15))
         p.add_argument("--fields-per-crop", type=int, default=3)
         p.add_argument("--region", default="Opolskie")
+        p.add_argument("--crop-from-map", action="store_true",
+                       help="All engine crops, crop from the crop map of --season (no satellite); Polish field names.")
 
-    def handle(self, *a, bbox, season, today, fields_per_crop, region, **o):
+    def handle(self, *a, bbox, season, today, fields_per_crop, region, crop_from_map=False, **o):
         D = data_dir()
         self.stdout.write(f"data dir: {D}")
         for code, name in LEGEND.items():
             CropClass.objects.update_or_create(code=code, defaults={"name": name})
-        parcels = self.parcels(D, bbox, season - 1, fields_per_crop * 6)
-        self.stdout.write(f"{len(parcels)} candidate parcels from the {season - 1} crop map")
-        crops = self.crop_this_season(parcels, season, today)
+        if crop_from_map:
+            parcels = self.parcels(D, bbox, season, fields_per_crop * 3, codes=ENGINE_CROPS)
+            self.stdout.write(f"{len(parcels)} candidate parcels from the {season} crop map")
+            crops = [p["crop_prev"] for p in parcels]  # the class in the --season map itself
+        else:
+            parcels = self.parcels(D, bbox, season - 1, fields_per_crop * 6)
+            self.stdout.write(f"{len(parcels)} candidate parcels from the {season - 1} crop map")
+            crops = self.crop_this_season(parcels, season, today)
         grids = pd.read_parquet(D / "weather" / "weather_grids.parquet", columns=["grid_id", "lat", "lon"])
         grids[["lat", "lon"]] = grids[["lat", "lon"]].astype(float)  # stored as decimals in the source
-        chosen = {1110: [], 1130: []}
+        chosen = {c: [] for c in (ENGINE_CROPS if crop_from_map else (1110, 1130))}
         for p, crop in zip(parcels, crops):
             if p.get("crop_model"):
                 self.stdout.write(f"  parcel ({p['crop_prev']} last year): model says {p['crop_model'].get('label')} {p['crop_model'].get('confidence', 0):.0%}")
@@ -84,10 +98,12 @@ class Command(BaseCommand):
                 chosen[crop].append(p | {"crop": crop})
         with transaction.atomic():
             Field.objects.filter(name__startswith="dev: ").delete()
+            Field.objects.filter(name__in=DEMO_NAMES).delete()
             made = []
+            names = iter(DEMO_NAMES)
             for crop, items in chosen.items():
                 for i, p in enumerate(items, 1):
-                    made.append(self.make_field(D, p, i, grids))
+                    made.append(self.make_field(D, p, i, grids, name=next(names) if crop_from_map else None))
             self.stdout.write(f"{len(made)} fields: " + ", ".join(f.name for f in made))
             grid_ids = sorted({f.weather_grid_id for f in made})
             self.load_weather(D, region, grid_ids, [season - 1, season])
@@ -98,7 +114,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"Dev farm ready. Clock = {today}. Run: python manage.py predict --season"))
 
     # --- fields ---------------------------------------------------------------------------------
-    def parcels(self, D: Path, bbox, year: int, n: int) -> list[dict]:
+    def parcels(self, D: Path, bbox, year: int, n: int, codes=(1110, 1130)) -> list[dict]:
         """
         Candidate parcels: pixels of one class in BOTH `year` and `year - 1` (parcel borders persist, so
         neighbouring parcels with the same crop in one year are split by the other year), 5-40 ha.
@@ -116,7 +132,7 @@ class Command(BaseCommand):
                                     dst_transform=t, dst_crs=src.crs, resampling=rasterio.enums.Resampling.nearest)
         px_ha = 0.0134  # pixel area in this EPSG:4326 grid at ~50.4° N (≈ 10.6 m x 12.6 m)
         out = []
-        for code in (1110, 1130):
+        for code in codes:
             stable = (a == code) & (b != 65535) & (b != 0)
             mask = ndimage.binary_opening(stable, iterations=2)
             # split by last year's class: a parcel is one class this year AND one class last year
@@ -175,7 +191,7 @@ class Command(BaseCommand):
             crops.append(crop)
         return crops
 
-    def make_field(self, D: Path, p: dict, i: int, grids: pd.DataFrame) -> Field:
+    def make_field(self, D: Path, p: dict, i: int, grids: pd.DataFrame, name: str | None = None) -> Field:
         g = p["geom"]
         c = g.centroid
         area_ha = shp_transform(TO_2180, g).area / 10_000
@@ -185,7 +201,7 @@ class Command(BaseCommand):
         cells = list(h3.geo_to_cells(mapping(g), 10)) or [h3.latlng_to_cell(c.y, c.x, 10)]
         crop_name = "wheat" if p["crop"] == 1110 else "maize"
         f = Field.objects.create(
-            name=f"dev: {crop_name} {i}", geometry=mapping(g), area_ha=round(area_ha, 2),
+            name=name or f"dev: {crop_name} {i}", geometry=mapping(g), area_ha=round(area_ha, 2),
             centroid_lat=c.y, centroid_lon=c.x, weather_grid_id=gr.grid_id, h3_cells=cells, crop_id=p["crop"],
         )
         rows = []
