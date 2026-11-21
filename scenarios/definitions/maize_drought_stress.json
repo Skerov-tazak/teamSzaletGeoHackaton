@@ -1,0 +1,74 @@
+{
+  "title": "Upały i presja w uprawie kukurydzy (lipiec)",
+  "description": "Fala upałów w lipcu, zróżnicowany płodozmian po kukurydzy oraz zgłoszenie z sąsiedniego pola.",
+  "region": "Opolskie",
+  "window": {
+    "season": 2025,
+    "season_start": "2024-09-01",
+    "season_end": "2025-08-31",
+    "clock_today": "2025-07-10",
+    "include_previous_season": true
+  },
+  "fields": [
+    {
+      "name": "Pole Zachodnie (Kukurydza)",
+      "crop_code": 1130,
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [17.628, 50.345],
+            [17.638, 50.345],
+            [17.638, 50.352],
+            [17.628, 50.352],
+            [17.628, 50.345]
+          ]
+        ]
+      },
+      "crop_history": {
+        "2022": { "1130": 1.0 },
+        "2023": { "1130": 1.0 },
+        "2024": { "1130": 1.0 }
+      }
+    },
+    {
+      "name": "Pole Północne (Pszenica)",
+      "crop_code": 1110,
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [17.640, 50.365],
+            [17.648, 50.365],
+            [17.648, 50.370],
+            [17.640, 50.370],
+            [17.640, 50.365]
+          ]
+        ]
+      }
+    }
+  ],
+  "weather_overrides": [
+    {
+      "start_date": "2025-07-02",
+      "end_date": "2025-07-10",
+      "values": {
+        "max_temperature": 33.5,
+        "avg_temperature": 26.8,
+        "avg_relative_humidity": 46.0,
+        "imerg_total_precipitation": 0.0
+      }
+    }
+  ],
+  "observations": [
+    {
+      "kind": "neighbour",
+      "observed_on": "2025-07-08",
+      "field_name": "Pole Zachodnie (Kukurydza)",
+      "category": "pest",
+      "severity": 0.65,
+      "distance_m": 450.0,
+      "text": "Sąsiad zgłasza żerowanie szkodników w kukurydzy 450 m na wschód."
+    }
+  ]
+}
