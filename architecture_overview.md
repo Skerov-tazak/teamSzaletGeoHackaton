@@ -17,7 +17,16 @@ The demo replays a past season as if it were today; the same design is meant to 
 
 ## System overview
 
-&#91;embedded content: System overview · 5 components and their owners\]
+```mermaid
+flowchart LR
+  data["Organisers' data<br/>weather, soil, crop maps"] -->|manage.py scenario switch| core["Platform (Jan + Szymek)<br/>core: Postgres + REST API"]
+  core -->|predict / clock_moved| engine["Decision engine (Bartek)<br/>engine/"]
+  engine -->|Risk rows + explanations| core
+  core -->|/api/fields, /api/risks …| fe["Frontend<br/>map (Kuba) + chat window"]
+  fe -->|POST /api/chat/| asst["AI assistant (Ola)<br/>assistant/"]
+  asst -->|fields, risks, weather, reports| core
+  asst -->|guide search| rag[("Qdrant + BM25<br/>crop-protection guides")]
+```
 
 The platform connects everything: data comes in through it, the decision engine and the assistant work against it, and the frontend presents it to the farmer.
 

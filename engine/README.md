@@ -69,13 +69,13 @@ n.field_ids   # every field rewritten, incl. nearby fields a symptoms report spr
 ### `clock_moved()` — after the demo date moves
 
 ```python
-from engine import clock_moved
+from core import clock
 
-clock.save()                      # the platform saves the new date (PUT /api/clock/, the admin's clock page)
-clock_moved(old_today, new_today) # -> PredictResult; recomputes (min(old, new), max(old, new) + 7]
+clock.set_today(new_today)        # saves the date and calls engine.clock_moved(old, new) in one transaction
+                                  # (PUT /api/clock/, the admin's clock page, engine_set_date)
 ```
 
-There is **no signal**: whoever moves the date calls it, whether with `clock.save()` or `Clock.objects.update()`. Days that were coming days and are now past go back to "as of that day"; the new coming days follow the forecast issued on the new date; nothing else is rewritten. From the shell: `python manage.py engine_set_date 2025-06-20`.
+There is **no signal**: every date change goes through `core.clock.set_today()`, never `Clock.objects.update()` or a bare `clock.save()` (the engine would not hear about it). `clock_moved(old, new)` rewrites (min(old, new), max(old, new) + 7]: days that were coming days and are now past go back to "as of that day"; the new coming days follow the forecast issued on the new date; nothing else is rewritten. A move into another season recomputes season by season, oldest first (each season's carry-over reads the previous one's peaks). From the shell: `python manage.py engine_set_date 2025-06-20`.
 
 **Precomputed, so a move is a copy.** Every row the engine computes is also kept in its own cache table,
 `engine.RiskSnapshot` (engine/models.py; one bundle per field and day: "as of that day", or "coming day of demo date

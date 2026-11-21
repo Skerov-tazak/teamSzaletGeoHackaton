@@ -34,15 +34,21 @@ python manage.py scenario switch demo_2024 --keep-weather --reset-chat
 python manage.py engine_precompute_dates
 ```
 
-Identyfikatory pól zmieniają się przy każdym przełączeniu: odwołuj się do pól po nazwie.
+Potem odśwież stronę (Ctrl+Shift+R). Identyfikatory pól zmieniają się przy każdym przełączeniu: odwołuj się do pól
+po nazwie (otwarta karta sama zaczyna nową rozmowę, gdy stara zniknęła).
+
+Bez kluczy LLM wszystko poza czatem działa: czat jest wyszarzony z komunikatem „Asystent jest wyłączony”, a nagłówek
+mówi „Połączono · asystent wyłączony”. Kroki 4–6 wymagają kluczy.
 
 ## Przebieg (ok. 5 minut)
 
 ### 1. Mapa: „co się dzieje na moich polach dziś”
 
-- Otwórz <http://localhost:8000>. Nagłówek: „Platforma OK”, data **27 maja 2024**.
+- Otwórz <http://localhost:8000>. Nagłówek: „Połączono”, data **27 maja 2024**.
 - Kafelki: **2 wysokie, 2 średnie, 4 niskie**. Lista pól posortowana od najgroźniejszego.
-- Pokaż, że kolor zawsze idzie z ikoną i podpisem. Filtry kategorii (grzyby / szkodniki / wirusy) zawężają listę.
+- Pokaż, że kolor zawsze idzie z ikoną i podpisem: na liście i na mapie (etykieta „▲ Pod Lasem · wysokie”, pola
+  o wysokim ryzyku mają przerywany obrys i etykietę także po oddaleniu). Filtry kategorii (grzyby / szkodniki /
+  wirusy) zawężają listę.
 
 ### 2. Panel pola: „dlaczego”
 
@@ -60,7 +66,7 @@ Identyfikatory pól zmieniają się przy każdym przełączeniu: odwołuj się d
 
 ### 4. Asystent: pytanie o pole
 
-Przy zaznaczonym Pod Lasem (czat pokazuje „Pytasz o: Pod Lasem”):
+Przy zaznaczonym Pod Lasem (czat pokazuje „Pytasz o: Pod Lasem”) wpisz albo kliknij gotowe pytanie pod pustym czatem:
 
 > Dlaczego to pole jest na czerwono i co mam zrobić?
 
@@ -91,12 +97,14 @@ Zaznacz **Pod Lasem**:
 
 Szkic („wykonany zabieg”, data 26.05), odpowiedz **tak**. Choroby grzybowe spadają do niskich, a **Pod Lasem
 zmienia kolor z czerwonego na żółty** (zostają mszyce, na które fungicyd nie działa). W panelu widać czynnik
-„Zabieg przeciw: wszystkie zagrożenia (26.05.2024)”.
+„Zabieg przeciw: choroby grzybowe (wszystkie) (26.05.2024)” z wartością, o ile obniża wynik.
 
 ### 7. (opcjonalnie) Zmiana daty
 
 Strzałka **›** w nagłówku przesuwa datę demo o dzień: silnik kopiuje gotowe wyniki dla nowej daty (ok. 0,3 s,
-po `engine_precompute_dates`; bez niego liczy 1–4 s), a mapa wraca na „dziś”. Najlepiej po pokazie, bo zmienia stan pokazany wyżej.
+po `engine_precompute_dates`; bez niego, i dla pól zmienionych zgłoszeniem w kroku 5–6, liczy 2–5 s), a mapa wraca
+na „dziś”. Wpisaną datę zapisuje Enter albo wyjście z pola; data spoza okna z pogodą (1.09.2022–31.12.2024) nie
+przejdzie, a skok o ponad miesiąc wymaga potwierdzenia. Najlepiej po pokazie, bo zmienia stan pokazany wyżej.
 
 ## Co powiedzieć o danych
 
@@ -112,4 +120,5 @@ po `engine_precompute_dates`; bez niego liczy 1–4 s), a mapa wraca na „dziś
 - Po zgłoszeniu oprysku asystent wymienia tylko część zmian (np. rdze), choć najmocniej spadają septorioza plew
   i fuzarioza.
 - Szkodniki kukurydzy pod koniec maja są niskie: kukurydza dopiero wschodzi. To prawdziwy stan, nie błąd.
-- Scenariusz liczy dni do 31.12.2024, więc datę można przesuwać przez cały sezon kukurydzy.
+- Scenariusz liczy dni do 31.12.2024, więc datę można przesuwać przez cały sezon kukurydzy. Po 1 września
+  kukurydza zostaje na polu do zbioru (silnik v0.13), a pszenica nowego sezonu zaczyna od siewu 1 października.

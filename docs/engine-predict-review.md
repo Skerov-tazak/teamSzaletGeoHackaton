@@ -1,5 +1,7 @@
 # `predict()`: how it should work vs how it works
 
+> **Historical document (the review that led to predict()'s contract; its contract tests pass now).** Kept for the decisions and their reasons. Current behaviour: [interfaces.md](interfaces.md) (the demo date moves only through `core.clock.set_today()`; chat messages carry `chart` and `pending_action`; engine texts are Polish) and [audit-2026-11-21.md](audit-2026-11-21.md).
+
 For Bartek · from Jan + Szymek (platform) · 21 Nov 2026
 
 We integrated the engine (`feat/decision-engine` at `bb3ece1`) with the platform's database, including the new `core.Observation` table (`core/migrations/0002_observation_and_soil_formats.py`, committed on this branch). The engine itself integrates cleanly: it reads and writes only through the ORM, writes only `Risk`, and picks up reports from `core.Observation` without any change. But `predict()` does not yet behave as the contract in [interfaces.md → Decision engine](interfaces.md#decision-engine) and the shared principles need. This document lists each gap with what should happen, what happens, the evidence, and options for fixing it.

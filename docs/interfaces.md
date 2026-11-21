@@ -14,7 +14,7 @@ How the components talk to each other: the frontend modules, the events between 
 | [Platform API](#platform-api) | Built, except the weather endpoint (shape not defined) | Jan + Szymek |
 | [Demo date control](#clock) (`PUT /api/clock/` + header control) | Built | Jan + Szymek |
 | [Chat tables](#chat-tables) (`Conversation`, `Message`) | Exists | Jan + Szymek (first version), then Ola |
-| [Chat endpoints](#chat) | Built (Ola, `assistant/views.py`). Not yet sending the agreed `chart` and `pending_action` keys | Ola |
+| [Chat endpoints](#chat) | Built (Ola, `assistant/views.py`), with the agreed `chart` and `pending_action` keys | Ola |
 | [Chat window](#chat) (`frontend/src/chat/`) | Built, including charts and the observation buttons (shown once the endpoint sends the keys) | Jan + Szymek |
 | [`answer()`](#the-answer-function), MCP tools, RAG | Built | Ola |
 | [Read-only database user](#free-form-lookups-read-only-sql) | To build | Jan + Szymek |
@@ -27,11 +27,11 @@ How the components talk to each other: the frontend modules, the events between 
 ## General rules
 
 - **No logins, no tokens.** The API is open; it's a single-farm demo. Nothing needs a CSRF token.
-- **JSON** with snake_case keys; dates as `YYYY-MM-DD`; timestamps in ISO 8601, UTC.
+- **JSON** with snake_case keys; dates as `YYYY-MM-DD` (only that form: ISO weeks like `2024-W22-1` or `20240601` are a 400); timestamps in ISO 8601, UTC. Request bodies are JSON only (`Content-Type: application/json`; a form-encoded body is a 415), so a form on another site can't post to the API.
 - **Units** are the database's (source units), under the database column names. See [database.md](database.md#unit-traps).
 - **GeoJSON** coordinates are **[lon, lat]**, EPSG:4326.
 - **Nothing after the forecast.** The API never returns data dated after today + 7; see [below](#no-data-after-the-forecast).
-- **Errors** use Django REST Framework's format: `{"detail": "..."}` with a 4xx status.
+- **Errors** use Django REST Framework's format: `{"detail": "..."}` with a 4xx status, also for any `/api/` path no endpoint matches (404 `{"detail": "Not found."}`, never Django's HTML page). The `detail` texts are English; the page shows them in Polish (`frontend/src/api/client.ts`).
 - **No demo date:** while the `Clock` row is missing, every endpoint that needs today answers `503 {"detail": "The demo date is not set: set it in /admin/ or run the seed."}`.
 - **TypeScript types are generated, not written.** Both files are committed: `frontend/openapi.yml` (`python manage.py spectacular --file frontend/openapi.yml`) and `frontend/src/api/schema.d.ts` (`cd frontend && npm run api:types`). If the backend changes, regenerate both; the type checker shows what broke. `python manage.py test core` fails if `openapi.yml` is stale, and `npm run build` fails if `schema.d.ts` is.
 
@@ -131,7 +131,7 @@ Built by Jan + Szymek with Django REST Framework. Once an endpoint exists, its e
 
 | Request | Returns | Used by |
 |---------|---------|---------|
-| `GET /api/health/` | `{status, database}` | the page's status line (exists) |
+| `GET /api/health/` | `{status, database, clock, assistant: {available, llm, rag, reason} \| null}` | the page's status line; the chat greys itself out when `assistant.available` is false |
 | `GET /api/clock/` | the demo's date | everyone |
 | `PUT /api/clock/` | sets the demo's date | demo date control |
 | `GET /api/threats/` | every threat | legend, filters |
@@ -146,14 +146,14 @@ Built by Jan + Szymek with Django REST Framework. Once an endpoint exists, its e
 
 ```json
 // GET /api/clock/
-{"today": "2024-05-15", "forecast_days": 7}
+{"today": "2024-05-15", "forecast_days": 7, "min_date": "2022-09-01", "max_date": "2024-12-31"}
 
 // PUT /api/clock/   body: {"today": "2024-06-01"}   → returns the same shape as GET
 ```
 
-The demo date control in the page header sends the `PUT`; on success `main.ts` updates `ctx.clock` in place and sends `date:changed`. Any valid date is accepted: a date without data shows empty results. An invalid one is `400 {"detail": "today must be YYYY-MM-DD"}`.
+The demo date control in the page header sends the `PUT`; on success `main.ts` updates `ctx.clock` in place and sends `date:changed`. `min_date` / `max_date` are the dates `PUT` accepts: the days a forecast was issued on (the scenario's window, previous season included), else the days with observed weather; both `null` when there is no weather at all (then any date is accepted). A date outside them is `400 {"detail": "today must be between 2022-09-01 and 2024-12-31 (the days with weather)"}`; an invalid one is `400 {"detail": "today must be YYYY-MM-DD"}`. The date control sets them as the picker's limits.
 
-Moving the date recomputes the days whose inputs change: `engine.clock_moved(old, new)` rewrites the risks of (min(old, new), max(old, new) + 7] ([engine-predict-review.md](engine-predict-review.md#4-moving-the-demo-date-rewrites-the-rest-of-the-season)). The engine has no signal, so every date change goes through **`core.clock.set_today(new)`**, which saves the row and calls `clock_moved` in one transaction (if the engine fails, the date stays): `PUT /api/clock/` and the admin's clock page use it; from the terminal, `python manage.py engine_set_date D`. Never change the date with `Clock.objects.update(...)` or a bare `clock.save()`. The recompute takes about a second per few days moved, so the date control shows that it is busy.
+Moving the date recomputes the days whose inputs change: `engine.clock_moved(old, new)` rewrites the risks of (min(old, new), max(old, new) + 7] ([engine-predict-review.md](engine-predict-review.md#4-moving-the-demo-date-rewrites-the-rest-of-the-season)). The engine has no signal, so every date change goes through **`core.clock.set_today(new)`**, which saves the row and calls `clock_moved` in one transaction (if the engine fails, the date stays): `PUT /api/clock/` and the admin's clock page use it; from the terminal, `python manage.py engine_set_date D`. Never change the date with `Clock.objects.update(...)` or a bare `clock.save()`. With the date cache filled (`engine_precompute_dates`, demo date − 7 … + 30) a move copies precomputed rows and takes about 0.3 s; a field changed by a farmer's report since then, or a date outside the cache, is computed (2–5 s); a move into another season recomputes both seasons (about 10 s). The date control shows that it is busy, and asks before a jump of more than a month.
 
 ### Threats
 
@@ -253,7 +253,7 @@ Scores are 0–1 (an index, not a probability). Days up to today are the season 
 - **Why** from `summary` and `drivers`: each driver has a `label` and an `effect` (how much the score would drop without it; `null` = context only). Sort by `effect`.
 - **What to do** from `action`: `type` (`wait` / `monitor` / `treat`), `text`, and for `treat` a `spray_window` from the forecast.
 - **How sure** from `confidence` (0–1; lower for coming days).
-- Texts are shown to the farmer as they are, so they are Polish (the engine still writes English today: open point in database.md). Ignore keys you don't know.
+- Texts are shown to the farmer as they are, so they are Polish (the engine writes Polish since v0.11). Ignore keys you don't know.
 
 ## Chat
 
@@ -295,7 +295,7 @@ Chats are stored like in any chat app. The endpoints and [`answer()`](#the-answe
 | `GET /api/chat/conversations/` | `[{id, title, updated_at}]`, newest first. The title is the start of the first message |
 | `GET /api/chat/conversations/{id}/` | `{id, title, messages: [...]}`, each message in the shape above (user messages have empty `citations` and `null` `chart` / `pending_action`) |
 
-`chart` and `pending_action` (Ola's proposals 6 and 7, accepted on 21 Nov) are always present, each `null` when unused, also in the conversation history (they are stored in `Message.meta`). **To do (Ola):** `message_json` in `assistant/views.py` does not send them yet; until it does, the chat window treats the missing keys as `null`.
+`chart` and `pending_action` (Ola's proposals 6 and 7, accepted on 21 Nov) are always present, each `null` when unused, also in the conversation history (they are stored in `Message.meta`). Without an LLM configured, `POST /api/chat/` answers `503 {"detail": "Asystent jest wyłączony: …"}` and stores nothing.
 
 **Not in this version:** streaming. The answer appears all at once after a "thinking…" indicator.
 
@@ -369,6 +369,9 @@ class Reply:
     citations: list[dict] = dataclass_field(default_factory=list)
     focus_field_id: int | None = None
     updated_field_ids: list[int] = dataclass_field(default_factory=list)
+    chart: dict | None = None             # Vega-Lite v5 spec (sent as "chart")
+    pending_action: dict | None = None    # {"type": "confirm_observation", "draft": {...}} (sent as "pending_action")
+    meta: dict = dataclass_field(default_factory=dict)  # route, LLM usage, errors (stored in Message.meta, not sent)
 
 
 def answer(conversation: Conversation, message: str, selected_field: Field | None) -> Reply:
@@ -404,7 +407,7 @@ After recording one, the tool calls `engine.predict(field_ids=[field.id], start=
 
 **Moving from the interim table:** the engine reads both `core.Observation` and the assistant's interim `assistant.Observation`. If rows exist in both, every report counts twice. So the assistant switches its tool to `core.Observation` and moves (copies, then deletes) its interim rows in the same change.
 
-**Known gaps** (not fixed yet, details in [engine-predict-review.md](engine-predict-review.md)): `predict()` with the default `end` (today + 7) leaves precomputed days after today + 7 without the report's effect; and when a symptoms report spreads to nearby fields, `predict()` recomputes them but returns only a count, so they are missing from `updated_field_ids`.
+Both gaps found in [engine-predict-review.md](engine-predict-review.md) are fixed: the default `end` is the later of today + 7 and the last day already stored for these fields, so precomputed days get the report's effect too; and `predict()` returns a `PredictResult` (an int plus `.field_ids`) that lists the nearby fields a symptoms report spread to, which the assistant sends in `updated_field_ids`.
 
 ## Decision engine
 

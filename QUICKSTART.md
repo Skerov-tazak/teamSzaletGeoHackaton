@@ -1,175 +1,70 @@
-# Quick Start Guide
+# Quick Start
 
-## One Command to Start Everything
-
-### macOS/Linux
+One script sets up the demo on macOS or Linux (there is no Windows script: follow the README's steps).
 
 ```bash
-./start.sh
+./start.sh              # first run
+./start.sh --reset      # reload the demo scenario even if a demo date is already set
+python manage.py runserver
 ```
 
-### Windows
-
-```bash
-start.bat
-```
+Open <http://localhost:8000>. The demo itself is described in [docs/demo-script.md](docs/demo-script.md).
 
 ## What the script does
 
-The startup script automates all the setup steps from the README:
+1. Finds Python 3.11+ (`python3.12`, `python3.11`, `python3`, `python`), Docker and Node.js (22+ for the frontend packages).
+2. Creates `.venv` and installs `requirements.txt` (the first run downloads torch: a few minutes, several GB).
+3. Creates `.env` from `.env.example` if missing. **It has no LLM keys**: the map and risks work, the chat stays off
+   (greyed out, with the reason) until you add `GEMINI_API_KEY` or `GROQ_API_KEY` and restart the server.
+4. Starts Postgres and Qdrant (`docker compose up -d`) and waits for the database.
+5. Runs the migrations.
+6. Loads the demo scenario `demo_2024` (27 May 2024, 8 real parcels near Krapkowice) from the organisers' data in
+   `DATA_DIR` (README → Demo data). Without that data it says so and loads the scenario on **synthetic** weather,
+   soil and crop history: everything works, but the numbers differ from the demo script.
+7. Precomputes the date cache (`engine_precompute_dates`), so the date arrows take about 0.3 s.
+8. Builds the frontend.
+9. Builds the guide index for the chat (`rag_ingest`, 2–4 min) unless the Qdrant collection and the BM25 file exist.
 
-1. ✅ Checks prerequisites (Python 3.11+, Docker, Node.js 18+)
-2. ✅ Creates a Python virtual environment if needed
-3. ✅ Installs Python dependencies
-4. ✅ Creates `.env` from `.env.example` if missing
-5. ✅ Starts Docker services (Postgres + Qdrant) in the background
-6. ✅ Waits for the database to be ready
-7. ✅ Runs database migrations
-8. ✅ Creates admin user (username: `admin`, password: `admin`)
-9. ✅ Sets the demo date
-10. ✅ Seeds development data (5 fields with risks)
-11. ✅ Builds the frontend TypeScript
-12. ✅ Optionally builds the RAG index (may take 2-4 min on first run)
+It never hides an error: it stops at the first failing step and shows its output. It creates an admin user only
+when you ask for one: `ADMIN_PASSWORD=… ./start.sh` (or later `python manage.py createsuperuser`).
 
-After the script finishes, you'll see:
-
-```
-════════════════════════════════════════════
-✓ Application ready!
-════════════════════════════════════════════
-
-Start the backend server:
-  python manage.py runserver
-```
-
-## Next Steps
-
-### 1. Start the Backend (in Terminal 1)
+## Between demo runs
 
 ```bash
-python manage.py runserver
+python manage.py scenario switch demo_2024 --keep-weather --reset-chat   # about 40 s: drops reports and chats
+python manage.py engine_precompute_dates                                 # about 1 min
 ```
 
-You'll see:
-```
-Starting development server at http://127.0.0.1:8000/
-Quit the server with CONTROL-C.
-```
+Then reload the page (Ctrl+Shift+R): field ids change with every switch.
 
-### 2. (Optional) Watch Frontend Changes (in Terminal 2)
+## Without LLM keys or without the guide index
 
-```bash
-cd frontend && npm run watch
-```
+| Missing | What works | What the page shows |
+|---|---|---|
+| LLM keys | map, risks, field panel, date control | chat greyed out: "Asystent jest wyłączony…"; header: "Połączono · asystent wyłączony" |
+| guide index (Qdrant collection or `assistant/data/index/bm25.pkl`) | everything; answers come without guide citations | a "bez metodyk" badge in the chat |
 
-This rebuilds TypeScript on every file save.
-
-### 3. Open in Browser
-
-- **Dashboard:** http://localhost:8000
-- **API Docs:** http://localhost:8000/api/docs/
-- **Django Admin:** http://localhost:8000/admin/ (admin/admin)
-- **Qdrant Dashboard:** http://localhost:6333/dashboard
+`GET /api/health/` reports both: `{"assistant": {"available", "llm", "rag", "reason"}}`. Check the keys with
+`python manage.py llm_models`.
 
 ## Troubleshooting
 
-### "Database did not become ready"
+- **The database did not become ready.** `docker compose ps`; then `docker compose up -d` again and rerun the script.
+- **Port 5433 is taken.** Set `POSTGRES_PORT=5434` in `.env` (docker-compose.yml reads it) and rerun.
+- **Import errors after a pull.** `source .venv/bin/activate && pip install -r requirements.txt && python manage.py migrate`.
+- **Reset the admin password.** `python manage.py changepassword admin`.
+- **After `docker compose down -v`** (wipes the database and the guide index): `./start.sh --reset`.
 
-The Docker Postgres service may need more time to start. Try:
-
-```bash
-docker compose stop
-docker compose up -d
-# wait 30 seconds
-python manage.py migrate
-python manage.py runserver
-```
-
-### "Port 5433 already in use"
-
-If you have a local Postgres running on the same machine:
-
-1. Stop the conflicting service, or
-2. Edit `docker-compose.yml` and change the host port from `5433` to `5434`, then update `.env` to match
-
-### "File not found: .env"
-
-The script creates `.env` from `.env.example`. If this fails, copy manually:
-
-```bash
-cp .env.example .env
-```
-
-### "Module not found" or import errors after pull
-
-The dependencies or database schema may have changed. Rebuild from scratch:
-
-```bash
-source .venv/bin/activate    # or: .venv\Scripts\activate on Windows
-pip install -r requirements.txt
-python manage.py migrate
-```
-
-### "admin user password doesn't work"
-
-The default is set by the script. If you need to reset:
-
-```bash
-python manage.py shell
->>> from django.contrib.auth.models import User
->>> User.objects.get(username='admin').set_password('newpassword')
->>> User.objects.get(username='admin').save()
->>> exit()
-```
-
-## Clean Up
-
-### Stop all services (keep data)
-
-```bash
-docker compose stop
-```
-
-### Stop and wipe all data (database + RAG index)
-
-```bash
-docker compose down -v
-```
-
-Then run `./start.sh` again to rebuild.
-
-### Remove Python virtual environment
-
-```bash
-rm -rf .venv    # macOS/Linux
-rmdir .venv     # Windows
-```
-
-Then run `./start.sh` to recreate.
-
-## For Each Component
+## Everyday commands
 
 | Task | Command |
-|------|---------|
-| Run the backend | `python manage.py runserver` |
-| Watch frontend on save | `cd frontend && npm run watch` |
-| Type-check TypeScript | `cd frontend && npm run typecheck` |
+|---|---|
+| Run the server | `python manage.py runserver` |
+| Rebuild the frontend on save | `cd frontend && npm run watch` |
+| Type-check the frontend | `cd frontend && npm run typecheck` |
 | Rebuild the guide index | `python manage.py rag_ingest` |
-| Run tests | `python manage.py test` |
-| Check database status | `docker compose ps` |
-| View database | Use `psql` or pgAdmin at port 5433 |
+| Run the tests | `python manage.py test` |
+| Move the demo date from the terminal | `python manage.py engine_set_date 2024-05-30` |
 
-## Notes
-
-- The script sets the demo date to **2024-05-15** (the replay date for the hackathon season).
-- The admin user credentials are **admin / admin** — change them in production.
-- All data is kept in Docker volumes (`pgdata` and `qdrant_storage`), which survive `docker compose stop` but are deleted by `docker compose down -v`.
-- If you need LLM features (chat), add API keys to `.env`:
-  - `GEMINI_API_KEY` (and `GEMINI_MODEL`)
-  - `GROQ_API_KEY` (and `GROQ_MODEL`)
-  
-  See `.env.example` for details.
-
-## Still having issues?
-
-Refer to the main [README.md](README.md) for detailed setup steps.
+All data lives in the Docker volumes `pgdata` and `qdrant_storage`: `docker compose stop` keeps them,
+`docker compose down -v` deletes them.

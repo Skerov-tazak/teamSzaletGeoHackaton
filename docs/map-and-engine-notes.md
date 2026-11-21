@@ -1,5 +1,7 @@
 # Map + engine: notes for the team
 
+> **Historical document (notes of 21 Nov, before the platform API was merged).** Kept for the decisions and their reasons. Current behaviour: [interfaces.md](interfaces.md) (the demo date moves only through `core.clock.set_today()`; chat messages carry `chart` and `pending_action`; engine texts are Polish) and [audit-2026-11-21.md](audit-2026-11-21.md).
+
 Bartek · branch `feat/map` · 21 Nov 2026
 
 What is on `feat/map`, how to run it, and what each of us needs to know or do. The contract is still

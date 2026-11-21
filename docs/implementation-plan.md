@@ -1,5 +1,7 @@
 # Implementation plan: platform API, then frontend
 
+> **Historical document (the plan of 21 Nov, morning).** Kept for the decisions and their reasons. Current behaviour: [interfaces.md](interfaces.md) (the demo date moves only through `core.clock.set_today()`; chat messages carry `chart` and `pending_action`; engine texts are Polish) and [audit-2026-11-21.md](audit-2026-11-21.md).
+
 Field Under Pressure · owners: Jan + Szymek (map: Kuba) · draft of 21 Nov 2026, branch `feature-frontend`
 
 How to build what [interfaces.md](interfaces.md) agrees, starting from what exists

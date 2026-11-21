@@ -473,9 +473,9 @@ The engine writes this JSON in every row; the map's "why" panel and the assistan
 | `type` | text | `wait` / `monitor` / `treat` |
 | `text` | text | What to do, one sentence. Shown as it is |
 | `threshold` | text or null | The monitoring / economic threshold for the current growth stage |
-| `spray_window` | object or null | Only for `treat`: `date`, `quality` (`optimal` / `acceptable`), `conditions`, `rule`, `note`. From the forecast issued on `as_of` |
+| `spray_window` | object or null | Only for `treat`: `date`, `quality` (`optimal` / `acceptable`), `conditions`, `rule`, `note`. From the forecast issued on `as_of` for a day up to today, and from the forecast issued today for a coming day |
 
-**Text language.** `summary`, `drivers[].label`, `action.text`, `action.threshold` and `notes` reach the farmer as they are, so they must be **Polish**, like the rest of the interface. The engine writes them in English today (with the Polish threat name in brackets): see [Open questions](#open-questions).
+**Text language.** `summary`, `drivers[].label`, `action.text`, `action.threshold` and `notes` reach the farmer as they are, so they must be **Polish**, like the rest of the interface. The engine writes them in Polish since v0.11 (engine/CHANGELOG.md); keys, codes and `threat.name_en` stay English.
 
 **Who reads what.**
 
@@ -514,7 +514,7 @@ Found by the decision engine in the real files; the import has to handle them:
 
 | Topic | Question | Who |
 |-------|----------|-----|
-| Explanation texts in Polish | The format is agreed ([version 1](#explanation-version-1)), but its texts (`summary`, driver labels, `action.text`, `notes`) are English today. Switch them to Polish in the engine, or add Polish copies next to them? | Bartek |
+| Explanation texts in Polish | Done (engine v0.11): every text in the explanation is Polish. | Bartek |
 | Level names | The engine writes `medium`; the frontend's `risk.ts` uses `mid`. The frontend switches to `medium` | Jan + Szymek (frontend) |
 | Field state | Farmer reports: done ([Observation](#observation)). Still open: the engine also proposes facts stored on the field itself (`Field.sowing_date`, `Field.tillage`, `Field.resistant_to`, `FieldCropYear.source`); it reads them if they exist. Until then `field_fact` reports do the same job | Bartek, Ola, Jan + Szymek |
 | Hourly forecast | Does the engine need an hourly forecast table as well as the daily one? | Bartek |

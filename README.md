@@ -21,12 +21,14 @@ Hackathon: [Field Under Pressure](https://geo-hackathon.g.location360.ag/), 20�
 | [architecture_overview.md](architecture_overview.md) | The product, the five components and how they work together |
 | [docs/database.md](docs/database.md) | Every table, column and unit; rules for every component; query helpers |
 | [docs/interfaces.md](docs/interfaces.md) | How the components talk: frontend modules, map–chat events, platform API, chat, assistant data access, `predict()` |
-| [docs/engine-predict-review.md](docs/engine-predict-review.md) | `predict()`: how it should work vs how it works today, with failing contract tests (for Bartek) |
+| [QUICKSTART.md](QUICKSTART.md) | `./start.sh`: the whole demo set up with one command; what works without LLM keys |
+| [docs/engine-predict-review.md](docs/engine-predict-review.md) | `predict()`: the review that led to its contract (history: the contract is merged and its tests pass) |
 | [engine/README.md](engine/README.md) | Decision engine: what it must provide and how it reads and writes data |
 | [assistant/README.md](assistant/README.md) | AI assistant: the `answer()` function, chat tables, MCP rules |
 | [frontend/src/map/README.md](frontend/src/map/README.md) | Map: `initMap()`, events, data endpoints |
 | [scenarios/README.md](scenarios/README.md) | Demo scenarios: the `scenario` command and the scenario file format |
 | [docs/demo-script.md](docs/demo-script.md) | The presentation walkthrough for `demo_2024`, step by step with the chat messages |
+| [docs/audit-2026-11-21.md](docs/audit-2026-11-21.md) | App audit of 21 Nov: bugs, inconsistencies, reproducibility, UI, structure (and what was fixed) |
 | <http://localhost:8000/api/docs/> | Live API documentation, generated from the code (while the server runs) |
 | [Organiser dataset docs](field-under-pressure-materials/data/README.md) | The hackathon datasets: weather, soil, cropland, satellite, crop-protection guides |
 
@@ -34,20 +36,22 @@ Hackathon: [Field Under Pressure](https://geo-hackathon.g.location360.ag/), 20�
 
 ```text
 fieldpressure/      Django project: settings, root URLs
-core/               platform: every farm data model, data import commands, API
+core/               platform: every farm data model, the API, the `scenario` command
 engine/             decision engine (Django app; its only model is its own cache, RiskSnapshot)
 assistant/          AI assistant (Django app; owns only the chat tables)
+scenarios/          demo scenarios: definitions/*.json and the loader behind `manage.py scenario`
 frontend/           dashboard page (Django template) + TypeScript
   src/              TypeScript sources, built into static/frontend/dist/
   src/map/          map module
 docs/               shared documentation (database.md, interfaces.md)
 field-under-pressure-materials/   organiser materials (git submodule): guide PDFs, risk spreadsheet, dataset docs
 docker-compose.yml  local Postgres + Qdrant (the assistant's vector store)
+start.sh            one-command setup of the demo (QUICKSTART.md)
 ```
 
 ## First-time setup
 
-You need Python 3.11+ (the assistant's PDF library needs it; `.python-version` says 3.12), Node.js 18+ and Docker (Docker Desktop on Mac/Windows).
+You need Python 3.11+ (the assistant's PDF library needs it; `.python-version` says 3.12), Node.js 22+ (marked 18 and vega-lite 6 need it) and Docker (Docker Desktop on Mac/Windows). On macOS/Linux `./start.sh` does all of the steps below ([QUICKSTART.md](QUICKSTART.md)).
 
 1. **Clone with the submodule** (it holds the organiser materials):
    ```bash
@@ -72,8 +76,9 @@ You need Python 3.11+ (the assistant's PDF library needs it; `.python-version` s
    cd frontend && npm install && npm run build && cd ..
    ```
    The build checks that the committed API types are current, type-checks, and bundles into `frontend/static/frontend/dist/` (Leaflet for the map, marked + DOMPurify for chat answers, and `vega-embed` for chat charts in a separate chunk that loads only when a message has a chart).
-7. **Run:** `python manage.py runserver`, then open <http://localhost:8000>. The header should say "Platforma OK".
-8. **Assistant's guide index** (only if you work on or demo the chat): `python manage.py rag_ingest`. Takes ~4 min the first time (downloads the embedding model), then ~1 min. Details: [assistant/README_RAG.md](assistant/README_RAG.md).
+7. **Run:** `python manage.py runserver`, then open <http://localhost:8000>. The header should say "Połączono".
+8. **Assistant's guide index:** `python manage.py rag_ingest`. Takes ~4 min the first time (downloads the embedding model), then ~1 min. Without it the chat still answers, but without citations from the guides (a "bez metodyk" badge shows it). Details: [assistant/README_RAG.md](assistant/README_RAG.md).
+9. **LLM keys** for the chat: `GEMINI_API_KEY` / `GROQ_API_KEY` (and the models) in `.env`, see `.env.example`; check with `python manage.py llm_models`. Without keys the map, the risks and their explanations work; the chat is greyed out with the reason, `POST /api/chat/` answers 503 and `GET /api/health/` says `"assistant": {"available": false, …}`.
 
 ## Running a demo
 
@@ -114,7 +119,8 @@ Replace `demo_2024` with any name from `scenario list`. If the LLM keys are in `
 - **Always pass `--strict-data`:** without it, a missing data file is silently replaced with invented data.
 - **`switch` wipes the database it runs on** (all fields, farmer reports, weather and risks). Don't run it on the shared `fieldpressure` database while someone else uses it: use your own database (below).
 - **Field ids change on every switch:** refer to fields by name.
-- The date cache covers the demo date − 7 … + 30 days; moving the date outside it takes ~5 s per step again.
+- The date cache covers the demo date − 7 … + 30 days; moving the date outside it takes ~5 s per step again, and so does a field changed by a farmer's report since the cache was filled.
+- The demo date can move only within the days with weather (`GET /api/clock/` → `min_date` / `max_date`; for `demo_2024` 1 Sep 2022 – 31 Dec 2024).
 
 ### 3. Reset between rehearsals
 
