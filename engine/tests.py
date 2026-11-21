@@ -207,6 +207,50 @@ class ObservationTests(EngineTestBase):
         self.assertIn("farmer", r1.explanation["growth_stage"]["method"])
 
 
+class AssistantObservationTests(EngineTestBase):
+    """Reports the chat stores in the interim assistant.Observation reach the engine (no observations= passed)."""
+
+    def obs(self, field, day, category, threat=None, severity="", note="", details=None, key="k"):
+        from assistant.models import Observation
+        return Observation.objects.create(field=field, date=day, category=category, severity=severity, note=note,
+                                          threat=Threat.objects.get(code=threat) if threat else None,
+                                          details=details or {}, idempotency_key=key)
+
+    def test_chat_symptoms_raise_risk_from_the_table(self):
+        code, day = "wheat.septoria_leaf_blotch", date(2025, 6, 10)
+        predict(field_ids=[self.wheat.id], start=day, end=day)
+        base = Risk.objects.get(field=self.wheat, threat__code=code, date=day).score
+        self.obs(self.wheat, date(2025, 6, 8), "choroba", code, "wysokie", "widzę plamy na liściach")
+        predict(field_ids=[self.wheat.id], start=day, end=day)
+        r = Risk.objects.get(field=self.wheat, threat__code=code, date=day)
+        self.assertLess(base, 0.3)
+        self.assertGreaterEqual(r.score, 0.8)
+        self.assertTrue([d for d in r.explanation["drivers"] if d["factor"] == "farmer_report"])
+
+    def test_mapping_of_interim_rows(self):
+        from engine.observations import _from_assistant
+        nb = _from_assistant(self.obs(self.wheat, date(2025, 6, 1), "choroba", "wheat.brown_rust",
+                                      details={"kind": "neighbour", "distance_m": 300}, key="a"))
+        self.assertEqual((nb.kind, nb.threat_code, nb.distance_m), ("neighbour", "wheat.brown_rust", 300.0))
+        hail = _from_assistant(self.obs(self.wheat, date(2025, 6, 1), "uszkodzenie", note="wczoraj spadł grad", key="b"))
+        self.assertEqual((hail.kind, hail.details.get("type")), ("event", "hail"))
+        sow = _from_assistant(self.obs(self.wheat, date(2025, 6, 1), "inne",
+                                       details={"draft": {"kind": "field_fact", "sowing_date": "2024-09-25"}}, key="c"))
+        self.assertEqual((sow.kind, sow.details["sowing_date"]), ("field_fact", "2024-09-25"))
+        self.assertIsNone(_from_assistant(self.obs(self.wheat, date(2025, 6, 1), "chwasty", note="dużo chwastów", key="d")))
+        sym = _from_assistant(self.obs(self.wheat, date(2025, 6, 1), "szkodnik", severity="srednie", key="e"))
+        self.assertEqual((sym.kind, sym.group, sym.severity), ("symptoms", "pest", 0.6))
+
+    def test_disease_without_threat_raises_only_diseases(self):
+        from engine.catalog import RULES
+        from engine.observations import _from_assistant, effects
+        import pandas as pd
+        rep = _from_assistant(self.obs(self.wheat, date(2025, 6, 1), "choroba", severity="wysokie", key="f"))
+        days = pd.date_range("2025-06-01", "2025-06-05")
+        self.assertTrue(effects(RULES["wheat.brown_rust"], [rep], days))
+        self.assertFalse(effects(RULES["wheat.aphids"], [rep], days))
+
+
 class PureFunctionTests(TestCase):
     def test_safe_storage_days_matches_table_37(self):
         from engine.harvest import safe_storage_days

@@ -204,7 +204,7 @@ rust on 12 June"). After storing a row the writer calls `predict(field_ids=[fiel
 | Table | Owner | State | Engine reads it |
 |---|---|---|---|
 | `core.Observation` | Jan + Szymek (schema) | **not created yet** (agreed home, `docs/database.md` open questions) | yes (`observations.load_all()`) |
-| `assistant.Observation` | Ola | **exists in `main`** (interim), written by the chat tool `record_observation`, which already calls `predict()` | **not yet**: reports from the chat change no risk until the engine reads this table too (adapter in `engine/observations.py`, engine side) |
+| `assistant.Observation` | Ola | **exists in `main`** (interim), written by the chat tool `record_observation`, which already calls `predict()` | **yes** (adapter `_from_assistant` in `engine/observations.py`; mapping below) |
 
 **What the engine needs per row** (`assistant.Observation` today → what to add)
 
@@ -212,12 +212,12 @@ rust on 12 June"). After storing a row the writer calls `predict(field_ids=[fiel
 |---|---|---|---|
 | field | which field; none = the whole farm / "nearby" | `field` (FK, required) | – (farm-wide reports: pick any field, set `details.scope = "farm"`) |
 | date seen | the day the farmer **saw** it, not the day they wrote | `date` | – |
-| **kind** | `symptoms`, `absence`, `neighbour`, `treatment`, `field_fact`, `event` | only `category` (choroba / szkodnik / chwasty / uszkodzenie / inne) | **Ola: write `details.kind`** for anything that is not "I see it on my field". Without it: choroba / szkodnik → `symptoms`, uszkodzenie → `event`, chwasty / inne → ignored |
-| threat | threat code, e.g. `wheat.brown_rust`; empty = all threats of the category (`symptoms`, `absence`) / all fungal (`treatment`) | `threat` (FK Threat, optional) | – (the code is read through the FK) |
+| **kind** | `symptoms`, `absence`, `neighbour`, `treatment`, `field_fact`, `event` | only `category` (choroba / szkodnik / chwasty / uszkodzenie / inne) | **Ola: write `details.kind`** (top level or inside `details.draft`) for anything that is not "I see it on my field". Without it: choroba / szkodnik → `symptoms`, uszkodzenie → `event`, chwasty / inne → ignored |
+| threat | threat code, e.g. `wheat.brown_rust`; empty: `symptoms` → every disease (choroba) or pest (szkodnik) × (1 + 0.3 × severity), `absence` → all threats, `treatment` → all fungal | `threat` (FK Threat, optional) | – (the code is read through the FK) |
 | severity | how bad, 0–1 | `severity` niskie / srednie / wysokie | – (mapped to 0.3 / 0.6 / 0.9; empty = 0.5) |
 | distance | `neighbour` only: metres to the reported case | – | **Ola: `details.distance_m`** (number; "next door" ≈ 300, "in the village" ≈ 1500; empty = 1000) |
 | fact | `field_fact` only | – | **Ola: `details`** = `{"sowing_date": "2024-09-25"}`, `{"tillage": "reduced"}` or `"plough"`, `{"resistant_to": ["wheat.brown_rust"]}` |
-| event type | `event` only | – | **Ola: `details.event`** = `hail`, `lodging` or `flood` |
+| event type | `event` only | – | **Ola: `details.type`** = `hail`, `lodging` or `flood` (without it the engine looks for grad / wyległ / zalan in `note`) |
 | text | the farmer's own words (quoted in the explanation) | `note` | – |
 | id | stable id for drivers and logs | `id` | – |
 
@@ -231,13 +231,13 @@ rust on 12 June"). After storing a row the writer calls `predict(field_ids=[fiel
 | "I sprayed against septoria on 10 May" (date = 10 May) | choroba | wheat.septoria_leaf_blotch (empty = all fungal) | – | `{"kind": "treatment"}` |
 | "I sowed on 25 September" | inne | – | – | `{"kind": "field_fact", "sowing_date": "2024-09-25"}` |
 | "I don't plough, I leave the stubble" | inne | – | – | `{"kind": "field_fact", "tillage": "reduced"}` |
-| "Hail yesterday" | uszkodzenie | – | – | `{"kind": "event", "event": "hail"}` |
+| "Hail yesterday" | uszkodzenie | – | – | `{"kind": "event", "type": "hail"}` |
 
 **Later `core.Observation`** (Jan + Szymek): the same information as plain columns: `field` (FK, null =
 farm), `observed_on` (date), `recorded_at` (datetime), `kind` (text, values above), `threat_code` (text,
 null), `severity` (float 0–1, null), `distance_m` (float, null), `details` (JSON: facts and event type),
 `text` (the farmer's words). Moving the interim rows is a plain copy with the mapping above; the engine
-reads both, so nothing breaks in between.
+reads both, so nothing breaks in between. Only engine-known keys of `details` are used (`kind`, `distance_m`, `sowing_date`, `tillage`, `resistant_to`, `type`, `scope`); others are ignored.
 
 ### Files in `DATA_DIR` (optional, not in git)
 
@@ -402,7 +402,7 @@ The engine uses `Field.crop`. The crop model ([`cropmodel.py`](cropmodel.py)) ch
 | Item | Who | Engine side |
 |---|---|---|
 | **API endpoints for risks** (`/api/risks/?date=`, `/api/fields/{id}/risks/`, `/api/fields/{id}/risks/{date}/`), optionally `field_day` / `farm_ranking` | Jan + Szymek | ready: `Risk` rows, `engine.summary` |
-| **Farmer reports** — `details.kind` / `distance_m` / facts in `assistant.Observation` ([Observation rows](#observation-rows)); later `core.Observation` | Ola (writes), Jan + Szymek (`core` schema) | reads `core.Observation`; adapter for `assistant.Observation` to do |
+| **Farmer reports** — `details.kind` / `distance_m` / facts in `assistant.Observation` ([Observation rows](#observation-rows)); later `core.Observation` | Ola (writes), Jan + Szymek (`core` schema) | reads `core.Observation` and `assistant.Observation` |
 | Assistant tools: record a report → `predict(field_ids=[...], start=observed_on)`; "what if" → `what_if()`; "which field first" → `farm_ranking()` | Ola | ready |
 | Map: colour by `level` (cut-offs 0.3 / 0.6), "why" panel from `summary` + `drivers`, crop check from `field_day()["crop_check"]` | Kuba | ready |
 | Threat codes: use `engine_load_threats`, or a fixture with the same codes | Jan + Szymek | ready |

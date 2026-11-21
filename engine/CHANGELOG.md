@@ -7,6 +7,7 @@ History of the engine's versions and the findings behind them. The reference doc
 - Rules stay in `catalog.py`; removed every reference to the guide files (`Rule.sources`, `explanation.sources`,
   `spray_window.source`, harvest `sources`, page numbers in notes and thresholds). Nothing reads documents at run time.
 - `Threat.source` is now `"engine rules"`.
+- Farmer reports from the chat: reads the interim `assistant.Observation` (mapping in README → Observation rows); a disease / pest report without a threat raises every threat of that group. Merged `main`.
 
 ## v0.1: rules from the guides
 
