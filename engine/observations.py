@@ -48,29 +48,38 @@ class Report:
     group: str | None = None          # "disease" / "pest": threat group of a report without a threat code
 
     def label(self) -> str:
+        """The report in one Polish sentence (shown to the farmer in the explanation)."""
         from engine.catalog import RULES
-        when = self.observed_on.isoformat()
+        d = self.observed_on.isoformat()
+        when = f"{d[8:10]}.{d[5:7]}.{d[:4]}"
         rule = RULES.get(self.threat_code or "")
-        what = f"{rule.name_en} ({rule.name_pl})" if rule else (self.threat_code or "all threats")
+        what = rule.name_pl if rule else (self.threat_code or "wszystkie zagrożenia")
+        quote = f": „{self.text}”" if self.text else ""
         if self.kind == "symptoms" and not rule and self.group:
-            return f"Farmer reported {'a pest' if self.group == 'pest' else 'a disease'} on this field on {when}" + (f": \"{self.text}\"" if self.text else "")
+            return f"Rolnik zgłosił {'szkodnika' if self.group == 'pest' else 'chorobę'} na tym polu ({when})" + quote
         if self.kind == "symptoms":
-            return f"Farmer reported {what} on this field on {when}" + (f" (severity {self.severity:.0%})" if self.severity is not None else "")
+            return f"Rolnik zgłosił na tym polu: {what} ({when})" + (f", nasilenie {self.severity:.0%}" if self.severity is not None else "")
         if self.kind == "absence":
-            return f"Farmer inspected the field on {when} and found no {what if self.threat_code else 'symptoms'}"
+            return f"Rolnik obejrzał pole ({when}) i nie znalazł " + (f"objawów: {what}" if self.threat_code else "objawów")
         if self.kind == "neighbour":
-            where = f" about {self.distance_m:.0f} m away" if self.distance_m else " nearby"
-            return f"Reported {what}{where} on {when} (spores can spread to this field)"
+            where = f" ok. {self.distance_m:.0f} m stąd" if self.distance_m else " w pobliżu"
+            return f"Zgłoszono {what}{where} ({when}); zarodniki lub szkodniki mogą przejść na to pole"
         if self.kind == "treatment":
-            return f"Treatment against {what} on {when}"
+            return f"Zabieg przeciw: {what} ({when})"
         if self.kind == "event":
-            what = str(self.details.get("type") or self.details.get("event") or "damage")
-            what = "Crop damage (type not given)" if what == "damage" else what.capitalize()
-            return f"{what} reported on {when}" + (f': "{self.text}"' if self.text else "")
-        facts = ", ".join(f"{k}={v}" for k, v in self.details.items() if k != "source")
+            kind = str(self.details.get("type") or self.details.get("event") or "damage")
+            name = EVENT_PL.get(kind, kind.capitalize())
+            return f"{name} – zgłoszenie z {when}" + quote
+        facts = ", ".join(f"{FACT_PL.get(k, k)}: {FACT_VALUE_PL.get(str(v), v)}" for k, v in self.details.items() if k != "source")
         if self.details.get("source") == "field_record":
-            return f"Field record: {facts}"
-        return f"Field information from the farmer on {when}: {facts}"
+            return f"Dane z karty pola: {facts}"
+        return f"Informacja od rolnika ({when}): {facts}"
+
+
+EVENT_PL = {"damage": "Uszkodzenie uprawy (rodzaj nieznany)", "hail": "Grad", "lodging": "Wyleganie", "flood": "Zalanie",
+            "frost": "Przymrozek", "drought": "Susza"}
+FACT_PL = {"sowing_date": "data siewu", "tillage": "uprawa roli", "resistant_to": "odporność na", "kind": "rodzaj"}
+FACT_VALUE_PL = {"reduced": "uproszczona", "plough": "orka"}
 
 
 SEVERITY_WORDS = {"niskie": 0.3, "niska": 0.3, "low": 0.3, "srednie": 0.6, "średnie": 0.6, "srednia": 0.6, "średnia": 0.6,

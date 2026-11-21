@@ -10,7 +10,7 @@ How the components talk to each other: the frontend modules, the events between 
 |-------|--------|----------|
 | [Event bus](#events-between-map-and-chat) (`frontend/src/events.ts`) | Built | Jan + Szymek |
 | [Page and app context](#frontend-modules) (`main.ts`, `api/`) | Built | Jan + Szymek |
-| [Map module](#the-map-module) (`initMap`) | Built (first version; Kuba owns it from here) | Kuba |
+| [Map module](#the-map-module) (`initMap`) | Built (`feat/map`, merged and wired to the platform API) | Kuba (built by Bartek) |
 | [Platform API](#platform-api) | Built, except the weather endpoint (shape not defined) | Jan + Szymek |
 | [Demo date control](#clock) (`PUT /api/clock/` + header control) | Built | Jan + Szymek |
 | [Chat tables](#chat-tables) (`Conversation`, `Message`) | Exists | Jan + Szymek (first version), then Ola |

@@ -1,219 +1,205 @@
-// The field panel: details, that day's threats with the "why" from explanation version 1, and the
-// season chart. Drawn inside the map's container; reloads when the date or the field's risks change.
+// The field panel: details, that day's threats with the "why", the season chart and the field's background
+// (crop history, soil). Pure rendering: index.ts loads the data and wires events.
+//
+// From Risk.explanation the panel reads exactly the keys database.md ("Who reads what", Map) and the map README
+// give the map: `level`, `summary`, `drivers` (`label`, `effect`), `action` (`type`, `text`,
+// `spray_window.date`), `growth_stage.name` and `confidence`. Everything else in the explanation is ignored.
 
-import { errorMessage } from "../api/client";
-import type { ExplanationDriver, ExplanationV1, FieldDayRisk, FieldDetail, FieldRiskSeries } from "../api/types";
-import type { AppContext } from "../context";
-import { CATEGORY_LABELS, cropName, formatDate, formatNumber, formatPercent, h, shiftDate } from "../dom";
-import { isLevel, LEVEL_COLOURS, LEVEL_LABELS, levelOfScore } from "../risk";
-import { seasonChart } from "./season-chart";
+import { renderSeasonChart, type ChartSeries } from "./chart";
+import type { Driver, Explanation, FieldDayRisks, FieldDetail, FieldRiskSeries, Level } from "./contract";
+import {
+  ACTION_LABEL, CATEGORY_LABEL, LEVEL_LABEL, LEVEL_TITLE, addDays, cropName, daysBetween, esc, ha, longDate, num, pct,
+  shortDate, weekday,
+} from "./format";
 
-const ACTION_LABELS: Record<string, string> = { wait: "Czekaj", monitor: "Obserwuj", treat: "Zabieg" };
+/** Categorical slots 1–3 of the validated default palette (light, dark): fixed order, never cycled. */
+const SERIES = ["var(--fup-series-1)", "var(--fup-series-2)", "var(--fup-series-3)"];
 
-function levelBadge(level: keyof typeof LEVEL_LABELS): HTMLElement {
-  return h("span", { class: `level-badge level-${level}`, style: `--level:${LEVEL_COLOURS[level]}` }, LEVEL_LABELS[level]);
+const TEXTURE_PL: Record<string, string> = {
+  "sand": "piasek", "loamy sand": "piasek gliniasty", "sandy loam": "glina piaszczysta", "loam": "glina",
+  "silt loam": "pył gliniasty", "silt": "pył", "sandy clay loam": "glina piaszczysto-ilasta", "clay loam": "glina ilasta",
+  "silty clay loam": "glina ilasto-pylasta", "sandy clay": "ił piaszczysty", "silty clay": "ił pylasty", "clay": "ił",
+};
+
+export interface PanelData {
+  detail: FieldDetail;
+  day: FieldDayRisks;
+  series: FieldRiskSeries | null;
+  today: string;
+  forecastDays: number;
+  viewDate: string;
 }
 
-function sortedDrivers(drivers: ExplanationDriver[] | undefined): ExplanationDriver[] {
-  return [...(drivers ?? [])]
-    .filter((driver) => typeof driver?.label === "string" && driver.label)
-    .sort((a, b) => (b.effect ?? -1) - (a.effect ?? -1));
+export interface PanelState {
+  open: Set<string>;               // expanded threat codes
+  range: "recent" | "season";
+  lowOpen: boolean;                // the group of low threats is expanded
 }
 
-/** The "why" of one risk, from explanation version 1. Unknown keys are ignored. */
-function whyPanel(risk: FieldDayRisk): HTMLElement {
-  const why = (risk.explanation ?? {}) as ExplanationV1;
-  const body = h("div", { class: "why" });
-  if (why.summary) body.append(h("p", { class: "why-summary" }, why.summary));
+export const ICON: Record<Level, string> = {
+  high: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 15 14H1z" fill="currentColor"/><path d="M8 6v3.6M8 11.4v.1" stroke="var(--fup-on-status)" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  medium: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="currentColor"/><path d="M8 4.6v4M8 10.9v.1" stroke="var(--fup-on-status)" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  low: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="currentColor"/><path d="m5 8.2 2 2 4-4.2" fill="none" stroke="var(--fup-on-status)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+};
 
-  const drivers = sortedDrivers(why.drivers);
-  if (drivers.length) {
-    body.append(
-      h("h4", {}, "Dlaczego"),
-      h("ul", { class: "why-drivers" }, ...drivers.map((d) => h("li", { class: d.effect === null || d.effect === undefined ? "context" : "" }, d.label ?? ""))),
-    );
-  }
+const ACTION_ICON: Record<string, string> = {
+  treat: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 16 15 5m-3-1 4 4M6 9l5 5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
+  monitor: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 10s3-5.5 8-5.5S18 10 18 10s-3 5.5-8 5.5S2 10 2 10Z" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="10" cy="10" r="2.4" fill="currentColor"/></svg>',
+  wait: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m6.8 10.2 2.2 2.2 4.3-4.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+};
 
-  const action = why.action;
-  if (action?.text) {
-    const label = ACTION_LABELS[action.type ?? ""] ?? "Zalecenie";
-    const block = h("div", { class: `why-action action-${action.type ?? "other"}` }, h("strong", {}, `${label}: `), action.text);
-    if (action.type === "treat" && action.spray_window?.date) {
-      block.append(h("div", { class: "spray-window" }, `Okno zabiegu: ${formatDate(action.spray_window.date)}`));
-    }
-    body.append(block);
-  }
+const CHEVRON = '<svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
 
-  const facts: string[] = [];
-  if (why.growth_stage?.name) {
-    const bbch = typeof why.growth_stage.bbch === "number" ? ` (BBCH ${why.growth_stage.bbch})` : "";
-    facts.push(`Faza: ${why.growth_stage.name}${bbch}`);
-  }
-  if (typeof why.confidence === "number") facts.push(`Pewność: ${formatPercent(why.confidence)}`);
-  if (facts.length) body.append(h("p", { class: "why-facts" }, facts.join(" · ")));
-  if (!body.childElementCount) body.append(h("p", { class: "muted" }, "Brak wyjaśnienia dla tego ryzyka."));
-  return body;
+export function levelPill(level: Level, extra = ""): string {
+  return `<span class="fup-pill lvl-${level} ${extra}">${ICON[level]}${LEVEL_LABEL[level]}</span>`;
 }
 
-function soilLine(field: FieldDetail): string | null {
-  const soil = field.soil;
-  if (!soil) return null;
+/**
+ * The "why": drivers sorted by `effect` (how much the score would drop without the factor), as the contract
+ * asks; `effect: null` = context only, listed after them. Bars show the size of the effect.
+ */
+function driverRows(drivers: Driver[] | undefined): string {
+  const list = drivers ?? [];
+  const ranked = list.filter((d) => d.effect != null).sort((a, b) => (b.effect ?? 0) - (a.effect ?? 0));
+  const context = list.filter((d) => d.effect == null);
+  const max = Math.max(0.0001, ...ranked.map((d) => Math.abs(d.effect ?? 0)));
+  const row = (d: Driver) => {
+    const e = d.effect ?? 0;
+    const dir = e > 0.0005 ? "up" : e < -0.0005 ? "down" : "zero";
+    const tag = dir === "up" ? "podnosi" : dir === "down" ? "obniża" : "bez wpływu";
+    return `<li class="drv ${dir}"><div class="drv-head"><span class="drv-label">${esc(d.label)}</span><span class="drv-tag">${tag}</span></div>` +
+      (dir === "zero" ? "" : `<div class="drv-bar"><span style="width:${Math.max(4, (Math.abs(e) / max) * 100)}%"></span></div>`) + "</li>";
+  };
+  return (ranked.length ? `<h5>Dlaczego</h5><ul class="drivers">${ranked.map(row).join("")}</ul>` : "") +
+    (context.length ? `<h5>Tło</h5><ul class="context">${context.map((d) => `<li>${esc(d.label)}</li>`).join("")}</ul>` : "");
+}
+
+function actionBox(e: Explanation, level: Level): string {
+  const a = e.action;
+  if (!a) return "";
+  const date = a.type === "treat" ? a.spray_window?.date : undefined;
+  const window = a.type !== "treat" ? ""
+    : date ? `<div class="spray"><span class="spray-k">Najbliższe okno zabiegu</span><span class="spray-v">${weekday(date)} ${shortDate(date)}</span></div>`
+    : '<div class="spray none">Brak dobrego okna zabiegu w prognozie.</div>';
+  return `<div class="action act-${esc(a.type)} lvl-${level}"><div class="act-icon">${ACTION_ICON[a.type] ?? ACTION_ICON.wait}</div><div class="act-main">` +
+    `<div class="act-title">${esc(ACTION_LABEL[a.type] ?? a.type)}</div><p>${esc(a.text)}</p>${window}</div></div>`;
+}
+
+function meta(e: Explanation, lead: number): string {
   const parts: string[] = [];
-  if (soil.soil_texture) parts.push(soil.soil_texture);
-  if (soil.ph !== null) parts.push(`pH ${formatNumber(soil.ph)}`);
-  const fractions = [["glina", soil.clay], ["pył", soil.silt], ["piasek", soil.sand]] as const;
-  const shares = fractions.filter(([, value]) => value !== null).map(([name, value]) => `${name} ${formatPercent(value as number)}`);
-  if (shares.length) parts.push(shares.join(", "));
-  if (soil.om !== null) parts.push(`materia organiczna ${formatNumber(soil.om)} g/kg`);
-  return parts.length ? parts.join(" · ") : null;
+  if (e.growth_stage?.name) parts.push(`<span><b>Faza</b> ${esc(e.growth_stage.name)}</span>`);
+  if (e.confidence != null) {
+    parts.push(`<span class="conf" title="Pewność oceny">` +
+      `<b>Pewność</b> <span class="conf-bar"><span style="width:${Math.round(e.confidence * 100)}%"></span></span> ${pct(e.confidence)}</span>`);
+  }
+  if (lead > 0) parts.push(`<span class="lead">prognoza +${lead} ${lead === 1 ? "dzień" : "dni"}</span>`);
+  return `<div class="meta">${parts.join("")}</div>`;
 }
 
-function cropHistoryLine(field: FieldDetail): string | null {
-  const years = field.crop_history.slice(-4).map((year) => {
-    const top = year.classes[0];
-    return top ? `${year.year}: ${cropName(top)} (${formatPercent(top.share)})` : `${year.year}: —`;
-  });
-  return years.length ? years.join(", ") : null;
+/** The summary without an opening "<Poziom> ryzyko – <zagrożenie>: ", which the row already shows. */
+function reasonText(summary: string): string {
+  const m = /^(Wysokie|Średnie|Niskie) ryzyko – [^:]+:\s*/.exec(summary ?? "");
+  const rest = m ? summary.slice(m[0].length) : summary ?? "";
+  return rest ? rest[0].toUpperCase() + rest.slice(1) : "";
 }
 
-export class FieldPanel {
-  private fieldId: number | null = null;
-  private token = 0;
-  private chartThreat: string | null = null;
+function threatRow(r: FieldDayRisks["risks"][number], expanded: boolean, lead: number): string {
+  const e = r.explanation;
+  const level = e.level;
+  const cat = CATEGORY_LABEL[r.threat.category] ?? r.threat.category;
+  return `<li class="threat lvl-${level}${expanded ? " open" : ""}" data-code="${esc(r.threat.code)}">` +
+    `<button class="threat-head" aria-expanded="${expanded}">` +
+    `<span class="threat-name">${esc(r.threat.name)}<small>${esc(cat)}</small></span>${levelPill(level, "sm")}${CHEVRON}</button>` +
+    `<div class="threat-body">${actionBox(e, level)}<p class="summary">${esc(reasonText(e.summary))}</p>${driverRows(e.drivers)}${meta(e, lead)}</div></li>`;
+}
 
-  constructor(
-    private readonly container: HTMLElement,
-    private readonly ctx: AppContext,
-    private readonly onClose: () => void,
-    private readonly threatName: (code: string) => string,
-  ) {
-    container.hidden = true;
+function about(d: FieldDetail): string {
+  const hist = d.crop_history
+    .filter((y) => y.classes.length)
+    .map((y) => {
+      const top = y.classes[0];
+      return `<li><span class="yr">${y.year}</span>${esc(cropName(top))}<small>${Math.round(top.share * 100)}%</small></li>`;
+    })
+    .join("");
+  const s = d.soil;
+  const frac = (v: unknown) => (typeof v === "number" ? `${Math.round(v <= 1 ? v * 100 : v)}%` : "—");
+  const soil = s
+    ? `<dl class="soil"><div class="wide"><dt>Tekstura</dt><dd>${esc(TEXTURE_PL[String(s.soil_texture ?? "").toLowerCase()] ?? s.soil_texture ?? "—")}</dd></div>` +
+      `<div><dt>pH</dt><dd>${typeof s.ph === "number" ? num(s.ph) : "—"}</dd></div>` +
+      `<div><dt>Ił</dt><dd>${frac(s.clay)}</dd></div><div><dt>Piasek</dt><dd>${frac(s.sand)}</dd></div>` +
+      `<div><dt>Pył</dt><dd>${frac(s.silt)}</dd></div></dl>`
+    : '<p class="muted">Brak danych glebowych.</p>';
+  return `<section class="sec"><h4>Historia upraw</h4><ul class="history">${hist || '<li class="muted">brak</li>'}</ul></section>` +
+    `<section class="sec"><h4>Gleba</h4>${soil}</section>`;
+}
+
+/** First day worth showing in the whole-season view: a little before the first non-zero risk. */
+function seasonStart(series: ChartSeries[], from: string, today: string): string {
+  let first: string | null = null;
+  for (const s of series) {
+    const p = s.points.find((x) => x.score > 0.02);
+    if (p && (!first || p.date < first)) first = p.date;
   }
+  const start = first ? addDays(first, -14) : from;
+  const latest = addDays(today, -60);
+  return start < from ? from : start > latest ? latest : start;
+}
 
-  get openFieldId(): number | null {
-    return this.fieldId;
+export function renderPanel(host: HTMLElement, data: PanelData, state: PanelState): void {
+  const { detail, day, series, today, viewDate, forecastDays } = data;
+  const risks = [...day.risks].sort((a, b) => b.score - a.score);
+  const worst = risks[0];
+  const stage = risks.find((r) => r.explanation.growth_stage?.name)?.explanation.growth_stage?.name;
+  const counts = { high: 0, medium: 0, low: 0 } as Record<Level, number>;
+  risks.forEach((r) => counts[r.explanation.level]++);
+  if (state.open.size === 0 && worst && worst.explanation.level !== "low") state.open.add(worst.threat.code);
+  const lead = daysBetween(today, viewDate);
+  const when = lead > 0 ? `prognoza na ${weekday(viewDate)} ${shortDate(viewDate)} (+${lead})` : longDate(viewDate);
+  const raised = risks.filter((r) => r.explanation.level !== "low");
+  const low = risks.filter((r) => r.explanation.level === "low");
+
+  const overall = worst
+    ? `<div class="overall lvl-${worst.explanation.level}"><div class="overall-k">${ICON[worst.explanation.level]}${LEVEL_TITLE[worst.explanation.level]}</div>` +
+      `<div class="overall-v">${worst.explanation.level === "low" ? "Wszystkie zagrożenia niskie" : esc(worst.threat.name)}</div>` +
+      `<div class="overall-counts">${(["high", "medium", "low"] as Level[]).map((l) => `<span class="cnt lvl-${l}">${counts[l]} ${LEVEL_LABEL[l]}</span>`).join("")}</div></div>`
+    : '<div class="overall empty">Brak ocen ryzyka na ten dzień.</div>';
+
+  const lowWord = low.length === 1 ? "zagrożenie niskie" : low.length % 10 >= 2 && low.length % 10 <= 4 && (low.length < 10 || low.length > 20) ? "zagrożenia niskie" : "zagrożeń niskich";
+  const lowGroup = low.length
+    ? `<li class="low-group${state.lowOpen ? " open" : ""}"><button class="low-head" aria-expanded="${state.lowOpen}">` +
+      `${ICON.low}<span>${low.length} ${lowWord}</span>${CHEVRON}</button>` +
+      `<ul class="threats inner">${low.map((r) => threatRow(r, state.open.has(r.threat.code), lead)).join("")}</ul></li>`
+    : "";
+
+  host.innerHTML =
+    `<header class="p-head"><div><div class="p-crop">${esc(cropName(detail.crop))}</div><h3>${esc(detail.name)}</h3>` +
+    `<div class="p-sub">${ha(detail.area_ha)}${stage ? ` · ${esc(stage)}` : ""}</div></div>` +
+    '<button class="p-close" aria-label="Zamknij panel pola"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></button></header>' +
+    `<div class="p-scroll">${overall}` +
+    `<section class="sec"><h4>Zagrożenia <span class="when">${esc(when)}</span></h4>` +
+    `<ul class="threats">${raised.map((r) => threatRow(r, state.open.has(r.threat.code), lead)).join("")}${lowGroup}</ul></section>` +
+    `<section class="sec"><div class="sec-row"><h4>Ryzyko w sezonie</h4><div class="seg" role="group" aria-label="Zakres wykresu">` +
+    `<button data-range="recent" class="${state.range === "recent" ? "on" : ""}">3 miesiące</button>` +
+    `<button data-range="season" class="${state.range === "season" ? "on" : ""}">sezon</button></div></div>` +
+    `<div class="chart-host"></div><p class="chart-note">Trzy najwyższe zagrożenia tego dnia. Linia przerywana: najbliższe ${forecastDays} dni z prognozy.</p></section>` +
+    `${about(detail)}</div>`;
+
+  const chartHost = host.querySelector<HTMLElement>(".chart-host")!;
+  if (!series) {
+    chartHost.innerHTML = '<div class="skeleton chart-skel"></div>';
+    return;
   }
-
-  show(fieldId: number): void {
-    if (fieldId !== this.fieldId) this.chartThreat = null;
-    this.fieldId = fieldId;
-    this.container.hidden = false;
-    void this.load();
-  }
-
-  reload(): void {
-    if (this.fieldId !== null) void this.load();
-  }
-
-  hide(): void {
-    this.token++;
-    this.fieldId = null;
-    this.container.hidden = true;
-    this.container.replaceChildren();
-  }
-
-  private header(title: string): HTMLElement {
-    const close = h("button", { type: "button", class: "panel-close", "aria-label": "Zamknij", title: "Zamknij" }, "×");
-    close.addEventListener("click", () => this.onClose());
-    return h("header", { class: "panel-header" }, h("h2", {}, title), close);
-  }
-
-  private async load(): Promise<void> {
-    const fieldId = this.fieldId;
-    if (fieldId === null) return;
-    const token = ++this.token;
-    const today = this.ctx.clock.today;
-    if (!this.container.childElementCount) {
-      this.container.replaceChildren(this.header("Wczytywanie…"), h("p", { class: "muted" }, "Wczytywanie pola…"));
-    } else {
-      this.container.classList.add("loading");
-    }
-    try {
-      const [field, day, series] = await Promise.all([
-        this.ctx.api.getField(fieldId),
-        this.ctx.api.getFieldDayRisks(fieldId, today),
-        this.ctx.api.getFieldRisks(fieldId, { to: shiftDate(today, this.ctx.clock.forecastDays) }),
-      ]);
-      if (token !== this.token) return;
-      this.render(field, day.risks, series, today);
-    } catch (error) {
-      if (token !== this.token) return;
-      this.container.replaceChildren(
-        this.header(`Pole #${fieldId}`),
-        h("p", { class: "panel-error" }, `Nie udało się wczytać pola: ${errorMessage(error)}`),
-      );
-    } finally {
-      if (token === this.token) this.container.classList.remove("loading");
-    }
-  }
-
-  private render(field: FieldDetail, risks: FieldDayRisk[], series: FieldRiskSeries, today: string): void {
-    const meta = h("p", { class: "panel-meta" }, `${cropName(field.crop)} · ${formatNumber(field.area_ha)} ha`);
-
-    // that day's threats, highest first
-    const threats = h("section", { class: "panel-section" }, h("h3", {}, `Zagrożenia ${formatDate(today)}`));
-    if (!risks.length) threats.append(h("p", { class: "muted" }, "Brak ocen ryzyka na ten dzień."));
-    const chartSlot = h("div", { class: "chart-slot" });
-    const select = h("select", { class: "chart-threat", "aria-label": "Zagrożenie na wykresie" });
-
-    for (const risk of risks) {
-      const why = (risk.explanation ?? {}) as ExplanationV1;
-      const level = isLevel(why.level) ? why.level : levelOfScore(risk.score);
-      const summary = h(
-        "summary",
-        {},
-        levelBadge(level),
-        h("span", { class: "threat-name" }, risk.threat.name),
-        h("span", { class: "threat-score", title: "Wskaźnik ryzyka 0–1" }, formatNumber(risk.score, 2)),
-      );
-      const details = h(
-        "details",
-        { class: "threat" },
-        summary,
-        h("p", { class: "threat-category muted" }, CATEGORY_LABELS[risk.threat.category] ?? risk.threat.category),
-        whyPanel(risk),
-      );
-      details.addEventListener("toggle", () => {
-        if (details.open) {
-          this.chartThreat = risk.threat.code;
-          select.value = risk.threat.code;
-          drawChart();
-        }
-      });
-      threats.append(details);
-    }
-
-    // season chart: the chosen threat, or today's highest
-    const season = h("section", { class: "panel-section" }, h("h3", {}, "Przebieg sezonu"));
-    const byCode = new Map(series.threats.map((t) => [t.threat_code, t.points]));
-    const codes = [...byCode.keys()];
-    const preferred = this.chartThreat ?? risks[0]?.threat.code ?? codes[0] ?? null;
-    this.chartThreat = preferred && byCode.has(preferred) ? preferred : codes[0] ?? null;
-    select.replaceChildren(...codes.map((code) => h("option", { value: code }, this.threatName(code))));
-    if (this.chartThreat) select.value = this.chartThreat;
-    const drawChart = () => {
-      const points = this.chartThreat ? byCode.get(this.chartThreat) ?? [] : [];
-      chartSlot.replaceChildren(
-        points.length
-          ? seasonChart(points, today, series.to, this.threatName(this.chartThreat ?? ""))
-          : h("p", { class: "muted" }, "Brak danych o ryzyku w tym okresie."),
-      );
-    };
-    select.addEventListener("change", () => {
-      this.chartThreat = select.value;
-      drawChart();
-    });
-    if (codes.length > 1) season.append(select);
-    season.append(chartSlot, h("p", { class: "chart-legend muted" }, "linia ciągła: sezon do dziś · przerywana: najbliższe dni"));
-    drawChart();
-
-    // the field itself
-    const facts = h("section", { class: "panel-section" }, h("h3", {}, "Pole"));
-    const soil = soilLine(field);
-    const history = cropHistoryLine(field);
-    facts.append(h("p", {}, h("strong", {}, "Gleba: "), soil ?? "brak danych"));
-    facts.append(h("p", {}, h("strong", {}, "Uprawy: "), history ?? "brak danych"));
-
-    this.container.replaceChildren(this.header(field.name), meta, threats, season, facts);
-  }
+  const names = new Map(risks.map((r) => [r.threat.code, r.threat.name]));
+  const top = risks.slice(0, 3).map((r) => r.threat.code).sort();  // fixed slot order within the chart
+  const picked: ChartSeries[] = top
+    .map((code, k) => {
+      const s = series.threats.find((t) => t.threat_code === code);
+      return s ? { code, name: names.get(code) ?? code, color: SERIES[k], points: s.points } : null;
+    })
+    .filter((s): s is ChartSeries => s != null);
+  const to = series.to;
+  const recent = addDays(today, -90) > series.from ? addDays(today, -90) : series.from;
+  const from = state.range === "season" ? seasonStart(picked, series.from, today) : recent;
+  if (picked.length) renderSeasonChart(chartHost, picked, from, to, today);
+  else chartHost.innerHTML = '<p class="muted">Brak danych do wykresu.</p>';
 }

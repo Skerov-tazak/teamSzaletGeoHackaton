@@ -246,8 +246,9 @@ Parts A and B are built on `claude/frontend-backend-api-impl-241034`. Where the 
   moved on the dev farm.
 - **Type generation (B0):** `openapi-typescript` **6.7** (no TypeScript dependency). Version 7 needs
   TypeScript 5's compiler API, which the repo's TypeScript 7 no longer ships.
-- **Base map (B4):** CARTO's tiles now need an API key, so the map uses OpenStreetMap tiles with an Esri
-  satellite layer.
+- **Map (B4):** the map is `feat/map`'s (Bartek, for Kuba), merged here and wired to the platform API through
+  `map/contract.ts` (generated types, explanations read as version 1). It replaced a first version built on this
+  branch. It adds a field list, level and category filters, a day strip (today + the coming days) and Esri base maps.
 - **Still open:** `assistant/views.py` sends neither `chart` nor `pending_action` yet (Ola); the explanation
   texts are still English (Bartek); the end-to-end check on the real assistant needs
   `sentence-transformers` installed (the assistant's guide search imports it).

@@ -27,19 +27,20 @@ body {
   flex-direction: column;
 }
 
-button, select, input, textarea { font: inherit; color: inherit; }
+:where(.app-header, .chat-area) :is(button, select, input, textarea) { font: inherit; color: inherit; }
 
-button {
+/* Buttons of the page and the chat (the map styles its own). */
+:where(.app-header, .chat-area) button {
   border: 1px solid var(--line);
   background: var(--paper);
   border-radius: 6px;
   padding: 4px 10px;
   cursor: pointer;
 }
-button:hover:not(:disabled) { border-color: var(--accent); }
-button:disabled { opacity: 0.5; cursor: default; }
-button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-button.link {
+:where(.app-header, .chat-area) button:hover:not(:disabled) { border-color: var(--accent); }
+:where(.app-header, .chat-area) button:disabled { opacity: 0.5; cursor: default; }
+:where(.app-header, .chat-area) button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+:where(.app-header, .chat-area) button.link {
   border: none;
   background: none;
   padding: 0;
@@ -49,7 +50,7 @@ button.link {
 }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 
-.muted { color: var(--muted); }
+.chat-area .muted { color: var(--muted); }
 
 /* --- header ----------------------------------------------------------------------------------- */
 
@@ -116,122 +117,7 @@ button.link {
 .page-error { margin: 48px auto; max-width: 560px; padding: 0 16px; }
 .page-error h2 { color: var(--error); }
 
-/* --- map --------------------------------------------------------------------------------------- */
-
-.map-canvas { position: absolute; inset: 0; }
-
-.map-status {
-  position: absolute;
-  top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 1000;
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px 12px;
-  box-shadow: 0 2px 8px rgb(0 0 0 / 0.12);
-  max-width: calc(100% - 32px);
-}
-
-.map-legend {
-  background: var(--paper);
-  border-radius: 6px;
-  padding: 6px 10px;
-  box-shadow: 0 1px 5px rgb(0 0 0 / 0.25);
-  font-size: 0.8rem;
-  line-height: 1.6;
-}
-.map-legend .swatch {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
-  border-radius: 3px;
-  margin-right: 6px;
-  vertical-align: -1px;
-  opacity: 0.8;
-}
-
-.field-panel {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  bottom: 12px;
-  width: min(380px, calc(100% - 24px));
-  z-index: 1000;
-  overflow-y: auto;
-  background: var(--paper);
-  border-radius: 10px;
-  box-shadow: 0 4px 16px rgb(0 0 0 / 0.18);
-  padding: 0 14px 14px;
-  transition: opacity 0.15s;
-}
-.field-panel[hidden] { display: none; }
-.field-panel.loading { opacity: 0.6; }
-
-.panel-header {
-  position: sticky;
-  top: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  background: var(--paper);
-  padding: 12px 0 6px;
-}
-.panel-header h2 { font-size: 1.1rem; margin: 0; }
-.panel-close { border: none; font-size: 1.3rem; line-height: 1; padding: 2px 8px; }
-.panel-meta { margin: 0 0 8px; color: var(--muted); }
-.panel-error { color: var(--error); }
-.panel-section { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 8px; }
-.panel-section h3 { font-size: 0.95rem; margin: 6px 0; }
-.panel-section p { margin: 4px 0; }
-
-.threat { border-bottom: 1px solid #eef0ea; padding: 4px 0; }
-.threat summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  list-style-position: outside;
-}
-.threat-name { flex: 1 1 auto; }
-.threat-score { font-variant-numeric: tabular-nums; color: var(--muted); }
-.threat-category { font-size: 0.8rem; margin: 2px 0 0 0; }
-
-.level-badge {
-  flex: 0 0 auto;
-  font-size: 0.75rem;
-  font-weight: 600;
-  border-radius: 999px;
-  padding: 1px 8px;
-  color: #1b1b1b;
-  background: color-mix(in srgb, var(--level) 35%, white);
-  border: 1px solid var(--level);
-}
-
-.why { font-size: 0.9rem; padding: 4px 0 6px 4px; }
-.why h4 { font-size: 0.85rem; margin: 8px 0 2px; }
-.why-summary { margin: 4px 0; }
-.why-drivers { margin: 2px 0; padding-left: 18px; }
-.why-drivers li.context { color: var(--muted); }
-.why-action { margin: 8px 0 4px; padding: 6px 8px; border-radius: 6px; background: #f1f5ee; }
-.why-action.action-treat { background: #fdecea; }
-.why-action.action-monitor { background: #fff6e0; }
-.spray-window { margin-top: 2px; font-weight: 600; }
-.why-facts { color: var(--muted); font-size: 0.82rem; }
-
-.chart-threat { width: 100%; margin-bottom: 4px; }
-.season-chart { width: 100%; height: auto; display: block; }
-.season-chart .axis-label { font-size: 9px; fill: var(--muted); }
-.season-chart .tick { stroke: var(--muted); }
-.season-chart .cut-line { stroke: #9e9e9e; stroke-dasharray: 3 3; stroke-width: 0.8; }
-.season-chart .today-line { stroke: var(--focus); stroke-dasharray: 2 2; stroke-width: 1; }
-.season-chart .today-label { fill: var(--focus); }
-.season-chart .risk-line { fill: none; stroke: #263238; stroke-width: 1.6; stroke-linejoin: round; }
-.season-chart .risk-line.coming { stroke-dasharray: 4 3; }
-.season-chart .today-dot { stroke: #263238; stroke-width: 1; }
-.chart-legend { font-size: 0.78rem; }
+/* The map's own styles are in src/map/map.css, scoped under .fup-map and bundled into dist/main.css. */
 
 /* --- chat -------------------------------------------------------------------------------------- */
 
