@@ -26,6 +26,7 @@ This document defines every table of the platform. Each section is marked **Cert
 | [Field](#field) | Certain (core columns) | drawn by us + derived at import | a handful |
 | [FieldCropYear](#fieldcropyear) | Certain | cropland rasters 2020–2024 | fields × 5 years × a few classes |
 | [Threat](#threat) | Certain | `ryzyka_zebrane.xlsx` (sheets `kukurydza`, `pszenica`) | ~40 |
+| [Observation](#observation) | Certain | farmer reports, through the assistant | a few per field |
 | [Risk](#risk) | Certain (except `explanation` format) | decision engine | fields × threats × season days |
 
 ```mermaid
@@ -40,6 +41,8 @@ erDiagram
     Field ||--o{ FieldCropYear : field_id
     Field ||--o{ Risk : field_id
     Threat ||--o{ Risk : threat_id
+    Field |o--o{ Observation : "field_id (null = whole farm)"
+    Threat |o--o{ Observation : threat_id
     Field }o..o{ SoilCell : "h3_cells (array, no foreign key)"
 ```
 
@@ -59,7 +62,7 @@ erDiagram
 The demo replays a past season, and the whole season is loaded up front:
 
 1. **Observed weather** (`WeatherDaily`, `WeatherHourly`) for every day of the season, for the farm's grid cells.
-2. **Forecast** (`WeatherForecastDaily`): for every day D of the season, the observed rows for D + 1 … D + 7 are copied with `issued_on = D`. In a live system a real forecast would be written here instead.
+2. **Forecast** (`WeatherForecastDaily`): for every day D of the season, the observed rows for D + 1 … D + 7 are copied with `issued_on = D`. The weather packages have no precipitation of their own, so the forecast's `total_precipitation` is filled from the observed day's `imerg_total_precipitation`; otherwise the engine's spraying window cannot check for rain. In a live system a real forecast would be written here instead.
 3. **Risks** (`Risk`): `predict()` runs once over the whole season, each day as of that day.
 4. **Clock**: set to the day the demo starts.
 
@@ -85,7 +88,7 @@ Moving the demo date (`PUT /api/clock/`, or `/admin/`) moves both limits; nothin
 | WeatherGrid, WeatherDaily, WeatherHourly, SoilCell, CropClass, Field, FieldCropYear, Threat | platform (seed / import) | everyone |
 | WeatherForecastDaily | platform (seeded from WeatherDaily) | everyone |
 | Risk | decision engine (`predict()`) | map (via API), assistant |
-| Observation (planned, columns open) | assistant, only through its "record an observation" tool | decision engine, assistant |
+| Observation | assistant, only through its "record an observation" tool (by hand in `/admin/` for testing) | decision engine, assistant |
 | Conversation, Message (`assistant` app) | platform chat endpoint | chat window (via API), assistant |
 
 ## Using the models
@@ -203,7 +206,7 @@ Not stored: `geom` (the same point as `lat`/`lon`).
 | `max_temperature`, `min_temperature`, `avg_temperature` | float, null | °C | Max / min / mean of 24 hourly values, 2 m |
 | `midpoint_temperature` | float, null | °C | (min + max) / 2 |
 | `max_dew_point_temperature`, `min_dew_point_temperature`, `avg_dew_point_temperature` | float, null | °C | |
-| `total_precipitation` | float, null | mm/day | Sum of 24 hourly values (weather model) |
+| `total_precipitation` | float, null | mm/day | Sum of 24 hourly values (weather model). **Empty in the hackathon packages:** use `imerg_total_precipitation` |
 | `imerg_total_precipitation` | float, null | mm/day | From IMERG (satellite), renamed from `total_precipitation` |
 | `max_wind_speed`, `min_wind_speed`, `avg_wind_speed` | float, null | **km/h** | 10 m |
 | `avg_wind_direction` | float, null | ° azimuth | 10 m, vector average |
@@ -240,7 +243,7 @@ Weather soil levels: level 1 = 0–7 cm, level 2 = 7–28 cm, level 3 = 28–100
 | `date` | `DateField` | local date | For fast filtering |
 | `temperature` | float, null | °C | 2 m |
 | `dew_point_temperature` | float, null | °C | 2 m |
-| `precipitation` | float, null | mm/hour | Weather model |
+| `precipitation` | float, null | mm/hour | Weather model. **Empty in the hackathon packages:** use `imerg_precipitation` |
 | `imerg_precipitation` | float, null | mm/hour | From IMERG (satellite), renamed from `precipitation` |
 | `wind_speed` | float, null | km/h | 10 m |
 | `wind_direction` | float, null | ° azimuth | 10 m |
@@ -297,12 +300,12 @@ Weather soil levels: level 1 = 0–7 cm, level 2 = 7–28 cm, level 3 = 28–100
 | `om` | float, null | g/kg (see check below) | Organic matter, root-zone average to 30 cm |
 | `cec` | float, null | cmol(c)/kg | Root-zone average to 30 cm |
 | `ph` | float, null | pH | Root-zone average to 15 cm. Source name `pH` |
-| `sand`, `silt`, `clay` | float, null | % | Root-zone averages to 30 cm |
+| `sand`, `silt`, `clay` | float, null | **fraction 0–1** | Root-zone averages to 30 cm. The organiser docs say %, the real files hold fractions (0.18 = 18 %; found for sand and clay, silt assumed) |
 | `bulk_density` | float, null | kg/dm³ | Root-zone average to 30 cm |
-| `band_om` | float, null | category | Low (< 2) / moderate / high (> 3.5) |
-| `band_cec` | float, null | category | Low (< 10) / moderate / high (> 20) |
-| `band_ph` | float, null | category | Low (< 5.8) / moderate / high (> 7.5). Source name `band_pH` |
-| `soil_texture` | `CharField`, null | – | USDA texture class, to 30 cm |
+| `band_om` | `CharField`, null | `low` / `moderate` / `high` | Low (< 2) / moderate / high (> 3.5). Text in the real files. Source name `BAND_om` |
+| `band_cec` | `CharField`, null | `low` / `moderate` / `high` | Low (< 10) / moderate / high (> 20). Source name `BAND_cec` |
+| `band_ph` | `CharField`, null | `low` / `moderate` / `high` | Low (< 5.8) / moderate / high (> 7.5). Source name `BAND_pH` |
+| `soil_texture` | `CharField`, null | – | USDA texture class, to 30 cm. Source name `soilTexture` |
 
 Not stored: `hid` (a storage partition key with no meaning for us).
 
@@ -310,6 +313,7 @@ Not stored: `hid` (a storage partition key with no meaning for us).
 
 1. Raw SoilGrids files use scaled whole numbers (pH × 10, clay in g/kg, bulk density in cg/cm³, …). The organiser docs say the values are already converted. Expect pH about 4–8 (not 40–80), clay 0–100 (not 0–1000), bulk density about 1–1.7 (not 100–170). If the values are raw, the import divides them (pH, cec, cfvo, clay, sand, silt, soc, ocd by 10; bdod and nitrogen by 100), and this document is updated.
 2. `om` is documented in g/kg, but the `band_om` cut-offs (2 and 3.5) look like percentages. Check real values.
+3. Already found in the real files (decision engine): root-zone `sand` and `clay` are fractions, the `BAND_*` columns are text, and some column names differ from the docs (`soilTexture`, `pH`, `BAND_*`): rename them at import. Check `silt` and the layered columns the same way.
 
 ### CropClass
 
@@ -375,9 +379,41 @@ CLMS "Wheat" does not separate winter and spring wheat; we treat it as winter wh
 
 The wheat sheet lists diseases only, no pests. Wheat pests would have to come from the PDF guide.
 
+### Observation
+
+**Certain.** A farmer's report about a field: something seen, done or known. Written only by the assistant's "record an observation" tool after the farmer confirms it; read by the decision engine, which recomputes the field from `observed_on` on ([interfaces.md](interfaces.md#writing-observations)). One row per report.
+
+| Column | Type | Unit | Notes |
+|--------|------|------|-------|
+| `id` | `BigAutoField`, primary key | – | |
+| `field` | `ForeignKey(Field)`, null | – | Empty = the whole farm / the area |
+| `observed_on` | `DateField` | local date | The day the farmer saw or did it, not the day they told the chat |
+| `recorded_at` | `DateTimeField` | UTC | When the report was stored |
+| `kind` | `CharField` with choices | – | `symptoms`, `absence`, `neighbour`, `treatment`, `field_fact`, `event` (meanings below) |
+| `category` | `CharField` with choices, blank | – | `disease`, `pest`, `weeds`, `damage`, `other`. Needed when no threat is named: symptoms of "some disease" raise every disease of the crop |
+| `threat` | `ForeignKey(Threat)`, null | – | The threat, if the farmer named one of the crop's threats. Kept as empty if the threat is deleted |
+| `severity` | float, null | fraction 0–1 | 0.3 low, 0.6 medium, 0.9 high. Database check: 0–1 |
+| `distance_m` | float, null | m | Neighbour reports only. Database check: ≥ 0 |
+| `details` | `JSONField` | – | Extra facts the engine reads: `sowing_date`, `tillage` (`plough` / `reduced`), `resistant_to` (threat codes), `type` (`hail` / `lodging` / `flood`), `scope` |
+| `text` | `TextField`, blank | – | The farmer's own words (quoted in the explanation) |
+| `idempotency_key` | `CharField`, unique, null | – | Same key = same report: no duplicates when the farmer confirms twice |
+
+| `kind` | The farmer says | Engine effect (details: "Farmer reports" in [engine/README.md](../engine/README.md) on `feat/decision-engine`) |
+|--------|-----------------|--------|
+| `symptoms` | "I see brown rust on the north field" | that threat high for about 10 days; spreads to nearby fields of the same crop |
+| `absence` | "Inspected, it's clean" | risk halved for about 10 days (empty threat = all threats) |
+| `neighbour` | "My neighbour has head blight" | risk raised by closeness (`distance_m`) |
+| `treatment` | "I sprayed against septoria on 10 May" | risk cut for about 14 days (empty threat = all fungal) |
+| `field_fact` | "I sowed on 25 September", "I don't plough" | real sowing date / reduced tillage / resistant variety (`details`) |
+| `event` | "Hail yesterday" | wound and lodging effects (`details.type`) |
+
+- `Observation.objects.observed()` returns reports up to today (`as_of` like the weather helpers).
+- `field.observations` lists a field's reports; whole-farm reports have no field.
+- There is no link to the chat conversation here: `core` never depends on the `assistant` app. The assistant can put the conversation id in `details` if it needs it.
+
 ### Risk
 
-**Certain, except the format of `explanation`.** Written by the decision engine; read by the map and the assistant.
+**Certain.** Written by the decision engine; read by the map and the assistant.
 
 | Column | Type | Unit | Notes |
 |--------|------|------|-------|
@@ -385,18 +421,76 @@ The wheat sheet lists diseases only, no pests. Wheat pests would have to come fr
 | `field` | `ForeignKey(Field)` | – | |
 | `threat` | `ForeignKey(Threat)` | – | |
 | `date` | `DateField` | local date | The day this risk applies to |
-| `score` | `FloatField` | 0–1, no unit | Database check: 0 ≤ score ≤ 1 |
-| `explanation` | `JSONField` | – | **Open** format, see below |
+| `score` | `FloatField` | 0–1, no unit | Database check: 0 ≤ score ≤ 1. An index of how favourable the recent days were for the threat, not a probability |
+| `explanation` | `JSONField` | – | Why the score is what it is: [explanation format, version 1](#explanation-version-1) |
 | `computed_at` | `DateTimeField` | UTC | Set on every write |
 
 - Key: `field` + `threat` + `date`, unique. Index on `field` + `date`.
 - **One row per field, threat and day, overwritten** whenever the engine recomputes it. Earlier calculations are not kept.
 - Readers: the season so far is `Risk.objects.season_so_far()`; the coming days are `Risk.objects.coming_days()`. Rows further ahead may exist (the season can be precomputed) and are ignored until the clock reaches them.
+- **Levels:** low < 0.33 ≤ medium < 0.66 ≤ high. The engine stores the level in `explanation.level`; readers show it rather than recomputing it.
+
+#### Explanation, version 1
+
+The engine writes this JSON in every row; the map's "why" panel and the assistant read it, and the API passes it through unchanged. It is the format the engine documents in [engine/README.md](../engine/README.md) ("What it writes"); this section is the contract. Readers ignore keys they don't know, so the engine can add keys without breaking anyone; renaming or removing a key needs a new `version`.
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `version` | int | `1` |
+| `summary` | text | One or two sentences: the level, the threat and the main reasons. Shown as it is |
+| `level` | text | `low` / `medium` / `high` (cut-offs above) |
+| `score` | float 0–1 | Same as the row's `score` |
+| `threat` | object | `code`, `name_pl`, `name_en`, `category` |
+| `as_of` | date | The day the row was assessed for (`YYYY-MM-DD`) |
+| `crop` | object | `code` (CropClass) and `source`: `field` (this season's `Field.crop`) or `crop map` (a past season) |
+| `growth_stage` | object | `bbch` (int), `name`, `method` (degree days / satellite / farmer's sowing date), `sowing_assumed` (date or null), `confidence` (0–1) |
+| `drivers` | list | **Why**, one entry per factor (below). Not sorted: sort by `effect` to get the most important first |
+| `action` | object | What to do (below) |
+| `severity` | float 0–1 | Share of the yield at risk if the threat materialises (team assumption) |
+| `expected_loss` | float 0–1 | `score × severity`; used to rank fields |
+| `confidence` | float 0–1 | How sure the row is: growth-stage method × weather data quality × distance into the forecast; 1.0 when the farmer saw it |
+| `confidence_observed`, `forecast_lead_days` | float, int | Only on days after today: the confidence before the forecast discount, and how many days ahead |
+| `notes` | list of text | Agronomic notes for this threat |
+| `assumptions` | object | The team's own numbers used by the rule (thresholds, hours) |
+| `model`, `model_version` | text | `rules`, the engine's version |
+
+**A driver** (entry of `drivers`):
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `factor` | text | Stable name, e.g. `condition_hours`, `growth_stage`, `previous_crop`, `farmer_report`, `rain_days` |
+| `label` | text | Human-readable sentence. Shown as it is |
+| `value`, `unit` | number, text | Optional: the measured value and its unit |
+| `threshold` | text | Optional: when it starts to count / counts fully |
+| `multiplier` | float | Optional: the factor's multiplier on the score |
+| `effect` | float or null | How much the score would drop without this factor; `null` = context only |
+| `kind`, `observed_on`, `text` | text, date, text | Farmer reports only: the report's kind, date and the farmer's own words |
+
+**The action:**
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `type` | text | `wait` / `monitor` / `treat` |
+| `text` | text | What to do, one sentence. Shown as it is |
+| `threshold` | text or null | The monitoring / economic threshold for the current growth stage |
+| `spray_window` | object or null | Only for `treat`: `date`, `quality` (`optimal` / `acceptable`), `conditions`, `rule`, `note`. From the forecast issued on `as_of` |
+
+**Text language.** `summary`, `drivers[].label`, `action.text`, `action.threshold` and `notes` reach the farmer as they are, so they must be **Polish** (AGENTS.md: interface text is Polish). The engine writes them in English today (with the Polish threat name in brackets): see [Open questions](#open-questions).
+
+**Who reads what.**
+
+| Reader | Uses |
+|--------|------|
+| Map ("why" panel, colours) | `level` for the colour, `summary`, `drivers` (`label`, `effect`), `action` (`type`, `text`, `spray_window.date`), `growth_stage.name`, `confidence` |
+| Assistant | `summary`, the top `drivers` by `effect`, `action`, `growth_stage`, `confidence` (already on `feat/chat-assistant`) |
+| Engine (`engine.summary`) | `level`, `expected_loss`, `action`, `summary` |
+
+No product names or doses appear anywhere (shared principle).
 
 ## Unit traps
 
 - **Wind is in km/h.** Most spraying and disease rules quote m/s: divide by 3.6.
-- **Percent vs fraction.** Relative humidity is 0–100 %; cloud cover and soil moisture are fractions 0–1.
+- **Percent vs fraction.** Relative humidity is 0–100 %; cloud cover, soil moisture, soil sand / silt / clay and report severity are fractions 0–1.
 - **Radiation.** Daily totals are MJ/m²/day; the daily `max_*` columns and all hourly values are MJ/m²/hour. 1 MJ/m²/hour ≈ 277.8 W/m².
 - **Evapotranspiration** is mm/day in the daily tables and mm/hour in the hourly table.
 - **Snow depth** is mm of water equivalent, not snow height.
@@ -405,18 +499,30 @@ The wheat sheet lists diseases only, no pests. Wheat pests would have to come fr
 - **Area** is computed in metres (EPSG:2180), never from degrees.
 - **Coordinate order.** GeoJSON is [lon, lat]; most of the datasets and code use lat, lon.
 
+## Known issues in the datasets
+
+Found by the decision engine in the real files; the import has to handle them:
+
+- **No precipitation in the weather packages:** `total_precipitation` / `precipitation` are empty; rain comes only from IMERG.
+- **Weather grid** `lat` / `lon` are decimals: cast to float.
+- **Hourly weather:** `utc_time` has no time zone (it is UTC: make it aware); consecutive year files overlap by one hour (skip the duplicates).
+- **Soil:** see the checks under [SoilCell](#soilcell).
+- **Cropland:** the 2021 map is identical to 2022. Store it, but `FieldCropYear` for 2021 is wrong.
+- **File names:** voivodeships without Polish letters; some packages spell `Łódzkie` as `odzkie` and `Małopolskie` as `Maopolskie`.
+
 ## Open questions
 
 | Topic | Question | Who |
 |-------|----------|-----|
-| Risk score | What does the score mean (a probability or an index), and what are the cut-offs for the map colours? | Bartek, Kuba |
-| Risk explanation | The format of `Risk.explanation`, shared by the map and the assistant. Starting point: `{"summary": "...", "factors": [{"variable": "avg_relative_humidity", "value": 94, "unit": "%", "threshold": "> 90"}], "source": "ryzyka_zebrane.xlsx / pszenica"}` | Bartek, Kuba, Ola |
-| Field state | Sowing date / growth stage on Field. Farmer reports go into an `Observation` table in `core` (agreed): written only by the assistant's tool, read by the engine. Its columns are open, e.g. field, date, threat, text, severity, details (JSON) | Bartek, Ola |
+| Explanation texts in Polish | The format is agreed ([version 1](#explanation-version-1)), but its texts (`summary`, driver labels, `action.text`, `notes`) are English today. Switch them to Polish in the engine, or add Polish copies next to them? | Bartek |
+| Level names | The engine writes `medium`; the frontend's `risk.ts` uses `mid`. The frontend switches to `medium` | Jan + Szymek (frontend) |
+| Field state | Farmer reports: done ([Observation](#observation)). Still open: the engine also proposes facts stored on the field itself (`Field.sowing_date`, `Field.tillage`, `Field.resistant_to`, `FieldCropYear.source`); it reads them if they exist. Until then `field_fact` reports do the same job | Bartek, Ola, Jan + Szymek |
 | Hourly forecast | Does the engine need an hourly forecast table as well as the daily one? | Bartek |
 | Satellite | If the engine uses Sentinel-2, add a per-field table (field, date, mean NDVI, cloud share). The organisers don't host this data | Bartek |
 | Assistant storage | Where the RAG index of the guide PDFs lives (pgvector is available in our Postgres). Chat history is agreed: `Conversation` and `Message` in the `assistant` app | Ola |
 | Threat names | Do threats need English names for the interface? | All |
 | Data checks | After download: soil units and `om` (see [SoilCell](#soilcell)); `weather.md` lists no hourly 2021 folder although it states 2020–2025 coverage | Jan, Szymek |
+| Threat catalogue | The engine has rules for 76 threats of 7 crops (`engine/catalog.py` on `feat/decision-engine`), far more than the spreadsheet's maize and wheat. Load Threat from the engine's codes (`engine_load_threats`), or write the fixture with exactly those codes? | Jan + Szymek, Bartek |
 
 ## Not stored
 

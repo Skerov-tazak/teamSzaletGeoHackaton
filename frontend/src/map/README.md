@@ -42,4 +42,5 @@ Risk scores are 0–1. "Season so far" is up to today; "coming days" are today +
 
 - **Plain TypeScript, no framework.** Map libraries (Leaflet, MapLibre, …) are fine: install them with `npm install` in [`frontend/`](../../), and esbuild bundles them into `static/frontend/dist/main.js`.
 - **API types are generated** from the backend's schema, so they always match it; don't write them by hand.
-- *Still open:* the colour cut-offs for risk scores (with Bartek) and the `explanation` format shown in the "why" panel.
+- **Colours and the "why" panel** come from `explanation` version 1 ([database.md → Explanation, version 1](../../../docs/database.md#explanation-version-1)): `level` for the colour (`low` / `medium` / `high`, cut-offs 0.33 / 0.66, agreed), `summary`, the `drivers` sorted by `effect` (their `label`), `action.text` and, for `treat`, `action.spray_window.date`, `growth_stage.name` and `confidence`. Ignore keys you don't know.
+- *Still open:* the explanation texts are still English (the engine switches to Polish).
