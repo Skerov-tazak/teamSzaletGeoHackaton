@@ -220,7 +220,7 @@ def calibrate(stages: pd.DataFrame, crop: int, anchors) -> pd.DataFrame:
         on = pd.Timestamp(a.on)
         if on not in out.index:
             continue
-        if crop == WHEAT and on < pd.Timestamp(on.year, 1, 1):
+        if crop == WHEAT and on.month >= 9:  # an autumn scene: the spring curve below starts on 1 January
             continue
         need = float(np.interp(a.bbch, bbchs, gdds))
         delta = float(stages.loc[on, "gdd"]) - need

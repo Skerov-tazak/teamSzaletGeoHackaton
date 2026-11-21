@@ -69,13 +69,13 @@ def field_day(field_id: int, day: date) -> dict:
 
 
 def farm_ranking(day: date) -> list[dict]:
-    """All fields, most urgent first: expected loss, then the highest single score."""
+    """All fields, most urgent first: expected loss, then the highest single score. A field without risk rows
+    that day (no crop rules, no weather) is listed last with "Brak ocen ryzyka na ten dzień." instead of missing."""
     rows = list(Risk.objects.filter(date=day).select_related("threat", "field", "field__crop"))
     by_field: dict[int, list[Risk]] = {}
     for r in rows:
         by_field.setdefault(r.field_id, []).append(r)
-    fields = {f.id: f for f in Field.objects.select_related("crop")}
-    out = [_summarise(fields[fid], day, rs) for fid, rs in by_field.items() if fid in fields]
+    out = [_summarise(f, day, by_field.get(f.id, [])) for f in Field.objects.select_related("crop")]
     out.sort(key=lambda s: (-s["expected_loss"], -s["max_score"]))
     for i, s in enumerate(out, 1):
         s["rank"] = i
@@ -92,11 +92,18 @@ def _harvest(field: Field, day: date, bbch) -> dict | None:
     from engine import features as F
     from engine.harvest import harvest_outlook
 
-    recent = F.load_daily(field.weather_grid_id, day - timedelta(days=14), day)
+    from core import clock
+    today = clock.today()
+    issued = min(day, today)  # a day after today: the forecast known today, not one issued later
+    # weather observed up to `day`, but never after today: a coming day continues with today's forecast
+    recent = F.load_daily(field.weather_grid_id, day - timedelta(days=14), issued)
+    if day > today:
+        fc_days = F.load_forecast(field.weather_grid_id, today)
+        if not fc_days.empty:
+            fc_days = fc_days[(fc_days.index > pd.Timestamp(today)) & (fc_days.index <= pd.Timestamp(day))]
+            recent = pd.concat([recent, fc_days]) if not recent.empty else fc_days
     recent = recent[recent.index >= pd.Timestamp(day - timedelta(days=14))] if not recent.empty else recent
     cols = ["date", "max_temperature", "min_temperature", "total_precipitation", "avg_relative_humidity"]
-    from core import clock
-    issued = min(day, clock.today())  # a day after today: the forecast known today, not one issued later
     fc = pd.DataFrame.from_records(WeatherForecastDaily.objects.current(as_of=issued)
                                    .filter(grid_id=field.weather_grid_id, date__gt=day)
                                    .order_by("date").values(*cols), columns=cols)

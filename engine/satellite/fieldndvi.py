@@ -38,7 +38,17 @@ def geometry_key(geometry) -> str:
 
 
 def path_for(field, season: int) -> Path:
-    return cache_dir() / f"field{field.id}_{geometry_key(field.geometry)}_s{season}.parquet"
+    """Keyed by the polygon only: a scenario switch recreates fields with new ids, the same shapes keep their scenes."""
+    return cache_dir() / f"field_{geometry_key(field.geometry)}_s{season}.parquet"
+
+
+def _cached(field, season: int) -> Path | None:
+    """The cache file of this polygon and season, also under the old id-based name (field<id>_<hash>_s<season>)."""
+    p = path_for(field, season)
+    if p.exists():
+        return p
+    old = sorted(cache_dir().glob(f"field*_{geometry_key(field.geometry)}_s{season}.parquet")) if cache_dir().exists() else []
+    return old[0] if old else None
 
 
 def fetch(field, season: int, end: date | None = None) -> pd.DataFrame | None:
@@ -74,9 +84,9 @@ def fetch(field, season: int, end: date | None = None) -> pd.DataFrame | None:
 
 
 def load(field, season: int) -> pd.DataFrame | None:
-    """field: a Field (its id and polygon pick the cache file)."""
-    p = path_for(field, season)
-    if not p.exists():
+    """field: a Field (its polygon picks the cache file)."""
+    p = _cached(field, season)
+    if p is None:
         return None
     df = pd.read_parquet(p)
     return df.sort_values("date").reset_index(drop=True) if not df.empty else None

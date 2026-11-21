@@ -2,6 +2,32 @@
 
 History of the engine's versions and the findings behind them. The reference documentation is [README.md](README.md).
 
+## v0.13: fixes from the app audit (docs/audit-2026-11-21.md)
+
+- **Late crops across seasons (E-1).** From 1 September a spring crop of the previous season (maize to 31 December,
+  beet, potato) is scored as that season's crop until its harvest, whichever season the Clock is in; a winter crop of
+  the new season takes the field from its assumed sowing. Before, with the Clock in September–December, maize days
+  were scored as next year's maize "before sowing" (BBCH −1, every risk 0) and the season chart dropped to zero.
+- **Moves into another season (E-2).** `clock_moved()` recomputes one season at a time, oldest first, from the start
+  of the season before the later date at the earliest, so each season's carry-over reads the peaks the previous one
+  has just written (one `predict()` over several seasons read stale peaks and did not return to the same state).
+- **Effects of every factor (E-11, E-12).** Rain days, the 7-day temperature, the local pest pressure and the 30-day
+  water balance change the score, so their drivers now carry an `effect` (leave one out) instead of `null`; the
+  growth stage's and multipliers' effects are measured with the farmer's reports applied, like the score.
+  `level` is computed from the rounded score, so the two never disagree at a boundary.
+- **Neighbour reports without a threat (E-6)** raise every threat of their group (pest / disease) ×(1 + 0.25 × closeness).
+- **Coming days' harvest outlook (E-14)** no longer reads observed weather after today: it continues with today's forecast.
+- `engine_set_date` goes through `clock.set_today()` (one transaction; creates the Clock row; strict YYYY-MM-DD) (E-4).
+- `clock_moved()` copies with `update_conflicts`, so a `predict()` from the chat at the same moment can't make it fail.
+- `precompute_dates()` stops at the season's end (later dates are another season: never read).
+- Satellite cache files are keyed by the polygon only (`field_<hash>_s<season>.parquet`; the old `field<id>_…` names
+  are still read), so a scenario switch, which recreates fields with new ids, keeps their scenes (E-7).
+- `farm_ranking()` lists fields without risk rows too ("Brak ocen ryzyka na ten dzień."), last.
+- Texts: "≥" instead of ">=", "wilgotność względna powietrza" in the leaf-wetness label (the assistant read it as leaf
+  humidity), a blanket treatment reads "Zabieg przeciw: choroby grzybowe (wszystkie)", a group neighbour report names
+  the group. A symptoms report without a severity counts as 0.5 everywhere (it was 0.5 from the database, 0.6 in
+  scripted reports).
+
 ## v0.12: date moves copy precomputed rows
 
 Moving the demo date used to recompute `(min(old, new), max(old, new) + 7]` for every field (1–4 s per click on the

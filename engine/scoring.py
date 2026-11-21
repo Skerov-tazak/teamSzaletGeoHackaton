@@ -140,29 +140,39 @@ def score_rule(rule: Rule, ctx: FieldContext, daily: pd.DataFrame, hourly: pd.Da
     sw = stage_weight(bbch, rule)
     estimated = pd.Series(False, index=days)
     extra: dict[str, pd.Series] = {}
+    # factor -> the weather/activity part without that factor, for its "effect" (leave one out)
+    without_base: dict[str, np.ndarray] = {}
 
     if rule.kind == "infection_hours":
         hours, est = F.condition_hours(d, hourly, rule.temp_min, rule.temp_max, rule.moisture)
         win = F.trailing_sum(hours, rule.window_days).reindex(days).fillna(0)
         est_any = F.trailing_sum(est.astype(float), rule.window_days).reindex(days).fillna(0) > 0
         estimated = est_any
-        base = ramp(win, rule.hours_low, rule.hours_high)
+        b0 = np.asarray(ramp(win, rule.hours_low, rule.hours_high), dtype=float)
+        rain_factor = np.ones(len(days))
+        active = np.ones(len(days))
+        base = b0
         main = {"factor": "condition_hours", "values": win,
                 "label": f"Godziny w {rule.temp_min:g}-{rule.temp_max:g} °C z {_moisture_text(rule.moisture)} w ostatnich {rule.window_days} dniach",
                 "unit": "h", "threshold": f"od {rule.hours_low:g} h ryzyko rośnie, {rule.hours_high:g} h = pełne ryzyko"}
         if rule.needs_rain_days:
             rain_days = F.trailing_sum((d["precip"].fillna(0) >= 1).astype(float), rule.window_days).reindex(days).fillna(0)
-            rain_factor = np.clip(rain_days / rule.needs_rain_days, 0.0, 1.0)
-            base = base * rain_factor
+            rain_factor = np.clip(rain_days.to_numpy() / rule.needs_rain_days, 0.0, 1.0)
             extra["rain_days"] = rain_days
         if rule.crop in WINTER_CROPS:  # winter dormancy: leaf diseases do not develop in cold weather
             mean7 = F.trailing_mean(d["avg_temperature"], 7).reindex(days)
-            active = ramp(mean7.to_numpy(), 3, 8)
-            base = base * active
+            active = np.where(np.isnan(mean7.to_numpy()), 1.0, ramp(mean7.to_numpy(), 3, 8))
             extra["mean_temperature_7d"] = mean7
+        base = b0 * rain_factor * active
+        if "rain_days" in extra:
+            without_base["rain_days"] = b0 * active
+        if "mean_temperature_7d" in extra:
+            without_base["mean_temperature_7d"] = b0 * rain_factor
         if rule.code in ("maize.fusarium_ear_rot", "maize.fusarium_stalk_rot"):
             balance = F.trailing_sum(d["precip"].fillna(0) - d["eto"].fillna(0), 30).reindex(days).fillna(0)
-            drought = ramp(-balance, 60, 150)  # water deficit 60-150 mm over 30 days
+            drought = np.asarray(ramp(-balance, 60, 150), dtype=float)  # water deficit 60-150 mm over 30 days
+            without_base = {k: np.maximum(v, 0.8 * drought) for k, v in without_base.items()}
+            without_base["water_balance_30d"] = base
             base = np.maximum(base, 0.8 * drought)
             extra["water_balance_30d"] = balance
     elif rule.kind == "soil_days":
@@ -174,7 +184,7 @@ def score_rule(rule: Rule, ctx: FieldContext, daily: pd.DataFrame, hourly: pd.Da
         base = ramp(win, rule.hours_low, rule.hours_high)
         t_txt = f"zimną (< {hi:g} °C)" if lo is None else f"ciepłą ({lo:g}-{hi:g} °C)"
         main = {"factor": "cold_wet_soil_days" if lo is None else "warm_wet_soil_days", "values": win, "unit": "dni",
-                "label": f"Dni z {t_txt} i mokrą (>= {rule.soil_wet:.2f} m³/m³) wierzchnią warstwą gleby w ostatnich {rule.window_days} dniach",
+                "label": f"Dni z {t_txt} i mokrą (≥ {rule.soil_wet:.2f} m³/m³) wierzchnią warstwą gleby w ostatnich {rule.window_days} dniach",
                 "threshold": _days_threshold(rule)}
     elif rule.kind == "snow_days":
         cond = (d["avg_temperature"].between(rule.temp_min - 2, rule.temp_max)
@@ -190,7 +200,7 @@ def score_rule(rule: Rule, ctx: FieldContext, daily: pd.DataFrame, hourly: pd.Da
         win = F.trailing_sum(cond, rule.window_days).reindex(days).fillna(0)
         base = ramp(win, rule.hours_low, rule.hours_high)
         main = {"factor": "waterlogged_days", "values": win, "unit": "dni",
-                "label": f"Dni z glebą nasyconą wodą lub opadem >= 30 mm w ostatnich {rule.window_days} dniach",
+                "label": f"Dni z glebą nasyconą wodą lub opadem ≥ 30 mm w ostatnich {rule.window_days} dniach",
                 "threshold": _days_threshold(rule)}
     elif rule.kind == "vector_days":
         emerged = (stages["bbch"].reindex(d.index).fillna(-1) >= 10).astype(float)
@@ -200,7 +210,7 @@ def score_rule(rule: Rule, ctx: FieldContext, daily: pd.DataFrame, hourly: pd.Da
         aphids = "aphid" in rule.name_en.lower() or rule.category == "viral"
         insect = "mszyc" if aphids else "szkodnika"
         main = {"factor": "aphid_flight_days" if aphids else "flight_days", "values": win, "unit": "dni",
-                "label": f"Dni wystarczająco ciepłe na loty {insect} (maks. >= {rule.flight_c:g} °C) od wschodów, w ostatnich {rule.window_days} dniach",
+                "label": f"Dni wystarczająco ciepłe na loty {insect} (maks. ≥ {rule.flight_c:g} °C) od wschodów, w ostatnich {rule.window_days} dniach",
                 "threshold": _days_threshold(rule)}
     elif rule.kind == "pest_activity":
         mean7 = F.trailing_mean(d["avg_temperature"], 7).reindex(days)
@@ -225,13 +235,15 @@ def score_rule(rule: Rule, ctx: FieldContext, daily: pd.DataFrame, hourly: pd.Da
                 pressure = 1.0 if ctx.maize_years_in_row >= 2 else 0.05
                 pressure_why = (f"kukurydza na tym polu {ctx.maize_years_in_row} {plural(ctx.maize_years_in_row, 'sezon', 'sezony', 'sezonów')} z rzędu: jaja zimują w glebie"
                                 if ctx.maize_years_in_row >= 2 else "pierwszy sezon kukurydzy na tym polu: w glebie nie ma jaj, z których wylęgłyby się larwy")
-            if rule.code == "maize.aphids":
-                act = act * (0.5 + 0.5 * ramp(mean7.to_numpy(), 14, 20))
-            elif rule.warm_ramp:
-                act = act * (0.5 + 0.5 * ramp(mean7.to_numpy(), *rule.warm_ramp))
+            act0 = act
+            warm_range = (14, 20) if rule.code == "maize.aphids" else rule.warm_ramp
+            if warm_range:
+                act = act * np.where(np.isnan(mean7.to_numpy()), 1.0, 0.5 + 0.5 * ramp(mean7.to_numpy(), *warm_range))
                 extra["mean_temperature_7d"] = mean7
+                without_base["mean_temperature_7d"] = act0 * pressure
             base = act * pressure
             extra["local_pressure"] = pd.Series(pressure, index=days)
+            without_base["local_pressure"] = act  # without the local pressure assumption: full activity
             extra["_pressure_reason"] = f"presja lokalna {pressure:.0%}: {pressure_why}"
             main = {"factor": "pest_activity", "values": pd.Series(np.round(act * 100), index=days), "unit": "% szczytu aktywności",
                     "label": "Okno aktywności szkodnika wg sumy temperatur (próg 10 °C, od 1 stycznia)",
@@ -251,27 +263,42 @@ def score_rule(rule: Rule, ctx: FieldContext, daily: pd.DataFrame, hourly: pd.Da
         final = OBS.combine(rules_only, effs)
         loo = [OBS.combine(rules_only, effs, skip=j) for j in range(len(effs))]
 
+    def scored(x) -> np.ndarray:  # a counterfactual weather part -> its final score (with the farmer's reports)
+        x = np.clip(np.asarray(x, dtype=float), 0, 1)
+        return OBS.combine(x, effs) if effs else x
+
+    # "effect" of each factor = final score - the final score without it (both with the farmer's reports)
+    alt = {"growth_stage": scored(base * m_total),
+           **{k: scored(v * sw * m_total) for k, v in without_base.items()},
+           **{f"mult{j}": scored(base * sw * m_total / m["multiplier"]) for j, m in enumerate(mults) if m["multiplier"]}}
+
     results = []
     for i, day in enumerate(days):
         active = [(e, float(final[i] - loo[j][i])) for j, e in enumerate(effs)
                   if e.mult[i] != 1 or e.floor[i] > 0 or e.after[i] != 1]
         results.append(DayResult(day.date(), round(float(final[i]), 3), _explain(
             rule, ctx, day, float(final[i]), float(base[i]), float(sw[i]), float(bbch[i]), m_total, mults, main, i,
-            stages, extra, bool(estimated.iloc[i]) if len(estimated) else False, active)))
+            stages, extra, bool(estimated.iloc[i]) if len(estimated) else False, active,
+            {k: float(v[i]) for k, v in alt.items()})))
     return results
 
 
 def _moisture_text(kind: str) -> str:
-    return {"wet": "mokrymi liśćmi (wilgotność >= 95 % lub deszcz)", "humid": "wilgotnym powietrzem (wilgotność >= 85 % lub deszcz)",
-            "mild": "wilgotnym, ale bezdeszczowym powietrzem (wilgotność 50-95 %)", "rh90": "wilgotnością powietrza >= 90 % lub deszczem"}[kind]
+    return {"wet": "mokrymi liśćmi (wilgotność względna powietrza ≥ 95 % lub deszcz)",
+            "humid": "wilgotnym powietrzem (wilgotność względna ≥ 85 % lub deszcz)",
+            "mild": "wilgotnym, ale bezdeszczowym powietrzem (wilgotność względna 50-95 %)",
+            "rh90": "wilgotnością względną powietrza ≥ 90 % lub deszczem"}[kind]
 
 
 def _days_threshold(rule: Rule) -> str:
     return f"od {rule.hours_low:g} {days_pl(rule.hours_low)} ryzyko rośnie, {rule.hours_high:g} {days_pl(rule.hours_high)} = pełne ryzyko"
 
 
-def _explain(rule, ctx, day, final, base, sw, bbch, m_total, mults, main, i, stages, extra, estimated, active=()) -> dict:
-    level = level_of(final)
+def _explain(rule, ctx, day, final, base, sw, bbch, m_total, mults, main, i, stages, extra, estimated, active=(),
+             alt=None) -> dict:
+    """alt: factor -> the final score without that factor (growth_stage, mult<j>, extra keys)."""
+    alt = alt or {}
+    level = level_of(round(final, 3))  # the same rounding as the stored score, so level and score never disagree
     value = main["values"].iloc[i] if hasattr(main["values"], "iloc") else main["values"][i]
     value = None if pd.isna(value) else round(float(value), 1)
     drivers = [{
@@ -283,10 +310,10 @@ def _explain(rule, ctx, day, final, base, sw, bbch, m_total, mults, main, i, sta
     drivers.append({
         "factor": "growth_stage", "label": f"Faza rozwoju BBCH {bbch:.0f} ({stage_name(bbch, rule.crop)}); faza podatna BBCH {rule.stage_min}-{rule.stage_max}",
         "value": int(round(bbch)), "unit": "BBCH", "threshold": f"BBCH {rule.stage_min}-{rule.stage_max}",
-        "effect": round(final - min(1.0, base * m_total), 3),
+        "effect": round(final - alt.get("growth_stage", min(1.0, base * m_total)), 3),
     })
-    for m in mults:
-        without = min(1.0, base * sw * m_total / m["multiplier"])
+    for j, m in enumerate(mults):
+        without = alt.get(f"mult{j}", min(1.0, base * sw * m_total / m["multiplier"]))
         drivers.append({**{k: v for k, v in m.items()}, "effect": round(final - without, 3)})
     for e, eff in active:
         r = e.report
@@ -300,7 +327,8 @@ def _explain(rule, ctx, day, final, base, sw, bbch, m_total, mults, main, i, sta
         if pd.isna(v):
             continue
         drivers.append({"factor": k, "label": _EXTRA_LABELS.get(k, k), "value": round(float(v), 1),
-                        "unit": _EXTRA_UNITS.get(k, ""), "effect": None})
+                        "unit": _EXTRA_UNITS.get(k, ""),
+                        "effect": round(final - alt[k], 3) if k in alt else None})  # None: context only
 
     def lc(text: str) -> str:  # lower-case the first letter only (keeps °C, RH, BBCH)
         return text[:1].lower() + text[1:]
@@ -347,8 +375,8 @@ def _explain(rule, ctx, day, final, base, sw, bbch, m_total, mults, main, i, sta
     }
 
 
-_EXTRA_LABELS = {"rain_days": "Dni z opadem >= 1 mm w oknie (krople deszczu roznoszą zarodniki)",
-                 "mean_temperature_7d": "Średnia temperatura z ostatnich 7 dni (poniżej ok. 3-8 °C roślina i grzyb są w spoczynku)",
+_EXTRA_LABELS = {"rain_days": "Dni z opadem ≥ 1 mm w oknie (krople deszczu roznoszą zarodniki)",
+                 "mean_temperature_7d": "Średnia temperatura z ostatnich 7 dni (chłód hamuje rozwój grzybów i aktywność szkodników)",
                  "water_balance_30d": "Bilans wodny (opad minus ewapotranspiracja) z ostatnich 30 dni; mocno ujemny = stres suszy",
                  "local_pressure": "Lokalna presja szkodnika z historii pola (0-1)",
                  "degree_days_10": "Suma temperatur (próg 10 °C) od 1 stycznia"}

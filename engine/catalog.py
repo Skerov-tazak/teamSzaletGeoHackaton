@@ -55,7 +55,7 @@ class Rule:
     # infection_hours
     temp_min: float | None = None
     temp_max: float | None = None
-    moisture: str = "wet"  # wet: RH >= 90 % or dew point gap <= 2 °C or rain; humid: RH >= 80 %; mild: 50 <= RH < 95 % and no rain
+    moisture: str = "wet"  # wet: RH >= 95 % or rain (engine.features.WET_RH); humid: RH >= 85 % or rain; rh90: RH >= 90 % or rain; mild: 50 <= RH < 95 % and no rain
     window_days: int = 7
     hours_low: float = 5.0   # hours in the window at which the weather starts to count
     hours_high: float = 20.0  # hours in the window at which the weather alone gives score 1

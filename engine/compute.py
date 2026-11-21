@@ -37,7 +37,7 @@ from engine.models import RiskSnapshot
 from engine import features as F
 from engine import observations as OBS
 from engine.catalog import CARRYOVER, MAIZE, RULES, rules_for_crop
-from engine.phenology import bbch_series, calibrate, degree_days_base10, season_end
+from engine.phenology import PROFILES, bbch_series, calibrate, degree_days_base10, season_end
 from engine.satellite.season import season_bounds, season_of
 from engine.scoring import FieldContext, score_rule, spray_window
 
@@ -134,8 +134,11 @@ def clock_moved(old: date, new: date | None = None) -> PredictResult:
     coming days and are now past go back to "as of that day", and the new coming days are computed
     from the forecast issued on `new`. Nothing else is rewritten.
 
-    Called explicitly by the platform after saving the Clock (PUT /api/clock/, the admin's clock page);
-    there is no signal. Use clock.save() or Clock.objects.update(); either way, call this afterwards.
+    Called by core.clock.set_today() (PUT /api/clock/, the admin's clock page, engine_set_date), which saves
+    the Clock and calls this in one transaction; there is no signal. Never move the date any other way.
+
+    A move into another season recomputes season by season, oldest first (a season's carry-over reads the
+    previous season's peaks from Risk), from the start of the season before the later date at the earliest.
     """
     new = new or clock.today()
     if old == new:
@@ -143,7 +146,7 @@ def clock_moved(old: date, new: date | None = None) -> PredictResult:
     lo, hi = min(old, new), max(old, new)
     start, end = lo + timedelta(days=1), hi + timedelta(days=clock.FORECAST_DAYS)
     if season_of(old) != season_of(new):  # another season: other crops and facts, nothing reusable
-        return predict(start=start, end=end)
+        return _by_season(max(start, season_bounds(season_of(hi) - 1)[0]), end)
     last_day = last_computable_day(new)
     if last_day is None:
         return PredictResult(0)
@@ -170,11 +173,24 @@ def clock_moved(old: date, new: date | None = None) -> PredictResult:
            for f in ready for d in days for r in have[(f, d)]]
     with transaction.atomic():
         Risk.objects.filter(field_id__in=ready, date__range=(start, end)).delete()
-        Risk.objects.bulk_create(out, batch_size=2000)
+        Risk.objects.bulk_create(out, batch_size=2000, update_conflicts=True, unique_fields=["field", "threat", "date"],
+                                 update_fields=["score", "explanation", "computed_at"])  # a concurrent predict() wrote them
     result = PredictResult(len(out), ready)
     if missing:  # computed now and kept, so the next move to this date is a copy too
         result = result + _write(missing, start, end, invalidate=False)
     log.info("clock_moved %s -> %s: %d fields copied, %d computed", old, new, len(ready), len(missing))
+    return result
+
+
+def _by_season(start: date, end: date) -> PredictResult:
+    """predict() over [start, end] one season at a time, oldest first, so each season's carry-over reads the
+    peaks the previous one has just written."""
+    result = PredictResult(0)
+    s = start
+    while s <= end:
+        s_end = min(end, season_bounds(season_of(s))[1])
+        result = result + predict(start=s, end=s_end)
+        s = s_end + timedelta(days=1)
     return result
 
 
@@ -188,9 +204,10 @@ def precompute_dates(first: date | None = None, last: date | None = None) -> int
     """
     today = clock.today()
     season = season_of(today)
-    s0, _ = season_bounds(season)
+    s0, s1 = season_bounds(season)
     first = max(first or today - timedelta(days=7), s0)
-    last = min(last or today + timedelta(days=30), date(season, 12, 31))
+    # a date after the season's end is another season: clock_moved() recomputes it, so bundles for it are never read
+    last = min(last or today + timedelta(days=30), s1)
     obs_last = WeatherDaily.objects.aggregate(m=Max("date"))["m"]
     if obs_last is None or first > last:
         return 0
@@ -371,7 +388,9 @@ def crop_season_segments(field: Field, start: date, end: date) -> list[tuple[int
 
     Seasons are named by harvest year and run 1 Sep - 31 Aug (winter crops). Spring crops harvested
     after 1 September stay open longer (maize to 31 Dec, sugar beet to 30 Nov, potato to 31 Oct;
-    engine.phenology.PROFILES). Seasons after the current one are skipped: their crop is not known yet.
+    engine.phenology.PROFILES): from 1 September such a crop of the previous season is still in the field
+    until its harvest (or until the next crop's sowing, if that is a winter crop sown earlier), whichever
+    season the Clock is in. Seasons after the current one are skipped: their crop is not known yet.
     """
     current = season_of(clock.today())
     out = []
@@ -379,17 +398,36 @@ def crop_season_segments(field: Field, start: date, end: date) -> list[tuple[int
     while s <= end:
         season = season_of(s)
         s_end = min(end, season_bounds(season)[1])
-        if season > current:
-            late = season_end(field.crop_id, current) if field.crop_id else None
-            if late and late.month >= 9 and s.year == current and s <= late:  # spring crop harvested after 1 September
-                s_end = min(end, late)
-                out.append((current, s, s_end, field.crop_id, "field"))
-            s = s_end + timedelta(days=1)
+        late_end = _late_crop_end(field, season, current) if s.month >= 9 else None
+        if late_end and s <= late_end:  # last season's spring crop, not harvested yet
+            seg_end = min(end, late_end)
+            crop, source = season_crop(field, season - 1)
+            out.append((season - 1, s, seg_end, crop, source))
+            s = seg_end + timedelta(days=1)
             continue
-        crop, source = season_crop(field, season)
-        out.append((season, s, s_end, crop, source))
+        if season <= current:
+            crop, source = season_crop(field, season)
+            out.append((season, s, s_end, crop, source))
         s = s_end + timedelta(days=1)
     return out
+
+
+def _late_crop_end(field: Field, season: int, current: int) -> date | None:
+    """The last day last season's crop stays in the field after 1 September (None: it was harvested by then)."""
+    prev, _ = season_crop(field, season - 1)
+    if not prev or prev not in PROFILES or PROFILES[prev].winter:
+        return None
+    late = season_end(prev, season - 1)
+    if late.month < 9:
+        return None
+    if season <= current:  # the next crop is known: a winter crop sown before that harvest takes the field from its sowing
+        nxt, _ = season_crop(field, season)
+        if nxt in PROFILES and PROFILES[nxt].winter and nxt != prev:
+            m, d = PROFILES[nxt].sowing
+            sow = date(season - 1, m, d)
+            if sow <= late:
+                late = sow - timedelta(days=1)
+    return late if late >= date(season - 1, 9, 1) else None
 
 
 def _field_rows(field: Field, threats: dict, start: date, end: date, now, reports=()) -> list[Risk]:

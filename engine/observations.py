@@ -12,7 +12,8 @@ Kinds:
 - symptoms   the farmer sees the threat on this field -> score floor (0.66 + 0.3 x severity: always "high"), fading after 10 days;
              without a threat code: x(1 + 0.3 x severity) for every threat of that group (disease / pest)
 - absence    inspected, nothing found -> x0.5, back to normal over 10 days (threat_code empty = all threats)
-- neighbour  a neighbour / the area has it -> x(1 + 0.5 x closeness), fading over 21 days and 3 km
+- neighbour  a neighbour / the area has it -> x(1 + 0.5 x closeness), fading over 21 days and 3 km;
+             without a threat code: x(1 + 0.25 x closeness) for every threat of that group (disease / pest)
 - treatment  sprayed against it -> x0.3 for 14 days, back to normal by day 21 (threat_code empty = all fungal)
 - field_fact details: sowing_date (replaces the assumed one), tillage ("plough" / "reduced"),
              resistant_to ([threat codes] -> x0.6)
@@ -61,11 +62,13 @@ class Report:
             return f"Rolnik zgłosił na tym polu: {what} ({when})" + (f", nasilenie {self.severity:.0%}" if self.severity is not None else "")
         if self.kind == "absence":
             return f"Rolnik obejrzał pole ({when}) i nie znalazł " + (f"objawów: {what}" if self.threat_code else "objawów")
+        if self.kind == "neighbour" and not rule and self.group:
+            what = "szkodniki" if self.group == "pest" else "choroby"
         if self.kind == "neighbour":
             where = f" ok. {self.distance_m:.0f} m stąd" if self.distance_m else " w pobliżu"
             return f"Zgłoszono {what}{where} ({when}); zarodniki lub szkodniki mogą przejść na to pole"
         if self.kind == "treatment":
-            return f"Zabieg przeciw: {what} ({when})"
+            return f"Zabieg przeciw: {what if rule else 'choroby grzybowe (wszystkie)'} ({when})"
         if self.kind == "event":
             kind = str(self.details.get("type") or self.details.get("event") or "damage")
             name = EVENT_PL.get(kind, kind.capitalize())
@@ -89,6 +92,7 @@ CATEGORY_KIND = {"choroba": "symptoms", "szkodnik": "symptoms", "uszkodzenie": "
                  "disease": "symptoms", "pest": "symptoms", "damage": "event"}
 ASSISTANT_GROUP = {"choroba": "disease", "szkodnik": "pest", "disease": "disease", "pest": "pest"}
 DISEASE_CATEGORIES = ("fungal", "bacterial", "viral")
+DEFAULT_SEVERITY = 0.5  # a symptoms report that does not say how bad
 EVENT_WORDS = (("hail", ("grad",)), ("lodging", ("wylegl", "wyległ", "polegl", "położ")),
                ("flood", ("zalan", "zalał", "powód", "podtop", "stoi woda")))
 DETAIL_KEYS = ("sowing_date", "tillage", "resistant_to", "type", "event", "scope")
@@ -121,7 +125,7 @@ def _to_report(r, date_field: str) -> Report | None:
         code = r.threat.code
     sev = _severity(getattr(r, "severity", None))
     if kind == "symptoms" and sev is None:
-        sev = 0.5
+        sev = DEFAULT_SEVERITY
     text = getattr(r, "text", None) or getattr(r, "note", None) or ""
     details = {k: v for k, v in d.items() if k in DETAIL_KEYS}
     if kind == "event" and not (details.get("type") or details.get("event")):
@@ -277,13 +281,19 @@ def effects(rule, reports: list[Report], days: pd.DatetimeIndex) -> list[Effect]
             sev = 0.5 if r.severity is None else float(r.severity)
             mult = 1 + 0.3 * sev * _fade(age, 10, 21)
         elif r.kind == "symptoms" and same:
-            sev = 0.6 if r.severity is None else float(r.severity)
+            sev = DEFAULT_SEVERITY if r.severity is None else float(r.severity)
             floor = min(1.0, 0.66 + 0.3 * sev) * _fade(age, 10, 21)
         elif r.kind == "absence" and (same or r.threat_code is None):
             mult = 1 - 0.5 * _fade(age, 0, 10)
         elif r.kind == "neighbour" and same:
             close = 1.0 if not r.distance_m else float(np.clip(1 - (r.distance_m - 500) / 2500, 0, 1))
             mult = 1 + 0.5 * close * _fade(age, 7, 21)
+        elif r.kind == "neighbour" and r.threat_code is None and r.group:  # "the neighbour has pests", no name
+            hit = (rule.category == "pest") if r.group == "pest" else (rule.category in DISEASE_CATEGORIES)
+            if not hit:
+                continue
+            close = 1.0 if not r.distance_m else float(np.clip(1 - (r.distance_m - 500) / 2500, 0, 1))
+            mult = 1 + 0.25 * close * _fade(age, 7, 21)  # half of a named threat: we don't know which one
         elif r.kind == "treatment" and (same or (r.threat_code is None and rule.category == "fungal")):
             after = 1 - 0.7 * _fade(age, 14, 21)
         elif r.kind == "field_fact":

@@ -7,7 +7,7 @@ Harvest and storage outlook (not a Risk row: there is no threat category for it)
 - Maize: safe storage time of grain by moisture and temperature table below);
   storage moisture < 14.5 %, dry to 16 % and cool to lose 2-3 % more.
 
-    harvest_outlook(stage_bbch, crop, weather_last_days, forecast)  -> dict for the field summary
+    harvest_outlook(crop, stage_bbch, weather_last_days, forecast)  -> dict for the field summary
     safe_storage_days(moisture_pct, grain_temp_c)                   -> days (maize)
 """
 

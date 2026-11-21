@@ -645,3 +645,80 @@ class SnapshotTests(EngineTestBase):
         res = self.move(date(2025, 6, 20))
         self.assertIn(self.wheat.id, res.field_ids)
         self.assertEqual(self.state(), self.truth(date(2025, 6, 20)))
+
+
+class AuditFixTests(EngineTestBase):
+    """Fixes from docs/audit-2026-11-21.md (E-1, E-2, E-4, E-6, E-11, E-12, E-16d)."""
+
+    wet_days = {date(2025, 5, d) for d in (20, 21, 24, 25, 26)}
+
+    def test_last_seasons_maize_stays_until_its_harvest(self):
+        """E-1: maize of season N is still in the field from 1 September to 31 December, whichever season the
+        Clock is in; a winter crop of season N+1 takes the field from its sowing."""
+        from engine.compute import crop_season_segments
+        maize = self.make_field("maize after maize", 1130, prev=1130)
+        segs = crop_season_segments(maize, date(2024, 9, 1), date(2025, 1, 10))
+        self.assertEqual(segs[0][:5], (2024, date(2024, 9, 1), date(2024, 12, 31), 1130, "crop map"))
+        self.assertEqual(segs[1][:4], (2025, date(2025, 1, 1), date(2025, 1, 10), 1130))
+        # wheat after maize: the maize stays until the day before the assumed wheat sowing (1 October)
+        segs = crop_season_segments(self.wheat, date(2024, 9, 1), date(2024, 10, 5))
+        self.assertEqual(segs[0][:4], (2024, date(2024, 9, 1), date(2024, 9, 30), 1130))
+        self.assertEqual(segs[1][:4], (2025, date(2024, 10, 1), date(2024, 10, 5), 1110))
+        # wheat after wheat: nothing late, one segment
+        self.assertEqual(len(crop_season_segments(self.wheat_after_wheat, date(2024, 9, 1), date(2024, 10, 5))), 1)
+
+    def test_a_move_into_another_season_computes_oldest_season_first(self):
+        """E-2: one predict() per season, in order, so carry-over reads the previous season just written."""
+        from unittest import mock
+        from engine import compute
+        with mock.patch.object(compute, "predict", return_value=compute.PredictResult(0)) as p:
+            compute.clock_moved(date(2025, 8, 30), date(2025, 9, 2))
+        ranges = [(c.kwargs["start"], c.kwargs["end"]) for c in p.call_args_list]
+        self.assertEqual(ranges, [(date(2025, 8, 31), date(2025, 8, 31)), (date(2025, 9, 1), date(2025, 9, 9))])
+
+    def test_engine_set_date_goes_through_set_today(self):
+        """E-4: the command moves the date and recomputes in one transaction, and rejects other date formats."""
+        from unittest import mock
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        with mock.patch("engine.clock_moved") as moved:
+            call_command("engine_set_date", "2025-06-16", stdout=open("/dev/null", "w"))
+        moved.assert_called_once_with(date(2025, 6, 15), date(2025, 6, 16))
+        self.assertEqual(Clock.objects.get(pk=1).today, date(2025, 6, 16))
+        with self.assertRaises(CommandError):
+            call_command("engine_set_date", "2025-W25-1")
+
+    def test_a_neighbour_report_without_a_threat_raises_its_group(self):
+        """E-6: "the neighbour has pests" (no threat named) raises the pests, not the diseases."""
+        from engine import observations as OBS
+        days = pd.date_range("2025-06-01", "2025-06-10", freq="D")
+        r = OBS.Report(observed_on=date(2025, 6, 1), kind="neighbour", group="pest", distance_m=500)
+        pest = OBS.effects(RULES["maize.european_corn_borer"], [r], days)
+        self.assertTrue(pest and pest[0].mult.max() > 1)
+        self.assertEqual(OBS.effects(RULES["wheat.septoria_leaf_blotch"], [r], days), [])
+        self.assertIn("szkodniki", r.label())
+
+    def test_every_score_changing_factor_has_an_effect(self):
+        """E-11: rain days, 7-day temperature, local pressure and water balance change the score, so they carry an
+        effect (final minus the score without them); E-16d: the level always matches the rounded score."""
+        from engine.scoring import level_of
+        predict(start=date(2025, 5, 1), end=date(2025, 6, 15))
+        seen = set()
+        for r in Risk.objects.all():
+            e = r.explanation
+            self.assertEqual(e["level"], level_of(r.score), r)
+            for d in e["drivers"]:
+                if d["factor"] in ("rain_days", "mean_temperature_7d", "local_pressure", "water_balance_30d"):
+                    self.assertIsInstance(d["effect"], float, (r.threat.code, d))
+                    seen.add(d["factor"])
+        self.assertTrue({"rain_days", "local_pressure"} <= seen, seen)
+
+    def test_stage_effect_counts_the_farmers_reports(self):
+        """E-12: with a symptoms report (score floored to high) the growth stage's effect is measured with the
+        report applied too, so it is never larger than the score itself."""
+        Observation.objects.create(field=self.wheat, observed_on=date(2025, 6, 10), kind="symptoms",
+                                   threat=Threat.objects.get(code="wheat.septoria_leaf_blotch"), severity=0.5)
+        predict(field_ids=[self.wheat.id], start=date(2025, 6, 1), end=date(2025, 6, 15))
+        r = Risk.objects.get(field=self.wheat, threat__code="wheat.septoria_leaf_blotch", date=date(2025, 6, 12))
+        stage = next(d for d in r.explanation["drivers"] if d["factor"] == "growth_stage")
+        self.assertLessEqual(abs(stage["effect"]), r.score + 1e-9)
