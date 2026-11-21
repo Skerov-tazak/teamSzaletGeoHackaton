@@ -23,12 +23,15 @@ LEVEL_COLORS = {"niskie": "#4caf50", "średnie": "#ff9800", "wysokie": "#e53935"
 
 
 def _today_rule(today: dt.date) -> list[dict]:
+    # A DateTime, not an ISO string: Vega-Lite does not parse a string datum, so the line got no x and
+    # was not drawn. utc: the data's "YYYY-MM-DD" strings are read as UTC midnight. One row of data,
+    # otherwise the layer inherits every data row and draws the same line and label once per row.
+    x = {"datum": {"year": today.year, "month": today.month, "date": today.day, "utc": True}, "type": "temporal"}
+    one_row = {"values": [{}]}
     return [
-        {"mark": {"type": "rule", "color": "#555", "strokeDash": [4, 3]},
-         "encoding": {"x": {"datum": today.isoformat(), "type": "temporal"}}},
-        {"mark": {"type": "text", "align": "left", "dx": 3, "dy": -6, "color": "#555"},
-         "encoding": {"x": {"datum": today.isoformat(), "type": "temporal"}, "y": {"value": 0},
-                      "text": {"value": f"dziś ({today:%d.%m})"}}},
+        {"data": one_row, "mark": {"type": "rule", "color": "#555", "strokeDash": [4, 3]}, "encoding": {"x": x}},
+        {"data": one_row, "mark": {"type": "text", "align": "left", "dx": 3, "dy": -6, "color": "#555"},
+         "encoding": {"x": x, "y": {"value": 0}, "text": {"value": f"dziś ({today:%d.%m})"}}},
     ]
 
 
@@ -79,7 +82,9 @@ def chart_risk_timeline(field_ids: list[int], threat: str, date_from=None, date_
         raise ToolError(f"Brak danych ryzyka „{t.name}” dla wybranych pól w zakresie {a} – {b}.")
     spec = {
         "$schema": VEGA, "width": "container", "height": 260,
-        "title": {"text": f"Ryzyko: {t.name}", "subtitle": f"{a:%d.%m} – {b:%d.%m.%Y}; poziomy: niskie < 0,33 ≤ średnie < 0,66 ≤ wysokie"},
+        # two lines, from the chart's left edge: in one centred line it was cut off in the chat's width
+        "title": {"text": f"Ryzyko: {t.name}", "anchor": "start", "frame": "bounds",
+                  "subtitle": [f"{a:%d.%m} – {b:%d.%m.%Y}", "poziomy: niskie < 0,33 ≤ średnie < 0,66 ≤ wysokie"]},
         "data": {"values": values},
         "layer": [
             {"mark": {"type": "line", "point": True},
@@ -133,8 +138,8 @@ def chart_weather_vs_risk(field_id: int, variable: str, threat: str, date_from=N
     weather_mark = "bar" if "precipitation" in variable else "line"
     spec = {
         "$schema": VEGA, "width": "container", "height": 260,
-        "title": {"text": f"{f.name}: {WEATHER_LABELS.get(variable, variable).lower()} a ryzyko — {t.name}",
-                  "subtitle": f"{a:%d.%m} – {b:%d.%m.%Y}"},
+        "title": {"text": [f"{f.name}: {WEATHER_LABELS.get(variable, variable).lower()} a ryzyko", t.name],
+                  "subtitle": f"{a:%d.%m} – {b:%d.%m.%Y}", "anchor": "start", "frame": "bounds"},
         "data": {"values": values},
         "layer": [
             {"transform": [{"filter": "datum.seria == 'pogoda'"}],
@@ -172,7 +177,7 @@ def chart_farm_overview(date: dt.date | None = None) -> dict:
                "zagrozenie": f["top_threats"][0]["threat"] if f["top_threats"] else "—"} for f in s["fields"]]
     spec = {
         "$schema": VEGA, "width": "container", "height": 40 + 28 * len(values),
-        "title": {"text": f"Najwyższe ryzyko na polach — {s['date']:%d.%m.%Y}"},
+        "title": {"text": f"Najwyższe ryzyko na polach — {s['date']:%d.%m.%Y}", "anchor": "start", "frame": "bounds"},
         "data": {"values": values},
         "mark": "bar",
         "encoding": {"y": {"field": "pole", "type": "nominal", "sort": "-x", "title": "Pole"},
