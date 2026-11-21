@@ -331,7 +331,7 @@ def predict_field(field, season: int, today: date) -> dict | None:
 
     if not model_path().exists():
         return None
-    series = fieldndvi.load(field.id, season)
+    series = fieldndvi.load(field, season)
     if series is None:
         return None
     series = series[series.date <= pd.Timestamp(today)]

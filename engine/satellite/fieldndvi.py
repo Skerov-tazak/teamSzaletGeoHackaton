@@ -29,8 +29,16 @@ def cache_dir() -> Path:
     return (base / os.environ.get("DATA_DIR", "../field-under-pressure-data") / "satellite" / "fields").resolve()
 
 
-def path_for(field_id: int, season: int) -> Path:
-    return cache_dir() / f"field{field_id}_s{season}.parquet"
+def geometry_key(geometry) -> str:
+    """Short hash of the polygon: the cache follows the shape, not just the database id (ids are reused)."""
+    import hashlib
+    import json
+
+    return hashlib.sha1(json.dumps(geometry, sort_keys=True).encode()).hexdigest()[:10]
+
+
+def path_for(field, season: int) -> Path:
+    return cache_dir() / f"field{field.id}_{geometry_key(field.geometry)}_s{season}.parquet"
 
 
 def fetch(field, season: int, end: date | None = None) -> pd.DataFrame | None:
@@ -59,14 +67,15 @@ def fetch(field, season: int, end: date | None = None) -> pd.DataFrame | None:
         rows.append({"date": pd.Timestamp(d), "ndvi": float(np.nanmean(v)), "ndvi_p25": float(np.nanpercentile(v, 25)),
                      "ndvi_p75": float(np.nanpercentile(v, 75)), "clear_share": float(clear.mean()), "pixels": int(mask.sum())})
     df = pd.DataFrame(rows)
-    p = path_for(field.id, season)
+    p = path_for(field, season)
     p.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(p, index=False)
     return df
 
 
-def load(field_id: int, season: int) -> pd.DataFrame | None:
-    p = path_for(field_id, season)
+def load(field, season: int) -> pd.DataFrame | None:
+    """field: a Field (its id and polygon pick the cache file)."""
+    p = path_for(field, season)
     if not p.exists():
         return None
     df = pd.read_parquet(p)

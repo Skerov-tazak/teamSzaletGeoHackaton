@@ -215,7 +215,7 @@ def _season_rows(field, threats, rules, season, start, end, now, reports=(), cro
     ctx.last_season = last_season_peaks(field, season)
     stages = bbch_series(ctx.crop, daily["avg_temperature"], season)
     from engine.satellite import fieldndvi
-    anchors = fieldndvi.phenology_anchors(fieldndvi.load(field.id, season), ctx.crop, season)
+    anchors = fieldndvi.phenology_anchors(fieldndvi.load(field, season), ctx.crop, season)
     stages = calibrate(stages, ctx.crop, anchors)
     sow = OBS.sowing_override([r for r in reports if r.observed_on <= end])
     if sow:  # the farmer's sowing date replaces the assumed one from the day it was reported
