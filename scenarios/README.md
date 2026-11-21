@@ -1,13 +1,13 @@
 # Scenarios — Test-Case & Simulation Controller
 
-Moduł zarządzający stanem bazy danych PostgreSQL dla prezentacji oraz testów integracyjnych platformy **Field Under Pressure (Cropilot)**. Pozwala deterministycznie zasilić bazę danymi z zewnętrznych zbiorów (`settings.DATA_DIR`) lub wbudowanym generatorem zastępczym oraz szybko przełączać się pomiędzy przypadkami testowymi przed uruchomieniem lub w trakcie demonstracji aplikacji.
+Moduł zarządzający stanem bazy danych PostgreSQL dla prezentacji oraz testów integracyjnych platformy **Field Under Pressure (Cropilot)**. Pozwala deterministycznie zasilić bazę danymi z zewnętrznych zbiorów (`settings.DATA_DIR`) i szybko przełączać się pomiędzy przypadkami testowymi przed uruchomieniem lub w trakcie demonstracji aplikacji.
 
 ## Zakres odpowiedzialności
 
 - **Synchronizacja tabel referencyjnych:** idempotentne zasilanie `CropClass` (21 klas CLMS) oraz `Threat` (katalog zagrożeń ładowany przez `engine_load_threats`).
 - **Konfiguracja gospodarstwa:** tworzenie rekordów `Field` (powierzchnia liczona w układzie metrycznym `EPSG:2180`, współrzędne GeoJSON w `EPSG:4326`), przypisywanie heksagonów glebowych H3 poziomu 10 (`SoilCell`) oraz historii płodozmianu z lat 2020–2024 (`FieldCropYear`).
-- **Zasilanie meteorologiczne:** import pogody dziennej (`WeatherDaily`) i godzinowej (`WeatherHourly`) wraz z opadami satelitarnymi IMERG z `DATA_DIR`, nakładanie modyfikacji scenariuszowych (`weather_overrides`) oraz generowanie 7-dniowej prognozy (`WeatherForecastDaily`) dla każdego dnia sezonu.
-- **Zdarzenia rolnika i zegar symulacji:** wstrzykiwanie początkowych obserwacji (`core.Observation`), ustawianie zegara `core.Clock` (`id=1`) oraz prekomputacja ryzyk dla całego sezonu przez `engine.predict()` (z opcjonalnym przeliczeniem poprzedniego sezonu dla efektu *carry-over*).
+- **Zasilanie meteorologiczne:** import kompletnych archiwów pogody dziennej (`WeatherDaily`) i godzinowej (`WeatherHourly`) wraz z opadami satelitarnymi IMERG z `DATA_DIR`, nakładanie modyfikacji scenariuszowych (`weather_overrides`) oraz generowanie 7-dniowej prognozy (`WeatherForecastDaily`).
+- **Pełny horyzont upraw i prekomputacja ryzyk:** automatyczne rozszerzenie ładowania pogody i prognoz co najmniej do **31 grudnia** roku sezonu (aby ryzyka dla późnych upraw, takich jak kukurydza, obejmowały cały rok), zapis obserwacji rolnika (`core.Observation`), ustawienie zegara `core.Clock` (`id=1`) oraz przeliczenie ryzyk przez `engine.precompute_season()`.
 
 ## Struktura modułu
 
@@ -17,7 +17,7 @@ scenarios/
 ├── README.md                 # Dokumentacja techniczna i instrukcja obsługi
 ├── exceptions.py             # Hierarchia wyjątków (ScenarioError, Validation, DataSource)
 ├── schema.py                 # Dataclassy definicji scenariusza oraz walidator JSON/CLI
-├── loaders.py                # Loadery danych z DATA_DIR, fallback syntetyczny, generator prognoz
+├── loaders.py                # Loadery danych z DATA_DIR, fallback opt-in, generator prognoz
 ├── manager.py                # Fasada ScenarioManager, repozytorium JSON, czyszczenie bazy
 ├── tests.py                  # Testy jednostkowe i integracyjne
 └── definitions/              # Gotowe definicje przypadków testowych (.json)
@@ -35,8 +35,8 @@ core/management/commands/
 |------|--------------|------|
 | `exceptions.py` | `ScenarioError`, `ScenarioNotFoundError`, `ScenarioValidationError`, `DataSourceError` | Spójna hierarchia wyjątków obsługiwana przez CLI i testy. |
 | `schema.py` | `ScenarioDefinition`, `FieldSpec`, `ObservationSpec`, `SimulationWindow`, `SwitchOptions`, `ScenarioParser` | Deserializacja plików JSON, walidacja geometrii, zakresów dat, udziałów upraw i obserwacji oraz aplikowanie nadpisań CLI. |
-| `loaders.py` | `ReferenceDataLoader`, `FieldAndSoilLoader`, `WeatherAndForecastLoader`, `ObservationLoader` | Odczyt archiwów ZIP/Parquet i rastrów z `DATA_DIR`, normalizacja nazw kolumn i stref czasowych UTC, generowanie `WeatherForecastDaily` oraz fallback offline. |
-| `manager.py` | `ScenarioRepository`, `DatabaseStateCleaner`, `ScenarioManager`, `DatabaseStatus`, `SwitchReport` | Odkrywanie scenariuszy, atomowy reset tabel scenariuszowych, ustawienie `Clock` i wywołanie `engine.predict()`. |
+| `loaders.py` | `ReferenceDataLoader`, `FieldAndSoilLoader`, `WeatherAndForecastLoader`, `ObservationLoader` | Weryfikacja *fail-fast* i odczyt archiwów ZIP/Parquet oraz rastrów z `DATA_DIR`, normalizacja UTC, generowanie `WeatherForecastDaily` oraz jawny tryb syntetyczny (`--allow-synthetic`). |
+| `manager.py` | `ScenarioRepository`, `DatabaseStateCleaner`, `ScenarioManager`, `DatabaseStatus`, `SwitchReport` | Odkrywanie scenariuszy, atomowy reset tabel scenariuszowych, ustawienie `Clock` i wywołanie `engine.precompute_season()`. |
 | `core/management/commands/scenario.py` | `Command` | Interfejs wiersza poleceń Django (`list`, `status`, `validate`, `switch`). |
 
 ## Użycie (CLI)
@@ -53,11 +53,14 @@ python manage.py scenario status
 # 3. Zwaliduj poprawność pliku scenariusza bez modyfikacji bazy
 python manage.py scenario validate wheat_septoria_outbreak
 
-# 4. Przełącz bazę danych na wybrany scenariusz
+# 4. Przełącz bazę danych na wybrany scenariusz (wymaga kompletnych plików w DATA_DIR)
 python manage.py scenario switch wheat_septoria_outbreak
 
 # 5. Przełącz z nadpisaniem daty "dzisiaj" i wyczyszczeniem historii czatu
 python manage.py scenario switch wheat_septoria_outbreak --today 2025-06-18 --reset-chat
+
+# 6. Tryb offline (bez plików w DATA_DIR) — wyłącznie do lokalnego developmentu
+python manage.py scenario switch wheat_septoria_outbreak --allow-synthetic
 ```
 
 ### Flagi podkomendy `switch`
@@ -65,10 +68,10 @@ python manage.py scenario switch wheat_septoria_outbreak --today 2025-06-18 --re
 | Flaga | Opis |
 |-------|------|
 | `--today YYYY-MM-DD` | Nadpisuje początkową datę zegara `core.Clock` (musi mieścić się w oknie `[season_start, season_end]`). |
-| `--keep-weather` | Pomija ponowne ładowanie `WeatherDaily` i `WeatherHourly`, jeśli tabele zawierają już dane dla komórek siatki i lat scenariusza. Nie należy używać tej flagi po scenariuszach z `weather_overrides`, jeśli celem jest przywrócenie czystych danych źródłowych. |
+| `--keep-weather` | Pomija ponowne ładowanie `WeatherDaily` i `WeatherHourly`, jeśli tabele zawierają już kompletne dane dla komórek siatki i lat scenariusza. Nie należy używać tej flagi po scenariuszach z `weather_overrides`, jeśli celem jest przywrócenie czystych danych źródłowych. |
 | `--reset-chat` | Usuwa wszystkie rekordy z tabel `assistant.Conversation` oraz `assistant.Message`. |
-| `--skip-predict` | Ładuje wyłącznie dane wejściowe i ustawia `Clock`, bez uruchamiania `engine.predict()`. |
-| `--strict-data` | Wyłącza deterministyczny generator zastępczy — wymaga kompletu plików źródłowych w `settings.DATA_DIR`. |
+| `--skip-predict` | Ładuje wyłącznie dane wejściowe i ustawia `Clock`, bez uruchamiania `engine.precompute_season()`. |
+| `--allow-synthetic` | Zezwala na wygenerowanie danych zastępczych przy braku kompletnych plików w `settings.DATA_DIR`. Domyślnie wyłączone (brak danych kończy się błędem `DataSourceError`); użycie emituje głośne ostrzeżenie w logach oraz na `stderr`. |
 
 ## Format pliku definicji scenariusza (`.json`)
 
@@ -81,15 +84,15 @@ Nowy przypadek testowy dodaje się poprzez utworzenie pliku `<slug>.json` w kata
 - **`region`** *(string, wymagane)* — nazwa województwa używana do dopasowania archiwów pogodowych i glebowych w `DATA_DIR` (np. `"Opolskie"`).
 - **`window`** *(object, wymagane)*:
   - `season` *(int)* — rok głównego sezonu wegetacyjnego (np. `2025`).
-  - `season_start` *(YYYY-MM-DD)* — początek okna przeliczania sezonu.
-  - `season_end` *(YYYY-MM-DD)* — koniec okna prekomputacji sezonu.
+  - `season_start` *(YYYY-MM-DD)* — początek okna ładowania danych sezonu.
+  - `season_end` *(YYYY-MM-DD)* — koniec okna scenariusza (horyzont pogody i prognoz jest automatycznie rozszerzany co najmniej do `31 grudnia` roku `season`).
   - `clock_today` *(YYYY-MM-DD)* — początkowa data ustawiana w `core.Clock`.
-  - `include_previous_season` *(bool, domyślnie `true`)* — czy załadować i przeliczyć poprzedni sezon (`season - 1`) dla efektu *carry-over*.
+  - `include_previous_season` *(bool, domyślnie `true`)* — czy załadować także poprzedni sezon (`season - 1`) na potrzeby efektu *carry-over* w silniku.
 - **`fields`** *(list[object], wymagane, min. 1 element)*:
   - `name` *(string)* — unikalna nazwa pola w ramach scenariusza.
   - `crop_code` *(int)* — kod uprawy wg legendy CLMS (`1110` = pszenica, `1130` = kukurydza).
   - `geometry` *(object)* — geometria GeoJSON (`Polygon` lub `MultiPolygon`) w układzie `EPSG:4326` (`[lon, lat]`).
-  - `crop_history` *(object, opcjonalne)* — nadpisanie historii upraw `{ "rok": { "kod_uprawy": udział_0_1 } }`.
+  - `crop_history` *(object, opcjonalne)* — nadpisanie historii upraw `{ "rok": { "kod_uprawy": udział_0_1 } }` dla lat `2020–2024`. Można podać tylko wybrane lata — zdefiniowane lata mają pierwszeństwo, a brakujące są uzupełniane z rastrów w `DATA_DIR` (lub danymi syntetycznymi przy `--allow-synthetic`).
 - **`weather_overrides`** *(list[object], opcjonalne)* — modyfikacje warunków pogodowych na potrzeby symulacji zdarzeń ekstremalnych (`start_date`, `end_date`, `values` z nazwami kolumn `WeatherDaily`).
 - **`observations`** *(list[object], opcjonalne)* — lista początkowych raportów rolnika zapisywanych w `core.Observation` (`kind`, `observed_on`, `field_name`, `category`, `threat_code`, `severity`, `distance_m`, `details`, `text`).
 
@@ -160,10 +163,10 @@ Nowy przypadek testowy dodaje się poprzez utworzenie pliku `<slug>.json` w kata
 ## Przepływ danych i zasady integracji
 
 1. **Brak własnych migracji:** Moduł nie definiuje własnych modeli Django i nie modyfikuje `core/models.py` — korzysta wyłącznie z istniejących tabel platformy (`core` oraz opcjonalnie `assistant`).
-2. **Atomowość operacji:** Cały proces czyszczenia poprzedniego scenariusza i ładowania nowego stanu odbywa się wewnątrz pojedynczej transakcji `django.db.transaction.atomic()`.
-3. **Generowanie prognoz 7-dniowych:** Dla każdego dnia `D` w horyzoncie symulacji `WeatherForecastDaily` wypełniane jest wartościami z `WeatherDaily` dla dni `D+1..D+7`, z przeniesieniem opadu satelitarnego `imerg_total_precipitation` do pola `total_precipitation`.
-4. **Kolejność inicjalizacji zegara:** Zapis `Clock(today=...).save()` wykonywany jest na pustej tabeli `Risk` tuż przed wywołaniem `engine.predict()`, co eliminuje zbędne przeliczanie nieaktualnych wierszy przez sygnały modelu.
-5. **Tryb hybrydowy (`DATA_DIR` + fallback):** W pierwszej kolejności loadery pobierają dane z plików źródłowych w `settings.DATA_DIR`. W przypadku ich braku (i bez flagi `--strict-data`) uruchamiany jest deterministyczny generator syntetyczny, umożliwiający pracę na dowolnym stanowisku deweloperskim.
+2. **Atomowość i weryfikacja *fail-fast*:** Cały proces czyszczenia poprzedniego scenariusza i ładowania nowego stanu odbywa się w pojedynczej transakcji `django.db.transaction.atomic()`. Przed zapisem sprawdzana jest kompletność wszystkich wymaganych plików źródłowych, dzięki czemu dane prawdziwe nigdy nie są mieszane z danymi zastępczymi.
+3. **Generowanie prognoz 7-dniowych:** Dla każdego dnia `D` w horyzoncie do co najmniej `31 grudnia` roku sezonu tabela `WeatherForecastDaily` wypełniana jest wartościami z `WeatherDaily` dla dni `D+1..D+7`, z przeniesieniem opadu satelitarnego `imerg_total_precipitation` do pola `total_precipitation`.
+4. **Prekomputacja ryzyk przez silnik:** Zapis zegara `Clock(today=...)` wykonywany jest na pustej tabeli `Risk` tuż przed wywołaniem `engine.precompute_season()`, które przelicza pełne okno sezonu wraz z efektem *carry-over* oraz horyzontem kukurydzy do końca roku.
+5. **Ścisła walidacja źródeł danych:** Domyślnie brak jakiegokolwiek pliku w `settings.DATA_DIR` przerywa działanie błędem `DataSourceError`. Generator syntetyczny uruchamia się wyłącznie po jawnym podaniu flagi `--allow-synthetic` i zawsze emituje ostrzeżenie.
 
 ## Testy
 

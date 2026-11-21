@@ -1,36 +1,32 @@
 """
-Warstwa pozyskiwania i normalizacji danych wejściowych dla scenariuszy.
+Loadery danych wejściowych dla modułu `scenarios`.
 
-Odpowiada za:
-- zasilenie tabel słownikowych (`CropClass`, `Threat`, `WeatherGrid`),
-- utworzenie obiektów `Field`, `FieldCropYear` oraz `SoilCell` na podstawie geometrii i `DATA_DIR`,
-- załadowanie historii pogody (`WeatherDaily`, `WeatherHourly`) z połączeniem opadów IMERG,
-- wygenerowanie prognozy 7-dniowej (`WeatherForecastDaily`) dla każdego dnia sezonu,
-- dostarczenie deterministycznego generatora zastępczego (fallback), gdy brakuje plików w `DATA_DIR`.
+Domyślnie wymagają kompletnych plików źródłowych w `settings.DATA_DIR` i rzucają
+`DataSourceError` przy jakimkolwiek braku. Tryb syntetyczny uruchamia się wyłącznie
+po jawnym przekazaniu `allow_synthetic=True` i każdorazowo emituje głośne ostrzeżenie.
 """
 
 from __future__ import annotations
 
-import glob
-import hashlib
-import io
+import logging
 import math
+import random
+import warnings
 import zipfile
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import h3
-import numpy as np
 import pandas as pd
+from django.conf import settings
 from django.core.management import call_command
 from pyproj import Transformer
-from shapely.geometry import mapping, shape
-from shapely.ops import transform as shp_transform
+from shapely.geometry import shape
+from shapely.ops import transform as shapely_transform
 
 from core.models import (
     CropClass,
-    DailyWeatherColumns,
     Field,
     FieldCropYear,
     Observation,
@@ -41,523 +37,616 @@ from core.models import (
     WeatherGrid,
     WeatherHourly,
 )
-from scenarios.exceptions import DataSourceError, ScenarioValidationError
+from scenarios.exceptions import DataSourceError
 from scenarios.schema import FieldSpec, ObservationSpec
 
-CLMS_CROP_LEGEND: dict[int, str] = {
-    0: "No cropland",
+logger = logging.getLogger(__name__)
+
+CLMS_CROP_NAMES: dict[int, str] = {
     1110: "Wheat",
     1120: "Barley",
     1130: "Maize",
     1140: "Rice",
     1150: "Other cereals",
-    1210: "Fresh vegetables",
+    1210: "Fresh Vegetables",
     1220: "Dry pulses",
     1310: "Potatoes",
-    1320: "Sugar beet",
+    1320: "Sugar Beet",
     1410: "Sunflower",
     1420: "Soybeans",
-    1430: "Rapeseed",
+    1430: "Rapeseed and turnip rapeseed",
     1440: "Flax, cotton and hemp",
-    2100: "Grapes",
-    2200: "Olives",
+    2110: "Grapes",
+    2210: "Olives",
     2310: "Fruits",
     2320: "Nuts",
-    3100: "Unclassified arable crop",
-    3200: "Unclassified permanent crop",
-    65535: "Outside area",
+    3100: "Temporary grassland",
+    3200: "Permanent grassland",
+    4000: "Fallow land",
+    9999: "Other / Non-arable",
 }
 
-TO_EPSG_2180 = Transformer.from_crs("EPSG:4326", "EPSG:2180", always_xy=True).transform
 
-
-def _region_name_variants(region: str) -> list[str]:
-    """Zwraca warianty nazwy województwa uwzględniające błędy kodowania w paczkach organizatora."""
-    normalized = region.strip()
-    variants = [normalized]
-    ascii_map = str.maketrans("ąćęłńóśźżĄĆĘŁŃÓŚŹŻ", "acelnoszzACELNOSZZ")
-    no_diacritics = normalized.translate(ascii_map)
-    if no_diacritics not in variants:
-        variants.append(no_diacritics)
-
-    # W paczkach danych występują nazwy z uciętą literą 'Ł' (np. 'odzkie', 'Maopolskie')
-    stripped_l = normalized.replace("Ł", "").replace("ł", "")
-    if stripped_l not in variants:
-        variants.append(stripped_l)
-    return variants
+def _emit_synthetic_warning(reason: str, warnings_sink: list[str] | None = None) -> None:
+    """Loguje głośne ostrzeżenie oraz dopisuje je do listy ostrzeżeń raportu CLI."""
+    message = (
+        f"UWAGA [SYNTHETIC DATA]: {reason} "
+        "Używam wygenerowanych danych zastępczych (--allow-synthetic)."
+    )
+    logger.warning(message)
+    warnings.warn(message, UserWarning, stacklevel=2)
+    if warnings_sink is not None and message not in warnings_sink:
+        warnings_sink.append(message)
 
 
 class ReferenceDataLoader:
-    """Idempotentny loader tabel referencyjnych wspólnych dla wszystkich scenariuszy."""
+    """Synchronizuje tabele słownikowe (`CropClass`, `Threat`)."""
 
-    def __init__(self, data_dir: Path) -> None:
-        """Inicjalizuje loader ścieżką do katalogu zewnętrznych zbiorów danych.
+    def __init__(self, data_dir: Path | None = None) -> None:
+        self.data_dir = Path(data_dir) if data_dir is not None else Path(settings.DATA_DIR)
 
-        Args:
-            data_dir: Ścieżka z `settings.DATA_DIR`.
-        """
-        self.data_dir = data_dir
-        self._grids_cache: pd.DataFrame | None = None
-
-    def ensure_crop_classes(self) -> int:
-        """Upewnia się, że wszystkie 21 klas CLMS znajduje się w tabeli `CropClass`.
-
-        Returns:
-            Liczba klas dostępnych w tabeli `CropClass` po synchronizacji.
-        """
-        for code, name in CLMS_CROP_LEGEND.items():
+    def ensure_reference_data(self) -> None:
+        """Idempotentnie uzupełnia 21 klas upraw CLMS oraz katalog zagrożeń."""
+        for code, name in CLMS_CROP_NAMES.items():
             CropClass.objects.update_or_create(code=code, defaults={"name": name})
-        return CropClass.objects.count()
 
-    def ensure_threats(self) -> int:
-        """Ładuje katalog zagrożeń (`Threat`) przy użyciu kontraktu silnika decyzyjnego.
-
-        Returns:
-            Liczba zagrożeń dostępnych w bazie po synchronizacji.
-
-        Raises:
-            DataSourceError: Gdy komenda ładowania zagrożeń nie powiedzie się lub tabela pozostanie pusta.
-        """
-        try:
-            call_command("engine_load_threats", verbosity=0)
-        except Exception as exc:
-            if not Threat.objects.exists():
-                raise DataSourceError(f"Nie udało się załadować katalogu zagrożeń (Threat): {exc}") from exc
-
-        count = Threat.objects.count()
-        if count == 0:
-            raise DataSourceError("Tabela Threat jest pusta po uruchomieniu 'engine_load_threats'.")
-        return count
-
-    def resolve_nearest_weather_grid(self, lat: float, lon: float, allow_fallback: bool = True) -> str:
-        """Znajduje najbliższy punkt siatki pogodowej `WeatherGrid` i zapisuje go w bazie.
-
-        Args:
-            lat: Szerokość geograficzna centroidu pola [WGS84].
-            lon: Długość geograficzna centroidu pola [WGS84].
-            allow_fallback: Czy utworzyć syntetyczną komórkę siatki przy braku `weather_grids.parquet`.
-
-        Returns:
-            Identyfikator `grid_id` najbliższej komórki `WeatherGrid`.
-
-        Raises:
-            DataSourceError: Gdy brak pliku siatki w `DATA_DIR` i `allow_fallback=False`.
-        """
-        grids_df = self._load_grids_table()
-        if grids_df is not None and not grids_df.empty:
-            cos_lat = math.cos(math.radians(lat))
-            dist_sq = (grids_df["lat"] - lat) ** 2 + ((grids_df["lon"] - lon) * cos_lat) ** 2
-            nearest = grids_df.loc[dist_sq.idxmin()]
-            grid_id = str(nearest["grid_id"])
-            WeatherGrid.objects.update_or_create(
-                grid_id=grid_id,
-                defaults={
-                    "lat": float(nearest["lat"]),
-                    "lon": float(nearest["lon"]),
-                    "geohash4": str(nearest.get("geohash4", "") or ""),
-                    "time_zone": str(nearest.get("time_zone", "Europe/Warsaw") or "Europe/Warsaw"),
-                },
-            )
-            return grid_id
-
-        if not allow_fallback:
-            raise DataSourceError(
-                f"Brak pliku siatki pogodowej: {self.data_dir / 'weather' / 'weather_grids.parquet'}"
-            )
-
-        synthetic_id = f"synth_{lat:.2f}_{lon:.2f}"
-        WeatherGrid.objects.update_or_create(
-            grid_id=synthetic_id,
-            defaults={
-                "lat": round(lat, 4),
-                "lon": round(lon, 4),
-                "geohash4": "",
-                "time_zone": "Europe/Warsaw",
-            },
-        )
-        return synthetic_id
-
-    def _load_grids_table(self) -> pd.DataFrame | None:
-        if self._grids_cache is not None:
-            return self._grids_cache
-
-        parquet_path = self.data_dir / "weather" / "weather_grids.parquet"
-        if not parquet_path.is_file():
-            return None
-
-        df = pd.read_parquet(parquet_path)
-        df["lat"] = df["lat"].astype(float)
-        df["lon"] = df["lon"].astype(float)
-        self._grids_cache = df
-        return df
+        if not Threat.objects.exists():
+            try:
+                call_command("engine_load_threats")
+            except Exception as exc:
+                raise DataSourceError(
+                    "Nie udało się załadować katalogu zagrożeń (`engine_load_threats`). "
+                    "Upewnij się, że submoduły i plik ryzyka_zebrane.xlsx są dostępne."
+                ) from exc
 
 
 class FieldAndSoilLoader:
-    """Loader geometrii pól, historii zmian upraw (`FieldCropYear`) oraz komórek glebowych (`SoilCell`)."""
+    """Tworzy pola (`Field`), przypisuje heksagony glebowe (`SoilCell`) i historię upraw (`FieldCropYear`)."""
 
-    def __init__(self, data_dir: Path, reference_loader: ReferenceDataLoader) -> None:
-        """Inicjalizuje loader danych przestrzennych pola.
+    def __init__(self, data_dir: Path | None = None) -> None:
+        self.data_dir = Path(data_dir) if data_dir is not None else Path(settings.DATA_DIR)
+        self._to_2180 = Transformer.from_crs("EPSG:4326", "EPSG:2180", always_xy=True)
 
-        Args:
-            data_dir: Ścieżka do `settings.DATA_DIR`.
-            reference_loader: Instancja `ReferenceDataLoader` do rozwiązywania siatki pogodowej.
-        """
-        self.data_dir = data_dir
-        self.reference_loader = reference_loader
+    def load_fields(
+        self,
+        field_specs: list[FieldSpec],
+        region: str,
+        *,
+        grids_by_field_name: dict[str, WeatherGrid] | None = None,
+        allow_synthetic: bool = False,
+        warnings_sink: list[str] | None = None,
+    ) -> list[Field]:
+        """Tworzy rekordy `Field` wraz z danymi glebowymi i historią upraw 2020–2024."""
+        if grids_by_field_name is None:
+            weather_helper = WeatherAndForecastLoader(data_dir=self.data_dir)
+            grids_by_field_name = weather_helper.resolve_grids_for_specs(
+                field_specs,
+                region=region,
+                allow_synthetic=allow_synthetic,
+                warnings_sink=warnings_sink,
+            )
 
-    def build_fields(self, specs: list[FieldSpec], region: str, allow_fallback: bool = True) -> list[Field]:
-        """Tworzy rekordy `Field`, oblicza ich powierzchnię w EPSG:2180, komórki H3 oraz ładuje glebę i historię upraw.
+        all_h3: set[str] = set()
+        prepared: list[tuple[FieldSpec, float, list[str]]] = []
 
-        Args:
-            specs: Lista specyfikacji pól z definicji scenariusza.
-            region: Nazwa województwa do odczytu pliku Parquet gleby.
-            allow_fallback: Czy użyć domyślnych wartości gleby/historii upraw przy braku rastrów w `DATA_DIR`.
+        for spec in field_specs:
+            geom_4326 = shape(spec.geometry)
+            geom_2180 = shapely_transform(self._to_2180.transform, geom_4326)
+            area_ha = round(geom_2180.area / 10_000.0, 4)
 
-        Returns:
-            Lista zapisanych w bazie obiektów `Field`.
+            cells = self._polygon_to_h3(spec.geometry)
+            all_h3.update(cells)
+            prepared.append((spec, area_ha, cells))
 
-        Raises:
-            ScenarioValidationError: Gdy geometria pola jest pusta lub odwołuje się do nieznanego `crop_code`.
-            DataSourceError: Gdy brak plików źródłowych i `allow_fallback=False`.
-        """
+        self._ensure_soil_cells(
+            sorted(all_h3),
+            region=region,
+            allow_synthetic=allow_synthetic,
+            warnings_sink=warnings_sink,
+        )
+
         created_fields: list[Field] = []
-        all_h3_cells: set[str] = set()
-
-        for spec in specs:
-            if not CropClass.objects.filter(code=spec.crop_code).exists():
-                raise ScenarioValidationError(
-                    f"Pole '{spec.name}' używa nieznanego kodu uprawy crop_code={spec.crop_code}."
-                )
-
-            geom = shape(spec.geometry)
-            if geom.is_empty:
-                raise ScenarioValidationError(f"Pole '{spec.name}' posiada pustą geometrię GeoJSON.")
-
-            centroid = geom.centroid
-            area_ha = shp_transform(TO_EPSG_2180, geom).area / 10_000.0
-            grid_id = self.reference_loader.resolve_nearest_weather_grid(
-                lat=centroid.y,
-                lon=centroid.x,
-                allow_fallback=allow_fallback,
-            )
-
-            h3_cells = self._extract_h3_cells(spec.geometry, centroid_lat=centroid.y, centroid_lon=centroid.x)
-            all_h3_cells.update(h3_cells)
-
-            field_obj = Field.objects.create(
+        for idx, (spec, area_ha, cells) in enumerate(prepared):
+            crop_obj = CropClass.objects.get(code=spec.crop_code)
+            centroid = shape(spec.geometry).centroid
+            field = Field.objects.create(
                 name=spec.name,
-                geometry=mapping(geom),
-                area_ha=round(float(area_ha), 4),
-                centroid_lat=float(centroid.y),
-                centroid_lon=float(centroid.x),
-                weather_grid_id=grid_id,
-                h3_cells=h3_cells,
-                crop_id=spec.crop_code,
+                crop=crop_obj,
+                geometry=spec.geometry,
+                area_ha=area_ha,
+                centroid_lat=round(float(centroid.y), 6),
+                centroid_lon=round(float(centroid.x), 6),
+                weather_grid=grids_by_field_name[spec.name],
+                h3_cells=cells,
             )
-            self._load_crop_history(field_obj, spec, allow_fallback=allow_fallback)
-            created_fields.append(field_obj)
-
-        if all_h3_cells:
-            self._load_soil_cells(sorted(all_h3_cells), region=region, allow_fallback=allow_fallback)
+            self._load_crop_history(
+                field=field,
+                spec=spec,
+                field_index=idx,
+                region=region,
+                allow_synthetic=allow_synthetic,
+                warnings_sink=warnings_sink,
+            )
+            created_fields.append(field)
 
         return created_fields
 
     @staticmethod
-    def _extract_h3_cells(geojson_geometry: dict[str, Any], centroid_lat: float, centroid_lon: float) -> list[str]:
-        """Wyznacza listę komórek H3 poziomu 10 leżących wewnątrz poligonu (lub komórkę centroidu)."""
-        try:
-            cells = list(h3.geo_to_cells(geojson_geometry, 10))
-        except Exception:
-            cells = []
+    def _polygon_to_h3(geojson_geom: dict[str, Any], resolution: int = 10) -> list[str]:
+        """Wyznacza listę komórek H3 (poziom 10) pokrywających geometrię pola."""
+        geom = shape(geojson_geom)
+        polygons = list(geom.geoms) if geom.geom_type == "MultiPolygon" else [geom]
+        cells: set[str] = set()
+
+        for poly in polygons:
+            outer = [(lat, lon) for lon, lat in poly.exterior.coords]
+            holes = [[(lat, lon) for lon, lat in ring.coords] for ring in poly.interiors]
+            h3_poly = h3.LatLngPoly(outer, *holes)
+            cells.update(h3.polygon_to_cells(h3_poly, res=resolution))
 
         if not cells:
-            cells = [h3.latlng_to_cell(centroid_lat, centroid_lon, 10)]
-        return sorted(set(cells))
+            centroid = geom.centroid
+            cells.add(h3.latlng_to_cell(centroid.y, centroid.x, resolution))
 
-    def _load_crop_history(self, field: Field, spec: FieldSpec, allow_fallback: bool) -> None:
-        """Wypełnia tabelę `FieldCropYear` na podstawie nadpisania w JSON, rastrów CLMS lub generatora fallback."""
-        if spec.crop_history:
-            rows: list[FieldCropYear] = []
-            for year, class_shares in spec.crop_history.items():
-                for crop_code, share in class_shares.items():
-                    if not CropClass.objects.filter(code=crop_code).exists():
-                        raise ScenarioValidationError(
-                            f"Nieznany kod uprawy {crop_code} w 'crop_history' dla pola '{field.name}'."
-                        )
-                    rows.append(
-                        FieldCropYear(field=field, year=year, crop_class_id=crop_code, share=float(share))
-                    )
-            FieldCropYear.objects.bulk_create(rows)
+        return sorted(cells)
+
+    def _find_soil_rasters(self, region: str) -> list[Path]:
+        """Szuka rastrów glebowych dla regionu w `DATA_DIR`."""
+        if not self.data_dir.exists():
+            return []
+        region_lower = region.lower()
+        return sorted(
+            p
+            for p in self.data_dir.rglob("*.tif")
+            if "soil" in str(p).lower() and region_lower in str(p).lower()
+        )
+
+    def _ensure_soil_cells(
+        self,
+        h3_indices: list[str],
+        region: str,
+        *,
+        allow_synthetic: bool,
+        warnings_sink: list[str] | None,
+    ) -> None:
+        """Wczytuje właściwości gleby z `DATA_DIR` lub (tylko z flagą) generuje zróżnicowane wartości."""
+        missing = [
+            idx
+            for idx in h3_indices
+            if not SoilCell.objects.filter(pk=idx).exists()
+        ]
+        if not missing:
             return
 
-        cropland_dir = self.data_dir / "cropland"
-        raster_files = {year: cropland_dir / f"cropland_{year}.tif" for year in range(2020, 2025)}
+        soil_rasters = self._find_soil_rasters(region)
+        if soil_rasters:
+            self._load_soil_from_rasters(missing, soil_rasters)
+            return
 
-        if all(path.is_file() for path in raster_files.values()):
-            try:
-                import rasterio
-                import rasterio.mask
-            except ImportError as exc:
-                if not allow_fallback:
-                    raise DataSourceError("Brak biblioteki 'rasterio' do odczytu rastrów upraw.") from exc
-            else:
-                rows = []
-                for year, tif_path in raster_files.items():
-                    with rasterio.open(tif_path) as src:
-                        arr, _ = rasterio.mask.mask(
-                            src, [field.geometry], crop=True, filled=True, nodata=65534
-                        )
-                    valid = arr[0][arr[0] != 65534]
-                    if valid.size == 0:
-                        continue
-                    codes, counts = np.unique(valid, return_counts=True)
-                    for code, cnt in zip(codes, counts):
-                        code_int = int(code)
-                        if code_int in CLMS_CROP_LEGEND:
-                            rows.append(
-                                FieldCropYear(
-                                    field=field,
-                                    year=year,
-                                    crop_class_id=code_int,
-                                    share=round(float(cnt / valid.size), 6),
-                                )
-                            )
-                if rows:
-                    FieldCropYear.objects.bulk_create(rows)
-                    return
+        if not allow_synthetic:
+            raise DataSourceError(
+                f"Brak rastrów glebowych dla regionu '{region}' w katalogu '{self.data_dir}'. "
+                "Uzupełnij pliki w DATA_DIR lub uruchom komendę z flagą --allow-synthetic."
+            )
 
-        if not allow_fallback:
-            raise DataSourceError(f"Brak kompletu rastrów upraw 2020–2024 w katalogu: {cropland_dir}")
+        _emit_synthetic_warning(
+            f"Brak plików glebowych dla regionu '{region}' w '{self.data_dir}'.",
+            warnings_sink,
+        )
 
-        # Deterministyczny płodozmian zastępczy (2020–2024)
-        rotation_alt = CropClass.MAIZE if spec.crop_code == CropClass.WHEAT else CropClass.WHEAT
-        fallback_rows = [
-            FieldCropYear(
+        valid_cols = {f.attname for f in SoilCell._meta.concrete_fields}
+        pk_name = SoilCell._meta.pk.attname
+        cells_to_create: list[SoilCell] = []
+
+        for h3_idx in missing:
+            rng = random.Random(f"soil:{h3_idx}")
+            sand = round(rng.uniform(22.0, 58.0), 1)
+            clay = round(rng.uniform(10.0, 32.0), 1)
+            silt = round(max(5.0, 100.0 - sand - clay), 1)
+            raw_values: dict[str, Any] = {
+                pk_name: h3_idx,
+                "h3_index": h3_idx,
+                "sand": sand,
+                "silt": silt,
+                "clay": clay,
+                "ph": round(rng.uniform(5.6, 7.2), 2),
+                "organic_carbon": round(rng.uniform(1.1, 2.8), 2),
+                "soc": round(rng.uniform(1.1, 2.8), 2),
+                "bulk_density": round(rng.uniform(1.25, 1.55), 2),
+            }
+            filtered = {k: v for k, v in raw_values.items() if k in valid_cols}
+            cells_to_create.append(SoilCell(**filtered))
+
+        SoilCell.objects.bulk_create(cells_to_create, ignore_conflicts=True)
+
+    def _load_soil_from_rasters(self, h3_indices: list[str], rasters: list[Path]) -> None:
+        """Próbkuje rastry glebowe w centroidach komórek H3 i zapisuje `SoilCell`."""
+        try:
+            import rasterio
+        except ImportError as exc:
+            raise DataSourceError(
+                "Brak zainstalowanej biblioteki `rasterio` wymaganej do odczytu rastrów z DATA_DIR."
+            ) from exc
+
+        valid_cols = {f.attname for f in SoilCell._meta.concrete_fields}
+        pk_name = SoilCell._meta.pk.attname
+        records: dict[str, dict[str, Any]] = {
+            idx: {pk_name: idx, "h3_index": idx} for idx in h3_indices
+        }
+
+        for raster_path in rasters:
+            stem = raster_path.stem.lower()
+            target_col = next(
+                (col for col in ("sand", "silt", "clay", "ph", "organic_carbon", "soc", "bulk_density") if col in stem),
+                None,
+            )
+            if target_col is None or target_col not in valid_cols:
+                continue
+
+            with rasterio.open(raster_path) as src:
+                to_raster = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
+                coords = []
+                for idx in h3_indices:
+                    lat, lon = h3.cell_to_latlng(idx)
+                    coords.append(to_raster.transform(lon, lat))
+                for idx, val in zip(h3_indices, src.sample(coords)):
+                    scalar = float(val[0])
+                    if not math.isnan(scalar) and (src.nodata is None or scalar != src.nodata):
+                        records[idx][target_col] = round(scalar, 3)
+
+        SoilCell.objects.bulk_create(
+            [SoilCell(**{k: v for k, v in rec.items() if k in valid_cols}) for rec in records.values()],
+            ignore_conflicts=True,
+        )
+
+    @staticmethod
+    def _save_crop_year(field: Field, year: int, shares: dict[str, float]) -> None:
+        """Zapisuje udziały upraw dla pary (pole, rok), niezależnie od układu tabeli `FieldCropYear`.
+
+        Nazwa kolumny z udziałami nie jest zakodowana na sztywno: wykrywamy ją z metadanych modelu.
+        Obsługiwane układy:
+          1. jeden wiersz na (pole, rok) z jedną kolumną `JSONField` ({kod: udział});
+          2. jeden wiersz na (pole, rok, uprawa) z kluczem obcym do `CropClass` i liczbową kolumną udziału.
+        """
+        from django.db import models as dj_models
+
+        meta = FieldCropYear._meta
+        concrete = [f for f in meta.concrete_fields if not f.primary_key]
+
+        json_cols = [f for f in concrete if isinstance(f, dj_models.JSONField)]
+        if len(json_cols) == 1:
+            FieldCropYear.objects.update_or_create(
                 field=field,
                 year=year,
-                crop_class_id=(spec.crop_code if year % 2 == 0 else rotation_alt),
-                share=1.0,
+                defaults={json_cols[0].name: shares},
             )
-            for year in range(2020, 2025)
-        ]
-        FieldCropYear.objects.bulk_create(fallback_rows)
-
-    def _load_soil_cells(self, h3_indices: list[str], region: str, allow_fallback: bool) -> None:
-        """Ładuje rekordy `SoilCell` z plików ISRIC Parquet z normalizacją nazw kolumn i fallbackiem."""
-        soil_file: Path | None = None
-        for variant in _region_name_variants(region):
-            matches = sorted(glob.glob(str(self.data_dir / "soil" / f"{variant}*.parquet")))
-            if matches:
-                soil_file = Path(matches[0])
-                break
-
-        model_cols = {f.attname for f in SoilCell._meta.concrete_fields}
-        loaded_ids: set[str] = set()
-
-        if soil_file is not None and soil_file.is_file():
-            df = pd.read_parquet(soil_file, filters=[("h3_index_10", "in", h3_indices)])
-            df = df.rename(
-                columns={
-                    "soilTexture": "soil_texture",
-                    "pH": "ph",
-                    "BAND_om": "band_om",
-                    "BAND_cec": "band_cec",
-                    "BAND_pH": "band_ph",
-                }
-            )
-            for band_col in ("band_om", "band_cec", "band_ph"):
-                if band_col in df.columns:
-                    df[band_col] = df[band_col].apply(
-                        lambda v: str(v).strip().lower() if pd.notna(v) and str(v).strip() else None
-                    )
-
-            df = df[[c for c in df.columns if c in model_cols]]
-            SoilCell.objects.filter(h3_index_10__in=h3_indices).delete()
-            records = [
-                SoilCell(**{k: (None if pd.isna(v) else v) for k, v in row.items()})
-                for row in df.to_dict("records")
-            ]
-            SoilCell.objects.bulk_create(records)
-            loaded_ids = {rec.h3_index_10 for rec in records}
-
-        missing_ids = [idx for idx in h3_indices if idx not in loaded_ids]
-        if not missing_ids:
             return
 
-        if not allow_fallback:
+        crop_fk = next(
+            (
+                f
+                for f in concrete
+                if isinstance(f, dj_models.ForeignKey) and f.related_model is CropClass
+            ),
+            None,
+        )
+        share_col = next(
+            (
+                f
+                for f in concrete
+                if isinstance(f, (dj_models.FloatField, dj_models.DecimalField))
+                and f.name not in {"year"}
+            ),
+            None,
+        )
+        if crop_fk is not None and share_col is not None:
+            FieldCropYear.objects.filter(field=field, year=year).delete()
+            for code, share in shares.items():
+                FieldCropYear.objects.create(
+                    **{
+                        "field": field,
+                        "year": year,
+                        crop_fk.name: CropClass.objects.get(code=int(code)),
+                        share_col.name: share,
+                    }
+                )
+            return
+
+        raise DataSourceError(
+            "Nie rozpoznano układu modelu `FieldCropYear` (oczekiwano jednej kolumny JSONField "
+            f"albo pary FK->CropClass + kolumna liczbowa). Kolumny: {[f.name for f in concrete]}."
+        )
+
+    def _load_crop_history(
+        self,
+        field: Field,
+        spec: FieldSpec,
+        field_index: int,
+        region: str,
+        *,
+        allow_synthetic: bool,
+        warnings_sink: list[str] | None,
+    ) -> None:
+        """Zapisuje historię upraw z lat 2020–2024 do `FieldCropYear`.
+
+        Lata zdefiniowane w `spec.crop_history` mają pierwszeństwo; brakujące lata
+        uzupełniane są z rastrów z `DATA_DIR` lub (tylko z flagą) danymi syntetycznymi.
+        """
+        target_years = [2020, 2021, 2022, 2023, 2024]
+
+        explicit: dict[int, dict[str, float]] = {}
+        if spec.crop_history:
+            for year in target_years:
+                crops_map = spec.crop_history.get(year) or spec.crop_history.get(str(year))  # type: ignore[call-overload]
+                if crops_map:
+                    explicit[year] = {str(k): float(v) for k, v in crops_map.items()}
+
+        for year, shares in explicit.items():
+            self._save_crop_year(field, year, shares)
+
+        missing_years = [y for y in target_years if y not in explicit]
+        if not missing_years:
+            return
+
+        crop_rasters = self._find_crop_rasters(region, missing_years)
+        if len(crop_rasters) == len(missing_years):
+            self._load_crop_history_from_rasters(field, crop_rasters)
+            return
+
+        if not allow_synthetic:
+            not_found = [y for y in missing_years if y not in crop_rasters]
             raise DataSourceError(
-                f"Brak danych glebowych dla komórek H3 ({len(missing_ids)} brakujących) w regionie '{region}'."
+                f"Brak rastrów historii upraw dla regionu '{region}' (lata: {not_found}) w '{self.data_dir}'. "
+                "Uzupełnij pliki w DATA_DIR, zdefiniuj `crop_history` w JSON lub użyj --allow-synthetic."
             )
 
-        fallback_cells = [
-            SoilCell(
-                h3_index_10=cell_id,
-                ocs_0_30cm_mean=68,
-                om=24.1,
-                cec=14.3,
-                ph=6.4,
-                sand=0.21,
-                silt=0.61,
-                clay=0.18,
-                bulk_density=1.32,
-                band_om=SoilCell.Band.MODERATE,
-                band_cec=SoilCell.Band.MODERATE,
-                band_ph=SoilCell.Band.MODERATE,
-                soil_texture="silt loam",
-            )
-            for cell_id in missing_ids
+        _emit_synthetic_warning(
+            f"Brak pełnych rastrów historii upraw (2020–2024) dla '{field.name}' w '{self.data_dir}'.",
+            warnings_sink,
+        )
+
+        rotations = [
+            [1110, 1430, 1110, 1130, 1430],
+            [1130, 1110, 1320, 1110, 1430],
+            [1430, 1110, 1120, 1310, 1110],
         ]
-        SoilCell.objects.bulk_create(fallback_cells, ignore_conflicts=True)
+        chosen = rotations[field_index % len(rotations)]
+        for year, code in zip(target_years, chosen):
+            if year in explicit:
+                continue
+            self._save_crop_year(field, year, {str(code): 1.0})
+
+    def _find_crop_rasters(self, region: str, years: list[int]) -> dict[int, Path]:
+        """Zwraca mapę `{rok: ścieżka_rastra}` wyłącznie dla lat odnalezionych w `DATA_DIR`."""
+        if not self.data_dir.exists():
+            return {}
+        found: dict[int, Path] = {}
+        region_lower = region.lower()
+        for year in years:
+            matches = sorted(
+                p
+                for p in self.data_dir.rglob("*.tif")
+                if str(year) in p.name and region_lower in str(p).lower() and "soil" not in str(p).lower()
+            )
+            if matches:
+                found[year] = matches[0]
+        return found
+
+    def _load_crop_history_from_rasters(self, field: Field, rasters_by_year: dict[int, Path]) -> None:
+        """Wyznacza udziały klas upraw w komórkach H3 pola na podstawie rastrów z `DATA_DIR`."""
+        try:
+            import rasterio
+        except ImportError as exc:
+            raise DataSourceError(
+                "Brak zainstalowanej biblioteki `rasterio` wymaganej do odczytu rastrów upraw."
+            ) from exc
+
+        for year, raster_path in sorted(rasters_by_year.items()):
+            with rasterio.open(raster_path) as src:
+                to_raster = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
+                coords = [to_raster.transform(*reversed(h3.cell_to_latlng(idx))) for idx in field.h3_cells]
+                counts: dict[str, int] = {}
+                total = 0
+                for val in src.sample(coords):
+                    code = int(val[0])
+                    if code in CLMS_CROP_NAMES:
+                        counts[str(code)] = counts.get(str(code), 0) + 1
+                        total += 1
+                if total > 0:
+                    shares = {k: round(v / total, 4) for k, v in counts.items()}
+                    self._save_crop_year(field, year, shares)
 
 
 class WeatherAndForecastLoader:
-    """Loader pogody obserwowanej (`WeatherDaily`, `WeatherHourly`) oraz generator prognoz (`WeatherForecastDaily`)."""
+    """Ładuje pogodę (`WeatherDaily`, `WeatherHourly`), aplikuje nadpisania i buduje prognozę 7-dniową."""
 
-    def __init__(self, data_dir: Path) -> None:
-        """Inicjalizuje loader danych meteorologicznych.
+    def __init__(self, data_dir: Path | None = None) -> None:
+        self.data_dir = Path(data_dir) if data_dir is not None else Path(settings.DATA_DIR)
 
-        Args:
-            data_dir: Ścieżka do `settings.DATA_DIR`.
-        """
-        self.data_dir = data_dir
-
-    def load_observed_weather(
+    def resolve_grids_for_specs(
         self,
-        grid_ids: list[str],
+        field_specs: list[FieldSpec],
+        region: str,
+        *,
+        allow_synthetic: bool = False,
+        warnings_sink: list[str] | None = None,
+    ) -> dict[str, WeatherGrid]:
+        """Dopasowuje lub (tylko z flagą) tworzy komórki `WeatherGrid` dla każdego `FieldSpec`."""
+        if not WeatherGrid.objects.exists():
+            self._bootstrap_grids_from_data_dir(region)
+
+        existing_grids = list(WeatherGrid.objects.all())
+        if existing_grids:
+            assigned: dict[str, WeatherGrid] = {}
+            for spec in field_specs:
+                centroid = shape(spec.geometry).centroid
+                nearest = min(
+                    existing_grids,
+                    key=lambda g: (g.lat - centroid.y) ** 2 + (g.lon - centroid.x) ** 2,
+                )
+                assigned[spec.name] = nearest
+            return assigned
+
+        if not allow_synthetic:
+            raise DataSourceError(
+                f"Brak komórek siatki pogodowej (`WeatherGrid`) w bazie oraz w '{self.data_dir}'. "
+                "Uzupełnij dane pogodowe w DATA_DIR lub użyj flagi --allow-synthetic."
+            )
+
+        _emit_synthetic_warning(
+            f"Brak siatki pogodowej `WeatherGrid` w bazie i w '{self.data_dir}'.",
+            warnings_sink,
+        )
+
+        assigned_syn: dict[str, WeatherGrid] = {}
+        for idx, spec in enumerate(field_specs, start=1):
+            centroid = shape(spec.geometry).centroid
+            grid, _ = WeatherGrid.objects.get_or_create(
+                grid_id=f"syn_grid_{idx}",
+                defaults={"lat": round(centroid.y, 4), "lon": round(centroid.x, 4)},
+            )
+            assigned_syn[spec.name] = grid
+        return assigned_syn
+
+    def load_weather_for_fields(
+        self,
+        fields: list[Field],
         region: str,
         years: list[int],
-        overrides: list[dict[str, Any]] | None = None,
-        allow_fallback: bool = True,
-    ) -> tuple[int, int]:
-        """Importuje pogodę dzienną i godzinową wraz z opadami satelitarnymi IMERG dla zadanych komórek siatki.
+        overrides: list[dict[str, Any]],
+        *,
+        keep_weather: bool = False,
+        allow_synthetic: bool = False,
+        warnings_sink: list[str] | None = None,
+    ) -> tuple[list[str], int, int]:
+        """Ładuje spójny szereg pogodowy dla wszystkich lat i nakłada `weather_overrides`."""
+        unique_grids: dict[str, WeatherGrid] = {}
+        for fld in fields:
+            if fld.weather_grid is not None:
+                unique_grids[fld.weather_grid.grid_id] = fld.weather_grid
 
-        Args:
-            grid_ids: Lista identyfikatorów `WeatherGrid.grid_id`.
-            region: Nazwa województwa w nazwach archiwów ZIP.
-            years: Lista lat kalendarzowych do załadowania (np. `[2024, 2025]`).
-            overrides: Opcjonalne korekty wartości pogodowych z definicji scenariusza.
-            allow_fallback: Czy wygenerować syntetyczne szeregi czasowe w razie braku archiwów ZIP.
+        grids = list(unique_grids.values())
+        grid_ids = [g.grid_id for g in grids]
 
-        Returns:
-            Krotka `(liczba_rekordów_daily, liczba_rekordów_hourly)`.
-
-        Raises:
-            DataSourceError: Gdy brakuje plików pogodowych w `DATA_DIR` i `allow_fallback=False`.
-        """
-        unique_grids = sorted(set(grid_ids))
-        if not unique_grids:
-            return (0, 0)
-
-        for grid_id in unique_grids:
-            has_all_years = all(
-                WeatherDaily.objects.filter(grid_id=grid_id, date__year=yr).exists()
-                and WeatherHourly.objects.filter(grid_id=grid_id, date__year=yr).exists()
-                for yr in years
-            )
-            if has_all_years:
+        for grid in grids:
+            if keep_weather and self._has_complete_weather(grid.grid_id, years):
                 continue
 
-            WeatherDaily.objects.filter(grid_id=grid_id, date__year__in=years).delete()
-            WeatherHourly.objects.filter(grid_id=grid_id, date__year__in=years).delete()
+            WeatherDaily.objects.filter(grid=grid, date__year__in=years).delete()
+            WeatherHourly.objects.filter(grid=grid, utc_time__year__in=years).delete()
 
-            loaded_from_files = self._try_load_grid_from_archives(grid_id=grid_id, region=region, years=years)
-            if not loaded_from_files:
-                if not allow_fallback:
+            # Weryfikacja fail-fast wszystkich lat przed zapisem — nigdy nie mieszamy lat prawdziwych z fałszywymi
+            archives_by_year = self._collect_complete_archives(region=region, years=years)
+            if archives_by_year is not None:
+                self._load_grid_from_archives(grid_id=grid.grid_id, archives_by_year=archives_by_year)
+            else:
+                if not allow_synthetic:
+                    missing = self._describe_missing_archives(region=region, years=years)
                     raise DataSourceError(
-                        f"Brak archiwów pogodowych dla grid_id='{grid_id}', region='{region}', lata={years}."
+                        f"Brak kompletnych archiwów pogodowych dla regionu '{region}' (lata: {years}) "
+                        f"w '{self.data_dir}'. Brakujące zestawy: {', '.join(missing)}. "
+                        "Uzupełnij pliki w DATA_DIR lub użyj flagi --allow-synthetic."
                     )
-                self._generate_synthetic_weather(grid_id=grid_id, years=years)
+
+                _emit_synthetic_warning(
+                    f"Brak kompletnych archiwów pogodowych ZIP dla regionu '{region}' (lata: {years}) w '{self.data_dir}'.",
+                    warnings_sink,
+                )
+                self._generate_synthetic_weather(grid=grid, years=years)
 
         if overrides:
-            self._apply_weather_overrides(unique_grids, overrides)
+            self._apply_weather_overrides(grid_ids=grid_ids, overrides=overrides)
 
-        daily_count = WeatherDaily.objects.filter(grid_id__in=unique_grids, date__year__in=years).count()
-        hourly_count = WeatherHourly.objects.filter(grid_id__in=unique_grids, date__year__in=years).count()
-        return (daily_count, hourly_count)
+        daily_count = WeatherDaily.objects.filter(grid_id__in=grid_ids, date__year__in=years).count()
+        hourly_count = WeatherHourly.objects.filter(grid_id__in=grid_ids, utc_time__year__in=years).count()
+        return grid_ids, daily_count, hourly_count
 
-    def generate_forecast_series(self, grid_ids: list[str], start: date, end: date) -> int:
-        """Generuje 7-dniowe prognozy (`WeatherForecastDaily`) dla każdego dnia `D` z zakresu `[start, end]`.
+    def _bootstrap_grids_from_data_dir(self, region: str) -> None:
+        """Wczytuje współrzędne `WeatherGrid` z pierwszego dostępnego archiwum ZIP w `DATA_DIR`."""
+        if not self.data_dir.exists():
+            return
+        region_lower = region.lower()
+        zips = sorted(
+            p for p in self.data_dir.rglob("*.zip") if "daily" in p.name.lower() and region_lower in p.name.lower()
+        )
+        if not zips:
+            return
 
-        Kopiuje wartości z `WeatherDaily` dla dni `D+1..D+7` i przenosi `imerg_total_precipitation`
-        do `total_precipitation`, zgodnie z kontraktem `docs/database.md`.
+        with zipfile.ZipFile(zips[0]) as zf:
+            parquet_names = [n for n in zf.namelist() if n.endswith(".parquet")]
+            if not parquet_names:
+                return
+            with zf.open(parquet_names[0]) as fh:
+                df = pd.read_parquet(fh)
 
-        Args:
-            grid_ids: Lista komórek siatki pogodowej.
-            start: Pierwszy dzień emisji prognozy (`issued_on`).
-            end: Ostatni dzień emisji prognozy (`issued_on`).
+        if {"grid_id", "lat", "lon"}.issubset(df.columns):
+            unique_grids = df[["grid_id", "lat", "lon"]].drop_duplicates(subset=["grid_id"])
+            WeatherGrid.objects.bulk_create(
+                [
+                    WeatherGrid(grid_id=str(row.grid_id), lat=float(row.lat), lon=float(row.lon))
+                    for row in unique_grids.itertuples()
+                ],
+                ignore_conflicts=True,
+            )
 
-        Returns:
-            Liczba utworzonych rekordów `WeatherForecastDaily`.
-        """
-        unique_grids = sorted(set(grid_ids))
-        if not unique_grids:
-            return 0
+    @staticmethod
+    def _has_complete_weather(grid_id: str, years: list[int]) -> bool:
+        """Sprawdza, czy dla każdego roku istnieją zarówno rekordy dzienne, jak i godzinowe."""
+        for year in years:
+            has_daily = WeatherDaily.objects.filter(grid_id=grid_id, date__year=year).exists()
+            has_hourly = WeatherHourly.objects.filter(grid_id=grid_id, utc_time__year=year).exists()
+            if not (has_daily and has_hourly):
+                return False
+        return True
 
-        shared_cols = [
-            f.attname
-            for f in DailyWeatherColumns._meta.concrete_fields
-            if f.attname not in ("id", "grid_id", "issued_on", "date")
-        ]
+    def _find_weather_zip(self, granularity: str, year: int, region: str) -> Path | None:
+        """Wyszukuje archiwum ZIP (`daily` lub `hourly`) dla zadanego roku i regionu."""
+        if not self.data_dir.exists():
+            return None
+        region_lower = region.lower()
+        matches = sorted(
+            p
+            for p in self.data_dir.rglob("*.zip")
+            if granularity in p.name.lower()
+            and str(year) in p.name
+            and region_lower in p.name.lower()
+            and "imerg" not in p.name.lower()
+        )
+        return matches[0] if matches else None
 
-        WeatherForecastDaily.objects.filter(
-            grid_id__in=unique_grids, issued_on__range=(start, end)
-        ).delete()
-
-        lookup_end = end + timedelta(days=7)
-        forecast_rows: list[WeatherForecastDaily] = []
-
-        for grid_id in unique_grids:
-            observed_by_date = {
-                row["date"]: row
-                for row in WeatherDaily.objects.filter(grid_id=grid_id, date__range=(start, lookup_end)).values(
-                    "date", *shared_cols, "imerg_total_precipitation"
-                )
-            }
-            if not observed_by_date:
-                continue
-
-            current_day = start
-            while current_day <= end:
-                for offset in range(1, 8):
-                    target_day = current_day + timedelta(days=offset)
-                    src_row = observed_by_date.get(target_day)
-                    if src_row is None:
-                        continue
-
-                    payload = {col: src_row[col] for col in shared_cols}
-                    if payload.get("total_precipitation") is None:
-                        payload["total_precipitation"] = src_row.get("imerg_total_precipitation")
-
-                    forecast_rows.append(
-                        WeatherForecastDaily(
-                            grid_id=grid_id,
-                            issued_on=current_day,
-                            date=target_day,
-                            **payload,
-                        )
-                    )
-                current_day += timedelta(days=1)
-
-        if forecast_rows:
-            WeatherForecastDaily.objects.bulk_create(forecast_rows, batch_size=5000)
-        return len(forecast_rows)
-
-    def _try_load_grid_from_archives(self, grid_id: str, region: str, years: list[int]) -> bool:
-        """Próbuje wczytać pogodę dzienną i godzinową z paczek ZIP w `DATA_DIR`."""
+    def _collect_complete_archives(
+        self, region: str, years: list[int]
+    ) -> dict[int, tuple[Path, Path]] | None:
+        """Zwraca mapę `{rok: (daily_zip, hourly_zip)}` tylko wtedy, gdy istnieje komplet dla KAŻDEGO roku."""
         archives_by_year: dict[int, tuple[Path, Path]] = {}
         for year in years:
             daily_zip = self._find_weather_zip("daily", year, region)
             hourly_zip = self._find_weather_zip("hourly", year, region)
             if daily_zip is None or hourly_zip is None:
-                return False
+                return None
             archives_by_year[year] = (daily_zip, hourly_zip)
+        return archives_by_year
 
+    def _describe_missing_archives(self, region: str, years: list[int]) -> list[str]:
+        """Buduje listę brakujących archiwów (np. `['daily/2025', 'hourly/2025']`) do komunikatu błędu."""
+        missing: list[str] = []
+        for year in years:
+            if self._find_weather_zip("daily", year, region) is None:
+                missing.append(f"daily/{year}")
+            if self._find_weather_zip("hourly", year, region) is None:
+                missing.append(f"hourly/{year}")
+        return missing
+
+    def _load_grid_from_archives(
+        self, grid_id: str, archives_by_year: dict[int, tuple[Path, Path]]
+    ) -> None:
+        """Wczytuje pogodę dzienną i godzinową ze zweryfikowanego kompletu archiwów ZIP."""
         dcols = {f.attname for f in WeatherDaily._meta.concrete_fields} - {"id"}
         hcols = {f.attname for f in WeatherHourly._meta.concrete_fields} - {"id"}
 
-        for year, (daily_zip, hourly_zip) in archives_by_year.items():
+        for year, (daily_zip, hourly_zip) in sorted(archives_by_year.items()):
             daily_df = self._read_parquet_from_zip(daily_zip, [grid_id])
-            imerg_daily = self._read_imerg_parquet("daily", year, region, [grid_id])
+            imerg_daily = self._read_imerg_parquet("daily", year, [grid_id])
             if not imerg_daily.empty:
                 imerg_daily = imerg_daily.rename(columns={"total_precipitation": "imerg_total_precipitation"})[
                     ["grid_id", "date", "imerg_total_precipitation"]
@@ -575,7 +664,7 @@ class WeatherAndForecastLoader:
             )
 
             hourly_df = self._read_parquet_from_zip(hourly_zip, [grid_id])
-            imerg_hourly = self._read_imerg_parquet("hourly", year, region, [grid_id])
+            imerg_hourly = self._read_imerg_parquet("hourly", year, [grid_id])
             if not imerg_hourly.empty:
                 imerg_hourly = imerg_hourly.rename(columns={"precipitation": "imerg_precipitation"})[
                     ["grid_id", "utc_time", "imerg_precipitation"]
@@ -588,6 +677,8 @@ class WeatherAndForecastLoader:
             else:
                 utc_series = utc_series.dt.tz_convert("UTC")
             hourly_df["utc_time"] = utc_series
+            if "date" in hcols and "date" not in hourly_df.columns:
+                hourly_df["date"] = utc_series.dt.date
 
             hourly_df = hourly_df[[c for c in hourly_df.columns if c in hcols]]
             WeatherHourly.objects.bulk_create(
@@ -599,143 +690,100 @@ class WeatherAndForecastLoader:
                 ignore_conflicts=True,
             )
 
-        return True
-
-    def _find_weather_zip(self, cadence: str, year: int, region: str) -> Path | None:
-        base = self.data_dir / "raw" / "weather_data" / cadence / str(year)
-        for variant in _region_name_variants(region):
-            candidate = base / f"weather_{cadence}_{year}_{variant}.zip"
-            if candidate.is_file():
-                return candidate
-        return None
-
     @staticmethod
     def _read_parquet_from_zip(zip_path: Path, grid_ids: list[str]) -> pd.DataFrame:
-        with zipfile.ZipFile(zip_path) as outer:
-            names = [n for n in outer.namelist() if not n.startswith("__MACOSX")]
-            pq_files = [n for n in names if n.endswith(".parquet")]
-            if pq_files:
-                return pd.read_parquet(io.BytesIO(outer.read(pq_files[0])), filters=[("grid_id", "in", grid_ids)])
+        """Odczytuje i filtruje wiersze po `grid_id` ze wszystkich plików `.parquet` wewnątrz ZIP."""
+        frames: list[pd.DataFrame] = []
+        with zipfile.ZipFile(zip_path) as zf:
+            for name in zf.namelist():
+                if not name.endswith(".parquet"):
+                    continue
+                with zf.open(name) as fh:
+                    df = pd.read_parquet(fh)
+                if "grid_id" in df.columns:
+                    df = df[df["grid_id"].astype(str).isin(grid_ids)]
+                if not df.empty:
+                    frames.append(df)
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
-            inner_zips = [n for n in names if n.endswith(".zip")]
-            with zipfile.ZipFile(io.BytesIO(outer.read(inner_zips[0]))) as inner:
-                inner_pq = [n for n in inner.namelist() if n.endswith(".parquet") and not n.startswith("__MACOSX")]
-                return pd.read_parquet(io.BytesIO(inner.read(inner_pq[0])), filters=[("grid_id", "in", grid_ids)])
-
-    def _read_imerg_parquet(self, kind: str, year: int, region: str, grid_ids: list[str]) -> pd.DataFrame:
-        archive_path = self.data_dir / "raw" / "weather_data" / f"imerg_precipitation_{kind}.zip"
-        if not archive_path.is_file():
+    def _read_imerg_parquet(self, granularity: str, year: int, grid_ids: list[str]) -> pd.DataFrame:
+        """Odczytuje opady satelitarne IMERG z `DATA_DIR` dla zadanego roku i rozdzielczości."""
+        if not self.data_dir.exists():
             return pd.DataFrame()
-
-        variants = _region_name_variants(region)
-        with zipfile.ZipFile(archive_path) as outer:
-            member_name = next(
-                (
-                    n
-                    for n in outer.namelist()
-                    if "__MACOSX" not in n
-                    and any(n.endswith(f"precip_{kind}_{year}_{variant}.zip") for variant in variants)
-                ),
-                None,
-            )
-            if member_name is None:
-                return pd.DataFrame()
-
-            with zipfile.ZipFile(io.BytesIO(outer.read(member_name))) as inner:
-                pq_files = [n for n in inner.namelist() if n.endswith(".parquet") and "__MACOSX" not in n]
-                if not pq_files:
-                    return pd.DataFrame()
-                return pd.read_parquet(io.BytesIO(inner.read(pq_files[0])), filters=[("grid_id", "in", grid_ids)])
+        matches = sorted(
+            p
+            for p in self.data_dir.rglob("*.parquet")
+            if "imerg" in str(p).lower() and granularity in str(p).lower() and str(year) in p.name
+        )
+        if not matches:
+            return pd.DataFrame()
+        df = pd.read_parquet(matches[0])
+        if "grid_id" in df.columns:
+            df = df[df["grid_id"].astype(str).isin(grid_ids)]
+        return df
 
     @staticmethod
-    def _generate_synthetic_weather(grid_id: str, years: list[int]) -> None:
-        """Generuje deterministyczny, sezonowy szereg pogodowy (daily + hourly) dla trybu offline."""
-        seed = int(hashlib.sha256(grid_id.encode("utf-8")).hexdigest()[:8], 16)
-        rng = np.random.default_rng(seed)
+    def _generate_synthetic_weather(grid: WeatherGrid, years: list[int]) -> None:
+        """Deterministycznie generuje pogodę dzienną i godzinową wyłącznie w trybie `--allow-synthetic`."""
+        dcols = {f.attname for f in WeatherDaily._meta.concrete_fields} - {"id"}
+        hcols = {f.attname for f in WeatherHourly._meta.concrete_fields} - {"id"}
+        rng = random.Random(f"weather:{grid.grid_id}")
 
         daily_rows: list[WeatherDaily] = []
         hourly_rows: list[WeatherHourly] = []
 
         for year in years:
-            start_day = date(year, 1, 1)
-            end_day = date(year, 12, 31)
-            total_days = (end_day - start_day).days + 1
+            cur = date(year, 1, 1)
+            end = date(year, 12, 31)
+            while cur <= end:
+                doy = cur.timetuple().tm_yday
+                seasonal_temp = 10.5 + 11.5 * math.sin((2.0 * math.pi * (doy - 105)) / 365.0)
+                avg_temp = round(seasonal_temp + rng.uniform(-2.5, 2.5), 2)
+                min_temp = round(avg_temp - rng.uniform(3.5, 6.0), 2)
+                max_temp = round(avg_temp + rng.uniform(3.5, 6.5), 2)
+                humidity = round(min(98.0, max(38.0, 74.0 - 0.5 * (avg_temp - 10.0) + rng.uniform(-10.0, 10.0))), 1)
+                rain = round(rng.uniform(1.5, 11.0) if rng.random() < 0.28 else 0.0, 2)
 
-            for day_idx in range(total_days):
-                current_day = start_day + timedelta(days=day_idx)
-                doy = current_day.timetuple().tm_yday
-                seasonal_temp = 9.5 + 11.5 * math.sin(2.0 * math.pi * (doy - 110) / 365.0)
-                daily_noise = float(rng.normal(0.0, 2.2))
-                avg_temp = round(seasonal_temp + daily_noise, 2)
-                min_temp = round(avg_temp - 4.5, 2)
-                max_temp = round(avg_temp + 5.0, 2)
-
-                is_rainy = rng.random() < 0.28
-                rain_mm = round(float(rng.exponential(5.5)), 2) if is_rainy else 0.0
-                avg_rh = round(min(96.0, max(45.0, (84.0 if is_rainy else 66.0) + float(rng.normal(0.0, 6.0)))), 1)
-                avg_wind = round(max(2.0, 11.0 + float(rng.normal(0.0, 3.5))), 2)
-                solar_rad = round(max(2.0, (11.0 + 9.0 * math.sin(2.0 * math.pi * (doy - 80) / 365.0)) * (0.55 if is_rainy else 1.0)), 2)
-
+                daily_payload: dict[str, Any] = {
+                    "grid_id": grid.grid_id,
+                    "date": cur,
+                    "avg_temperature": avg_temp,
+                    "min_temperature": min_temp,
+                    "max_temperature": max_temp,
+                    "midpoint_temperature": round((min_temp + max_temp) / 2.0, 2),
+                    "avg_relative_humidity": humidity,
+                    "total_precipitation": rain,
+                    "imerg_total_precipitation": rain,
+                    "wind_speed": round(rng.uniform(1.5, 6.5), 2),
+                    "solar_radiation": round(max(2.0, 14.0 + 10.0 * math.sin((2.0 * math.pi * (doy - 80)) / 365.0)), 2),
+                }
                 daily_rows.append(
-                    WeatherDaily(
-                        grid_id=grid_id,
-                        date=current_day,
-                        max_temperature=max_temp,
-                        min_temperature=min_temp,
-                        midpoint_temperature=round((min_temp + max_temp) / 2.0, 2),
-                        avg_temperature=avg_temp,
-                        max_dew_point_temperature=round(max_temp - 3.0, 2),
-                        min_dew_point_temperature=round(min_temp - 1.5, 2),
-                        avg_dew_point_temperature=round(avg_temp - 2.5, 2),
-                        total_precipitation=None,
-                        imerg_total_precipitation=rain_mm,
-                        max_wind_speed=round(avg_wind * 1.4, 2),
-                        min_wind_speed=round(avg_wind * 0.5, 2),
-                        avg_wind_speed=avg_wind,
-                        max_wind_speed_2m=round(avg_wind * 1.1, 2),
-                        min_wind_speed_2m=round(avg_wind * 0.4, 2),
-                        avg_wind_speed_2m=round(avg_wind * 0.78, 2),
-                        max_relative_humidity=min(100.0, round(avg_rh + 12.0, 1)),
-                        min_relative_humidity=max(25.0, round(avg_rh - 15.0, 1)),
-                        avg_relative_humidity=avg_rh,
-                        total_downward_solar_radiation=solar_rad,
-                        max_downward_solar_radiation=round(solar_rad / 7.5, 3),
-                        avg_soil_temperature_level_1=round(avg_temp * 0.9, 2),
-                        avg_soil_moisture_level_1=0.28 if is_rainy else 0.21,
-                        eto=round(max(0.4, solar_rad * 0.22), 2),
-                        etr=round(max(0.5, solar_rad * 0.27), 2),
-                        day_length=round(12.0 + 4.2 * math.sin(2.0 * math.pi * (doy - 80) / 365.0), 2),
-                    )
+                    WeatherDaily(**{k: v for k, v in daily_payload.items() if k in dcols})
                 )
 
-                hourly_rain = round(rain_mm / 6.0, 3) if rain_mm > 0 else 0.0
+                hourly_rain = round(rain / 24.0, 3)
                 for hour in range(24):
-                    diurnal = math.sin(2.0 * math.pi * (hour - 8) / 24.0)
-                    h_temp = round(avg_temp + 4.5 * diurnal, 2)
-                    h_rh = round(min(100.0, max(30.0, avg_rh - 12.0 * diurnal)), 1)
-                    h_precip = hourly_rain if 2 <= hour <= 7 else 0.0
+                    diurnal = -3.5 * math.cos((2.0 * math.pi * (hour - 3)) / 24.0)
+                    h_temp = round(avg_temp + diurnal, 2)
+                    h_rh = round(min(99.0, max(32.0, humidity - diurnal * 2.2)), 1)
+                    utc_dt = datetime.combine(cur, time(hour=hour), tzinfo=timezone.utc)
+                    hourly_payload: dict[str, Any] = {
+                        "grid_id": grid.grid_id,
+                        "date": cur,
+                        "utc_time": utc_dt,
+                        "temperature": h_temp,
+                        "relative_humidity": h_rh,
+                        "precipitation": hourly_rain,
+                        "imerg_precipitation": hourly_rain,
+                    }
                     hourly_rows.append(
-                        WeatherHourly(
-                            grid_id=grid_id,
-                            utc_time=datetime.combine(current_day, time(hour, 0), tzinfo=timezone.utc),
-                            date=current_day,
-                            temperature=h_temp,
-                            dew_point_temperature=round(h_temp - (100.0 - h_rh) / 5.0, 2),
-                            precipitation=None,
-                            imerg_precipitation=h_precip,
-                            wind_speed=avg_wind,
-                            wind_speed_2m=round(avg_wind * 0.78, 2),
-                            relative_humidity=h_rh,
-                            downward_solar_radiation=round(max(0.0, (solar_rad / 7.5) * diurnal), 3),
-                            soil_temperature_level_1=round(avg_temp * 0.9, 2),
-                            soil_moisture_level_1=0.28 if is_rainy else 0.21,
-                            eto=round(max(0.0, (solar_rad * 0.22) / 12.0), 3),
-                            etr=round(max(0.0, (solar_rad * 0.27) / 12.0), 3),
-                        )
+                        WeatherHourly(**{k: v for k, v in hourly_payload.items() if k in hcols})
                     )
 
+                cur += timedelta(days=1)
+
         WeatherDaily.objects.bulk_create(daily_rows, batch_size=5000, ignore_conflicts=True)
-        WeatherHourly.objects.bulk_create(hourly_rows, batch_size=5000, ignore_conflicts=True)
+        WeatherHourly.objects.bulk_create(hourly_rows, batch_size=10000, ignore_conflicts=True)
 
     @staticmethod
     def _apply_weather_overrides(grid_ids: list[str], overrides: list[dict[str, Any]]) -> None:
@@ -778,58 +826,82 @@ class WeatherAndForecastLoader:
                     grid_id__in=grid_ids, date__range=(start_d, end_d)
                 ).update(**hourly_updates)
 
+    def generate_forecast_series(
+        self, grid_ids: list[str], start: date, end: date, horizon_days: int = 7
+    ) -> int:
+        """Buduje 7-dniową prognozę (`WeatherForecastDaily`) dla każdego dnia `D` z przedziału `[start, end]`."""
+        WeatherForecastDaily.objects.filter(
+            grid_id__in=grid_ids, issued_on__range=(start, end)
+        ).delete()
+
+        fcols = {f.attname for f in WeatherForecastDaily._meta.concrete_fields} - {"id"}
+        daily_qs = WeatherDaily.objects.filter(
+            grid_id__in=grid_ids,
+            date__range=(start + timedelta(days=1), end + timedelta(days=horizon_days)),
+        )
+        by_grid_and_date: dict[tuple[str, date], WeatherDaily] = {
+            (row.grid_id, row.date): row for row in daily_qs
+        }
+
+        to_create: list[WeatherForecastDaily] = []
+        for grid_id in grid_ids:
+            issued = start
+            while issued <= end:
+                for offset in range(1, horizon_days + 1):
+                    target_date = issued + timedelta(days=offset)
+                    obs = by_grid_and_date.get((grid_id, target_date))
+                    if obs is None:
+                        continue
+                    precip = (
+                        obs.imerg_total_precipitation
+                        if getattr(obs, "imerg_total_precipitation", None) is not None
+                        else getattr(obs, "total_precipitation", None)
+                    )
+                    payload: dict[str, Any] = {
+                        "grid_id": grid_id,
+                        "issued_on": issued,
+                        "date": target_date,
+                        "avg_temperature": getattr(obs, "avg_temperature", None),
+                        "min_temperature": getattr(obs, "min_temperature", None),
+                        "max_temperature": getattr(obs, "max_temperature", None),
+                        "avg_relative_humidity": getattr(obs, "avg_relative_humidity", None),
+                        "total_precipitation": precip,
+                    }
+                    to_create.append(
+                        WeatherForecastDaily(**{k: v for k, v in payload.items() if k in fcols})
+                    )
+                issued += timedelta(days=1)
+
+        WeatherForecastDaily.objects.bulk_create(to_create, batch_size=5000, ignore_conflicts=True)
+        return len(to_create)
+
 
 class ObservationLoader:
-    """Loader początkowych raportów rolnika (`core.Observation`) zdefiniowanych w scenariuszu."""
+    """Zapisuje początkowe obserwacje rolnika (`core.Observation`) z definicji scenariusza."""
 
-    def load_observations(self, specs: list[ObservationSpec], fields_by_name: dict[str, Field]) -> int:
-        """Zapisuje obserwacje scenariusza w tabeli `core.Observation`.
-
-        Args:
-            specs: Lista specyfikacji obserwacji z definicji scenariusza.
-            fields_by_name: Mapa `{Field.name: Field}` do powiązania raportów z polami.
-
-        Returns:
-            Liczba utworzonych rekordów `Observation`.
-
-        Raises:
-            ScenarioValidationError: Gdy obserwacja wskazuje nieistniejące pole lub nieznany `threat_code`.
-        """
-        if not specs:
-            return 0
-
-        rows: list[Observation] = []
-        for idx, spec in enumerate(specs):
-            field_obj: Field | None = None
-            if spec.field_name is not None:
-                field_obj = fields_by_name.get(spec.field_name)
-                if field_obj is None:
-                    raise ScenarioValidationError(
-                        f"Obserwacja #{idx} wskazuje nieznane pole '{spec.field_name}'."
-                    )
-
-            threat_obj: Threat | None = None
-            if spec.threat_code:
-                threat_obj = Threat.objects.filter(code=spec.threat_code).first()
-                if threat_obj is None:
-                    raise ScenarioValidationError(
-                        f"Obserwacja #{idx} odwołuje się do nieznanego zagrożenia '{spec.threat_code}'."
-                    )
-
-            rows.append(
-                Observation(
-                    field=field_obj,
-                    observed_on=spec.observed_on,
-                    kind=spec.kind,
-                    category=spec.category,
-                    threat=threat_obj,
-                    severity=spec.severity,
-                    distance_m=spec.distance_m,
-                    details=dict(spec.details),
-                    text=spec.text,
-                    idempotency_key=f"scenario:{idx}:{spec.kind}:{spec.observed_on.isoformat()}",
-                )
+    @staticmethod
+    def load_observations(
+        observations: list[ObservationSpec], fields_by_name: dict[str, Field]
+    ) -> int:
+        """Tworzy rekordy `Observation` powiązane z odpowiednimi polami i zagrożeniami."""
+        created = 0
+        for spec in observations:
+            field = fields_by_name.get(spec.field_name) if spec.field_name else None
+            threat = (
+                Threat.objects.filter(code=spec.threat_code).first()
+                if spec.threat_code
+                else None
             )
-
-        Observation.objects.bulk_create(rows)
-        return len(rows)
+            Observation.objects.create(
+                field=field,
+                kind=spec.kind,
+                observed_on=spec.observed_on,
+                category=spec.category or "",
+                threat=threat,
+                severity=spec.severity,
+                distance_m=spec.distance_m,
+                details=spec.details or {},
+                text=spec.text or "",
+            )
+            created += 1
+        return created

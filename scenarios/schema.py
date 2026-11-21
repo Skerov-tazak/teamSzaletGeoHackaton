@@ -128,7 +128,7 @@ class SwitchOptions:
     keep_weather: bool = False
     reset_chat: bool = False
     skip_predict: bool = False
-    allow_synthetic_fallback: bool = True
+    allow_synthetic: bool = False
 
 
 class ScenarioParser:

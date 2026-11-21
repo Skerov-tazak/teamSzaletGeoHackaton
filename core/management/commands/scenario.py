@@ -78,9 +78,9 @@ class Command(BaseCommand):
             help="Pomija uruchomienie engine.predict() po załadowaniu danych wejściowych.",
         )
         switch_parser.add_argument(
-            "--strict-data",
+            "--allow-synthetic",
             action="store_true",
-            help="Wyłącza generator syntetyczny (wymaga kompletu plików źródłowych w DATA_DIR).",
+            help="Zezwala na wygenerowanie syntetycznych danych przy braku plików w DATA_DIR (emituje ostrzeżenie).",
         )
 
     def handle(self, *args: Any, **options: Any) -> None:
@@ -184,11 +184,14 @@ class Command(BaseCommand):
             keep_weather=bool(options.get("keep_weather", False)),
             reset_chat=bool(options.get("reset_chat", False)),
             skip_predict=bool(options.get("skip_predict", False)),
-            allow_synthetic_fallback=not bool(options.get("strict_data", False)),
+            allow_synthetic=bool(options.get("allow_synthetic", False)),
         )
 
         self.stdout.write(f"Przełączanie bazy na scenariusz '{options['slug']}'...")
         report = self.manager.switch_to(slug=options["slug"], options=switch_options)
+
+        for warning_msg in report.warnings:
+            self.stderr.write(self.style.WARNING(f"  ! {warning_msg}"))
 
         self.stdout.write(
             self.style.SUCCESS(
