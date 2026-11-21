@@ -56,3 +56,60 @@ limit and a row cap. Today `settings.DATABASES` has only `default` (the owner ro
 ORM helpers (`season_so_far()`, `coming_days()`, `observed()`, `current()`) on `default` and never write.
 The SQL tool itself also validates queries (one SELECT, allowlisted `core_*` tables, no system
 functions) and runs them in a read-only transaction with a 3 s timeout and a row cap.
+
+## 3. Risk levels (cut-offs of `Risk.score`)
+
+Open in docs/database.md ("what are the cut-offs for the map colours?"). The assistant needs words
+("wysokie") that match the map colours. **Provisional, in one place (`assistant/domain.py` `LEVELS`):**
+`< 0.33` niskie, `< 0.66` średnie, `≥ 0.66` wysokie. Please decide the real cut-offs (Bartek, Kuba);
+ideally the platform exposes them (e.g. in `GET /api/threats/` or a constant in `core`) so the map
+and the assistant read the same values.
+
+## 4. `Risk.explanation` format
+
+The assistant reads the starting-point format from docs/database.md defensively:
+`{"summary": "...", "factors": [{"variable", "value", "unit", "threshold"}], "source": "..."}`.
+It shows `summary` as the engine's reasons and up to 4 `factors`; anything else is ignored.
+Request (Bartek): keep `summary` a full Polish sentence (the model quotes it as "powody (silnik)"),
+and `variable` = a WeatherDaily column name so the assistant can label it with a unit.
+
+## 5. Citations
+
+Agreed shape kept; additive keys only.
+
+```json
+{"type": "guide", "document": "metodyka_-_PSZENICA_-_www.pdf", "page": 79, "printed_page": 77,
+ "section": "5. Ograniczanie sprawców chorób > 5.1. Najważniejsze choroby", "ref": 1}
+{"type": "guide", "document": "ryzyka_zebrane.xlsx", "sheet": "pszenica", "row": 19, "ref": 2}
+{"type": "risk", "field_id": 3, "threat_code": "wheat.septoria_leaf_blotch", "date": "2024-05-15"}
+```
+
+- `page` = PDF page (1-based), so the UI can open `file.pdf#page=79`; `printed_page` = the number
+  printed in the book (what a farmer would look up); `section` for the tooltip.
+- `ref` = the number shown in the answer text (`[1]`, `[2]`); risk citations have no marker.
+- The spreadsheet has no pages: `sheet` + `row` instead.
+
+## 6. `Reply` extensions
+
+`answer()` returns the agreed four fields plus three optional ones with defaults (old callers are
+unaffected): `chart: dict | None` (Vega-Lite spec), `pending_action: dict | None`
+(`{"type": "confirm_observation", "draft": {...}}`), `meta: dict` (route, LLM usage; stored in
+`Message.meta`). **Proposal for the HTTP response:** add `chart` and `pending_action` to the
+assistant message (`null` when absent), so the chat window can draw the chart and show
+"Zapisz / Anuluj" buttons. **Until accepted:** the response keeps the agreed shape; the draft is
+in the text ("Zapisać tę obserwację? (tak / nie)") and the chart only in `Message.meta`.
+
+## 7. Chart format
+
+No format in docs/interfaces.md ("charts: not in this version"). Proposal: **Vega-Lite v5 JSON**
+(render with `vega-embed`), Polish titles/axes with units, a dashed "dziś" rule, solid line =
+season so far, dashed = forecast. Every chart tool also returns a `summary` computed in code; the
+model only comments on it.
+
+## 8. Chat endpoint
+
+`POST /api/chat/`, `GET /api/chat/conversations/`, `GET /api/chat/conversations/{id}/` are built in
+`assistant/views.py` exactly to the agreed shapes (no auth, no CSRF, DRF error format), wired by one
+line in `fieldpressure/urls.py`: `path("api/", include("assistant.urls"))`. If you prefer to own
+the endpoint, move the view; it only calls `answer()` and saves `Message` rows. `ASSISTANT_LLM=fake`
+in `.env` gives deterministic answers without API keys for frontend work.
