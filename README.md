@@ -83,7 +83,7 @@ A demo is a scenario (`scenarios/definitions/<name>.json`: the fields, the seaso
 
 The import reads the hackathon datasets from `DATA_DIR` (default `../field-under-pressure-data`, next to the repo; see `.env.example`). Only the Opolskie part is needed: about 5.9 GB of the organisers' 158 GB.
 
-Download it with the organisers' presigned URL list (a text file of `key<TAB>url` lines, e.g. `dhub-pl-hackathon-2026_presigned_urls.txt` in the repo root). **The links stop working within hours** even though they say otherwise, so ask for a fresh list and use it straight away. Interrupted downloads resume when you rerun it.
+Download it with the organisers' presigned URL list (a text file of `key<TAB>url` lines, e.g. `dhub-pl-hackathon-2026_presigned_urls.txt` in the repo root; it is git-ignored because the links grant access to the dataset, so never commit it). **The links stop working within hours** even though they say otherwise, so ask for a fresh list and use it straight away. Interrupted downloads resume when you rerun it.
 
 ```bash
 grep -E '^(cropland/|soil_isric_250_v2/soil_Opolskie|weather_data/(daily|hourly)/20[0-9]{2}/weather_(daily|hourly)_20[0-9]{2}_Opolskie|weather_data/(imerg|weather_grids))' dhub-pl-hackathon-2026_presigned_urls.txt | while IFS=$'\t' read -r key url; do mkdir -p "../field-under-pressure-data/raw/$(dirname "$key")"; curl -fsSL -C - -o "../field-under-pressure-data/raw/$key" "$url"; done
