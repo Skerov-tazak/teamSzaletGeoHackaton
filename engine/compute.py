@@ -63,6 +63,7 @@ def compute_rows(field_ids, start: date, end: date, observations=None, with_fiel
     """Computes (does not save) the Risk rows. Shared by predict() and what_if()."""
     all_fields = list(Field.objects.select_related("crop", "weather_grid"))
     reports = list(observations) if observations is not None else OBS.load_all(start, end)
+    reports += [r for f in all_fields for r in OBS.from_field(f)]  # facts stored on the field (if those columns exist)
     reports += farm_spread(reports, all_fields)
     if field_ids is not None:
         wanted = set(field_ids)
@@ -219,7 +220,8 @@ def _season_rows(field, threats, rules, season, start, end, now, reports=(), cro
     from engine.satellite import fieldndvi
     anchors = fieldndvi.phenology_anchors(fieldndvi.load(field, season), ctx.crop, season)
     stages = calibrate(stages, ctx.crop, anchors)
-    sow = OBS.sowing_override([r for r in reports if r.observed_on <= end])
+    s0, s1 = season_bounds(season)
+    sow = OBS.sowing_override([r for r in reports if r.observed_on <= end], window=(s0 - timedelta(days=60), s1))
     if sow:  # the farmer's sowing date replaces the assumed one from the day it was reported
         told = bbch_series(ctx.crop, daily["avg_temperature"], season, sowing=sow[0])
         use = told.index >= pd.Timestamp(sow[1])

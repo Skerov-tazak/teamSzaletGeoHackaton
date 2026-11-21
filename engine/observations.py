@@ -61,7 +61,10 @@ class Report:
             return f"Treatment against {what} on {when}"
         if self.kind == "event":
             return f"{str(self.details.get('type') or self.details.get('event') or 'event').capitalize()} reported on {when}"
-        return f"Field information from the farmer on {when}: " + ", ".join(f"{k}={v}" for k, v in self.details.items())
+        facts = ", ".join(f"{k}={v}" for k, v in self.details.items() if k != "source")
+        if self.details.get("source") == "field_record":
+            return f"Field record: {facts}"
+        return f"Field information from the farmer on {when}: {facts}"
 
 
 def _from_core(r) -> Report:
@@ -141,18 +144,44 @@ def load_all(start: date, end: date) -> list[Report]:
     return _query(end)
 
 
+FIELD_FACT_COLUMNS = ("sowing_date", "tillage", "resistant_to")
+KNOWN_SINCE = date(2000, 1, 1)  # a field record has no report date: it holds for every day computed
+
+
+def from_field(field) -> list[Report]:
+    """
+    Facts stored on the field itself (proposed columns Field.sowing_date, Field.tillage, Field.resistant_to,
+    written by the assistant when the farmer confirms them). Read only if the columns exist; each becomes a
+    field_fact report, so it is explained like a farmer report. Sowing dates apply only to their own season.
+    """
+    out = []
+    for col in FIELD_FACT_COLUMNS:
+        v = getattr(field, col, None)
+        if v in (None, "", [], ()):
+            continue
+        if col == "sowing_date":
+            v = v if isinstance(v, date) else date.fromisoformat(str(v))
+            out.append(Report(observed_on=v, kind="field_fact", details={"sowing_date": v, "source": "field_record"}, field_id=field.id))
+        else:
+            out.append(Report(observed_on=KNOWN_SINCE, kind="field_fact", details={col: v, "source": "field_record"}, field_id=field.id))
+    return out
+
+
 def for_field(reports: list[Report] | None, field_id: int) -> list[Report]:
     return [r for r in (reports or []) if r.field_id in (None, field_id)]
 
 
-def sowing_override(reports: list[Report]) -> tuple[date, date] | None:
-    """(sowing_date, reported_on) from the latest field_fact with a sowing date."""
-    facts = [r for r in reports if r.kind == "field_fact" and r.details.get("sowing_date")]
-    if not facts:
-        return None
-    r = max(facts, key=lambda x: x.observed_on)
-    sd = r.details["sowing_date"]
-    return (sd if isinstance(sd, date) else date.fromisoformat(str(sd))), r.observed_on
+def sowing_override(reports: list[Report], window: tuple[date, date] | None = None) -> tuple[date, date] | None:
+    """(sowing_date, reported_on) from the latest field_fact with a sowing date (inside `window` if given)."""
+    facts = []
+    for r in reports:
+        sd = r.details.get("sowing_date") if r.kind == "field_fact" else None
+        if not sd:
+            continue
+        sd = sd if isinstance(sd, date) else date.fromisoformat(str(sd))
+        if window is None or window[0] <= sd <= window[1]:
+            facts.append((sd, r.observed_on))
+    return max(facts, key=lambda x: x[1]) if facts else None
 
 
 def _age(days: pd.DatetimeIndex, on: date) -> np.ndarray:

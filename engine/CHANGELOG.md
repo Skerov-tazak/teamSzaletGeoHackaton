@@ -13,6 +13,7 @@ History of the engine's versions and the findings behind them. The reference doc
 - New rule options: same crop last season, specific previous crops, acid soil, rotation pests (host crop in the last
   N seasons), soil temperature range for `soil_days`, flight temperature for `vector_days`, moisture `rh90` (late blight).
 - `engine_load_threats` creates the engine's `CropClass` rows if missing.
+- Facts on the field: reads proposed `Field.sowing_date` / `tillage` / `resistant_to` if the columns exist (`observations.from_field`); sowing dates only apply to their own season. README: facts go to core tables, events to `core.Observation`.
 
 ## v0.6: no document citations
 

@@ -193,6 +193,20 @@ The engine reads only through the Django ORM and the platform helpers (`.observe
 
 `<Region>` in file names is the voivodeship without Polish letters (`Opolskie`, `Dolnoslaskie`, `Slaskie`; some packages spell `Łódzkie` as `odzkie` and `Małopolskie` as `Maopolskie`).
 
+### Farmer input: facts on the field, events in Observation
+
+What the farmer tells the chat is of two kinds, stored in two places (proposal for Jan + Szymek and Ola):
+
+| Kind | Examples | Where it goes | Why |
+|---|---|---|---|
+| **Facts about the field** (a state that corrects our data) | "it's rapeseed, not wheat", "last year it was maize", "I sowed on 25 Sep", "I don't plough", "the variety is resistant to brown rust" | **core tables**: `Field.crop`, `FieldCropYear` (year, class, share 1.0), and new columns `Field.sowing_date` (date, null), `Field.tillage` (`plough` / `reduced`, blank), `Field.resistant_to` (JSON list of threat codes); `FieldCropYear.source` (`crop map` / `farmer`) would keep the two apart | one value per field; the map, the engine and the chat all read the same row |
+| **Events in time** | "I see rust (12 Jun)", "I sprayed on 10 May", "my neighbour has head blight", "hail yesterday", "inspected, clean" | **`core.Observation`** (one row per report, columns below) | the engine recomputes every day *as of* that day, so it needs the date of each report; several reports per field; the explanation quotes them |
+
+- The assistant writes both through **one validated tool** after the farmer confirms (like `record_observation`: idempotency key, threat resolved to a code), never with raw SQL from MCP (the MCP role stays read-only).
+- A changed fact is also logged as an Observation (`kind = field_fact`), so it is clear who changed what and when.
+- After the write: `predict(field_ids=[field.id], start=...)` — the day seen for an event, the season start (1 Sep; sowing date for spring crops) for a changed crop or sowing date.
+- **Engine side (ready):** it reads `Field.crop` and `FieldCropYear` already; `Field.sowing_date`, `Field.tillage` and `Field.resistant_to` are read **if the columns exist** (`observations.from_field`) and explained as "Field record: …". A sowing date applies only to its own season. Until the columns exist, `field_fact` observations do the same job.
+
 ### Observation rows
 
 Farmer reports **are stored in the database**: the engine recomputes each day "as of" that day, so it must
@@ -432,6 +446,7 @@ Rapeseed numbers are general agronomy (no rapeseed guide in the package), all li
 |---|---|---|
 | **API endpoints for risks** (`/api/risks/?date=`, `/api/fields/{id}/risks/`, `/api/fields/{id}/risks/{date}/`), optionally `field_day` / `farm_ranking` | Jan + Szymek | ready: `Risk` rows, `engine.summary` |
 | **Farmer reports** — `details.kind` / `distance_m` / facts in `assistant.Observation` ([Observation rows](#observation-rows)); later `core.Observation` | Ola (writes), Jan + Szymek (`core` schema) | reads `core.Observation` and `assistant.Observation` |
+| **Facts on the field** — `Field.sowing_date`, `Field.tillage`, `Field.resistant_to`, `FieldCropYear.source`; the chat writes confirmed facts there ([Farmer input](#farmer-input-facts-on-the-field-events-in-observation)) | Jan + Szymek (columns), Ola (tool) | reads them if present |
 | Assistant tools: record a report → `predict(field_ids=[...], start=observed_on)`; "what if" → `what_if()`; "which field first" → `farm_ranking()` | Ola | ready |
 | Map: colour by `level` (cut-offs 0.3 / 0.6), "why" panel from `summary` + `drivers`, crop check from `field_day()["crop_check"]` | Kuba | ready |
 | Threat codes: use `engine_load_threats`, or a fixture with the same codes | Jan + Szymek | ready |

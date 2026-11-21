@@ -314,6 +314,23 @@ class OtherCropTests(EngineTestBase):
         self.assertEqual([s[0] for s in crop_season_segments(w, date(2025, 8, 1), date(2025, 12, 31))], [2025])
 
 
+class FieldRecordTests(TestCase):
+    """Facts stored on the field (proposed Field columns) become field_fact reports; sowing dates stay in their season."""
+
+    def test_from_field_and_sowing_window(self):
+        from types import SimpleNamespace
+        from engine.observations import from_field, sowing_override
+        f = SimpleNamespace(id=7, sowing_date=date(2024, 9, 25), tillage="reduced", resistant_to=["wheat.brown_rust"])
+        reps = from_field(f)
+        self.assertEqual({r.kind for r in reps}, {"field_fact"})
+        self.assertEqual(len(reps), 3)
+        self.assertTrue(all(r.field_id == 7 for r in reps))
+        self.assertTrue(reps[1].label().startswith("Field record"))
+        self.assertEqual(sowing_override(reps, (date(2024, 7, 3), date(2025, 8, 31))), (date(2024, 9, 25), date(2024, 9, 25)))
+        self.assertIsNone(sowing_override(reps, (date(2023, 7, 3), date(2024, 8, 31))))   # not last season's sowing
+        self.assertEqual(from_field(SimpleNamespace(id=1)), [])                           # columns absent: nothing
+
+
 class PureFunctionTests(TestCase):
     def test_safe_storage_days_matches_table_37(self):
         from engine.harvest import safe_storage_days
