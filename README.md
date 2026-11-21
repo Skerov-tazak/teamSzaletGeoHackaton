@@ -2,7 +2,7 @@
 
 <img src="logo/cropilot-logo-wektorowe-svg.svg" alt="Cropilot" width="420"/>
 
-# Cropilot - Field Under Pressure — team Szalet
+# Cropilot - Field Under Pressure - Team Szalet🔥
 
 Farmer dashboard for maize and winter wheat: a map of a farm's fields and their crop risks, plus an AI assistant grounded in the official crop-protection guides. See [architecture_overview.md](architecture_overview.md) for the components and how they fit together.
 
