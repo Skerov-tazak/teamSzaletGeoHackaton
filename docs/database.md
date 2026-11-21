@@ -475,7 +475,7 @@ The engine writes this JSON in every row; the map's "why" panel and the assistan
 | `threshold` | text or null | The monitoring / economic threshold for the current growth stage |
 | `spray_window` | object or null | Only for `treat`: `date`, `quality` (`optimal` / `acceptable`), `conditions`, `rule`, `note`. From the forecast issued on `as_of` |
 
-**Text language.** `summary`, `drivers[].label`, `action.text`, `action.threshold` and `notes` reach the farmer as they are, so they must be **Polish** (AGENTS.md: interface text is Polish). The engine writes them in English today (with the Polish threat name in brackets): see [Open questions](#open-questions).
+**Text language.** `summary`, `drivers[].label`, `action.text`, `action.threshold` and `notes` reach the farmer as they are, so they must be **Polish**, like the rest of the interface. The engine writes them in English today (with the Polish threat name in brackets): see [Open questions](#open-questions).
 
 **Who reads what.**
 
