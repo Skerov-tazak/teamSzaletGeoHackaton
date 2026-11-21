@@ -30,8 +30,10 @@ STAGE_NAMES = [
 
 # (GDD, BBCH) breakpoints, linear in between.
 WHEAT_AUTUMN = [(0, 0), (120, 10), (250, 13), (420, 21), (600, 25)]  # base 0, since sowing
-WHEAT_SPRING = [(0, 25), (420, 30), (560, 32), (700, 37), (820, 39), (930, 49), (970, 51), (1050, 59),
-                (1100, 61), (1200, 69), (1400, 75), (1650, 85), (1900, 89), (2050, 92)]  # base 0, since 1 Jan
+# Heading and ripening re-calibrated to Sentinel-2 on 7 wheat field-seasons near Krapkowice (2024-25):
+# NDVI peak (heading, ~BBCH 55) at a median 1060 GDD, NDVI < 0.5 (ripening, ~BBCH 83) at a median 2135 GDD.
+WHEAT_SPRING = [(0, 25), (420, 30), (560, 32), (700, 37), (820, 39), (950, 49), (1010, 55), (1080, 59),
+                (1130, 61), (1250, 69), (1600, 75), (2000, 83), (2200, 85), (2400, 89), (2550, 92)]  # base 0, since 1 Jan
 MAIZE_TABLE = [(0, 0), (80, 9), (110, 10), (200, 13), (350, 16), (450, 30), (820, 51), (900, 59),
                (950, 63), (1050, 69), (1200, 75), (1400, 85), (1600, 87), (1750, 89)]  # base 6, since sowing
 
@@ -54,9 +56,17 @@ class StageEstimate:
                 "sowing_assumed": self.sowing.isoformat(), "gdd": round(self.gdd), "confidence": self.confidence}
 
 
-def stage_name(bbch: float) -> str:
-    name = STAGE_NAMES[0][1]  # bbch < 0: not sown yet
-    for b, n in STAGE_NAMES:
+MAIZE_STAGE_NAMES = [
+    (-1, "not sown yet"), (0, "sown, germinating"), (9, "emergence"), (10, "leaf development"),
+    (30, "stem elongation"), (51, "tasseling"), (63, "flowering (silking)"), (71, "grain filling"),
+    (83, "ripening"), (87, "physiological maturity"), (89, "fully ripe"),
+]
+
+
+def stage_name(bbch: float, crop: int | None = None) -> str:
+    names = MAIZE_STAGE_NAMES if crop == MAIZE else STAGE_NAMES
+    name = names[0][1]  # bbch < 0: not sown yet
+    for b, n in names:
         if bbch >= b:
             name = n
     return name
@@ -103,7 +113,7 @@ def bbch_series(crop: int, daily_temp: pd.Series, season: int, sowing: date | No
 
 def estimate(crop: int, stages: pd.DataFrame, day: date) -> StageEstimate:
     row = stages.loc[pd.Timestamp(day)]
-    return StageEstimate(bbch=float(row.bbch), name=stage_name(row.bbch), method="degree days (GDD), typical sowing date",
+    return StageEstimate(bbch=float(row.bbch), name=stage_name(row.bbch, crop), method="degree days (GDD), typical sowing date",
                          sowing=row.sowing, gdd=float(row.gdd), confidence=STAGE_CONFIDENCE_GDD)
 
 
@@ -112,3 +122,35 @@ def degree_days_base10(daily_temp: pd.Series, year: int) -> pd.Series:
     t = daily_temp.sort_index().astype(float)
     t = t.reindex(pd.date_range(t.index.min(), t.index.max(), freq="D")).interpolate(limit_direction="both")
     return (t - 10).clip(lower=0).where(t.index >= pd.Timestamp(year, 1, 1), 0).cumsum()
+
+
+STAGE_CONFIDENCE_SATELLITE = 0.8
+
+
+def calibrate(stages: pd.DataFrame, crop: int, anchors) -> pd.DataFrame:
+    """
+    Shift the degree-day stage curve so it passes through satellite anchors (engine.satellite.fieldndvi).
+    An anchor is applied only from the day it could be known (`detected_on`), so earlier days keep the
+    uncalibrated estimate: no look-ahead.
+    """
+    if not anchors:
+        return stages
+    table = WHEAT_SPRING if crop == WHEAT else MAIZE_TABLE
+    gdds, bbchs = zip(*table)
+    out = stages.copy()
+    for a in sorted(anchors, key=lambda x: x.detected_on):
+        on = pd.Timestamp(a.on)
+        if on not in out.index:
+            continue
+        if crop == WHEAT and on < pd.Timestamp(on.year, 1, 1):
+            continue
+        need = float(np.interp(a.bbch, bbchs, gdds))
+        delta = float(stages.loc[on, "gdd"]) - need
+        use = out.index >= pd.Timestamp(a.detected_on)
+        if crop == WHEAT:
+            use &= out.index >= pd.Timestamp(on.year, 1, 1)
+        shifted = np.interp(stages.loc[use, "gdd"].to_numpy() - delta, gdds, bbchs)
+        out.loc[use, "bbch"] = np.maximum(shifted, 0)
+        out.loc[use, "method"] = f"degree days calibrated to the satellite: {a.what}"
+        out.loc[use, "confidence"] = STAGE_CONFIDENCE_SATELLITE
+    return out

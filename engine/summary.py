@@ -49,6 +49,7 @@ def _summarise(field: Field, day: date, rows: list[Risk]) -> dict:
     bbch = next((((r.explanation or {}).get("growth_stage") or {}).get("bbch") for r in rows), None)
     return {
         "harvest": _harvest(field, day, bbch),
+        "crop_check": _crop_check(field, day),
         "growth_stage": next(((r.explanation or {}).get("growth_stage") for r in rows), None),
         "field_id": field.id, "name": field.name, "date": day.isoformat(),
         "crop": {"code": field.crop_id, "name": getattr(field.crop, "name", None)},
@@ -96,3 +97,12 @@ def _harvest(field: Field, day: date, bbch) -> dict | None:
                                    .order_by("date").values(*cols), columns=cols)
     fc = fc.set_index("date") if not fc.empty else None
     return harvest_outlook(field.crop_id, float(bbch), recent, fc)
+
+
+def _crop_check(field: Field, day: date) -> dict | None:
+    """Does the field's satellite curve up to `day` fit its crop? (cached NDVI only, no network)"""
+    from engine.satellite import fieldndvi
+    from engine.satellite.season import season_of
+
+    season = season_of(day) if field.crop_id != 1130 or day.month < 9 else day.year
+    return fieldndvi.crop_check(fieldndvi.load(field.id, season), field.crop_id, season, day)

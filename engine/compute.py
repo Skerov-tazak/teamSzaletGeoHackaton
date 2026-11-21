@@ -23,7 +23,7 @@ from core.models import Field, Risk, Threat, WeatherForecastDaily
 from engine import features as F
 from engine import observations as OBS
 from engine.catalog import CARRYOVER, MAIZE, RULES, rules_for_crop
-from engine.phenology import bbch_series, degree_days_base10
+from engine.phenology import bbch_series, calibrate, degree_days_base10
 from engine.satellite.season import season_bounds, season_of
 from engine.scoring import FieldContext, score_rule, spray_window
 
@@ -214,6 +214,9 @@ def _season_rows(field, threats, rules, season, start, end, now, reports=(), cro
     ctx = field_context(field, season, crop_code=crop, crop_source=crop_source)
     ctx.last_season = last_season_peaks(field, season)
     stages = bbch_series(ctx.crop, daily["avg_temperature"], season)
+    from engine.satellite import fieldndvi
+    anchors = fieldndvi.phenology_anchors(fieldndvi.load(field.id, season), ctx.crop, season)
+    stages = calibrate(stages, ctx.crop, anchors)
     sow = OBS.sowing_override([r for r in reports if r.observed_on <= end])
     if sow:  # the farmer's sowing date replaces the assumed one from the day it was reported
         told = bbch_series(ctx.crop, daily["avg_temperature"], season, sowing=sow[0])

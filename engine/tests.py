@@ -280,3 +280,33 @@ class FarmFeatureTests(EngineTestBase):
     def test_maize_season_continues_after_1_september(self):
         n = predict(field_ids=[self.maize.id], start=date(2025, 7, 25), end=date(2025, 7, 31))
         self.assertGreater(n, 0)
+
+
+class SatelliteStageTests(TestCase):
+    def test_calibration_only_from_detection_day(self):
+        import pandas as pd
+        from engine.phenology import bbch_series, calibrate
+        from engine.satellite.fieldndvi import phenology_anchors
+        idx = pd.date_range("2024-07-01", "2025-08-31")
+        temp = pd.Series([seasonal_temp(d.date()) for d in idx], index=idx)
+        st = bbch_series(1110, temp, 2025)
+        # NDVI: green in spring, peak 0.9 on 25 May, falling after
+        days = pd.date_range("2025-03-01", "2025-08-15", freq="5D")
+        ndvi = [0.5 + 0.4 * min(1, (d - days[0]).days / 85) if d <= pd.Timestamp("2025-05-25") else max(0.2, 0.9 - (d - pd.Timestamp("2025-05-25")).days * 0.012) for d in days]
+        series = pd.DataFrame({"date": days, "ndvi": ndvi})
+        anchors = phenology_anchors(series, 1110, 2025)
+        self.assertTrue(anchors)
+        cal = calibrate(st, 1110, anchors)
+        first = min(a.detected_on for a in anchors)
+        before = st.index < pd.Timestamp(first)
+        self.assertTrue((cal.loc[before, "bbch"] == st.loc[before, "bbch"]).all())
+        self.assertAlmostEqual(cal.loc[pd.Timestamp(anchors[0].detected_on), "confidence"], 0.8)
+
+    def test_crop_check_flags_bare_spring_for_wheat(self):
+        import pandas as pd
+        from engine.satellite.fieldndvi import crop_check
+        days = pd.date_range("2025-03-15", "2025-06-30", freq="7D")
+        maize_like = pd.DataFrame({"date": days, "ndvi": [0.2] * 9 + [0.5] * (len(days) - 9)})
+        r = crop_check(maize_like, 1110, 2025, date(2025, 6, 30))
+        self.assertFalse(r["consistent"])
+        self.assertIn("bare in spring", r["text"])

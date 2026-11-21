@@ -153,3 +153,11 @@ Engine features:
 - **Spread within the farm**: symptoms reported on one field raise the risk on fields of the same crop within 3 km (as a "neighbour" report with the distance); those fields are recomputed too.
 - **Coming days are less certain**: days after today get `forecast_lead_days` and confidence x (1 - 0.06 x days ahead); `adjust_for_lead()` can redo it when the clock moves.
 - **Maize season runs to 31 December** (sown in April, harvested in autumn); seasons after the current one are not computed (crop unknown). `predict()` replaces the whole range for the fields it computes, so rows of threats that no longer apply disappear.
+
+
+### v0.4: growth stage from the satellite, crop check
+
+- [`satellite/fieldndvi.py`](satellite/fieldndvi.py) + `python manage.py engine_fetch_ndvi --season 2025`: each field's NDVI per Sentinel-2 scene (mean of clear pixels in the polygon), cached in `DATA_DIR/satellite/fields/` - `predict()` never needs the network.
+- **Stage anchors from the curve:** wheat - spring NDVI peak in May-June (>= 0.7) = heading (BBCH 55), NDVI below 0.5 afterwards = ripening (BBCH 83); maize - the rise from bare soil after sowing = young plants (BBCH 13), summer peak = flowering (BBCH 65). From the day an anchor is confirmed the degree-day curve is shifted through it (confidence 0.6 -> 0.8); earlier days keep the old estimate (no look-ahead).
+- **Finding:** on 7 wheat field-seasons near Krapkowice the degree-day model matched heading well (BBCH 53-60 vs 55 in 5 of 7) but ran **1-2 weeks early at ripening** (BBCH 92 where the satellite shows ~83). The wheat table was re-calibrated: heading ~1060, ripening ~2135 degree days since 1 January.
+- **Crop check** (`summary.field_day(...)["crop_check"]`): explainable mismatches between the curve and the crop ("bare in spring: winter wheat is green then") so the farmer is asked to confirm.

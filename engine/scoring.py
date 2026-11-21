@@ -220,7 +220,7 @@ def _explain(rule, ctx, day, final, base, sw, bbch, m_total, mults, main, i, sta
     }]
     st = stages.loc[day] if day in stages.index else None
     drivers.append({
-        "factor": "growth_stage", "label": f"Growth stage BBCH {bbch:.0f} ({stage_name(bbch)}); susceptible BBCH {rule.stage_min}-{rule.stage_max}",
+        "factor": "growth_stage", "label": f"Growth stage BBCH {bbch:.0f} ({stage_name(bbch, rule.crop)}); susceptible BBCH {rule.stage_min}-{rule.stage_max}",
         "value": int(round(bbch)), "unit": "BBCH", "threshold": f"BBCH {rule.stage_min}-{rule.stage_max}",
         "effect": round(final - min(1.0, base * m_total), 3),
     })
@@ -248,10 +248,10 @@ def _explain(rule, ctx, day, final, base, sw, bbch, m_total, mults, main, i, sta
     if bbch < 0:
         reasons.append("the crop is not sown yet")
     elif sw == 0:
-        reasons.append(f"not in the susceptible stage (BBCH {rule.stage_min}-{rule.stage_max}; now BBCH {bbch:.0f}, {stage_name(bbch)})")
+        reasons.append(f"not in the susceptible stage (BBCH {rule.stage_min}-{rule.stage_max}; now BBCH {bbch:.0f}, {stage_name(bbch, rule.crop)})")
     else:
         reasons.append(f"{lc(main['label'])}: {value:g} {main['unit']}" if value is not None else lc(main["label"]))
-        stage_txt = f"{stage_name(bbch)}, BBCH {bbch:.0f}"
+        stage_txt = f"{stage_name(bbch, rule.crop)}, BBCH {bbch:.0f}"
         reasons.append(f"crop at {stage_txt}" + ("" if sw >= 1 else f" (only partly in the susceptible stage BBCH {rule.stage_min}-{rule.stage_max})"))
         reasons += [lc(m["label"]) for m in mults]
         if pressure_reason:
@@ -273,7 +273,7 @@ def _explain(rule, ctx, day, final, base, sw, bbch, m_total, mults, main, i, sta
         "threat": {"code": rule.code, "name_pl": rule.name_pl, "name_en": rule.name_en, "category": rule.category},
         "as_of": day.date().isoformat(),
         "crop": {"code": ctx.crop, "source": ctx.crop_source},
-        "growth_stage": {"bbch": int(round(bbch)), "name": stage_name(bbch), "method": st_method,
+        "growth_stage": {"bbch": int(round(bbch)), "name": stage_name(bbch, rule.crop), "method": st_method,
                          "sowing_assumed": str(st["sowing"]) if st is not None else None, "confidence": st_conf},
         "drivers": drivers,
         "action": _action(rule, level, sw, treated, bbch),
