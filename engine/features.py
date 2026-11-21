@@ -3,8 +3,9 @@ Daily weather features for one weather grid cell over a season.
 
 Every feature for day D is a trailing value (a sum or mean over days <= D), so assessing day D never
 looks at weather after D: the "as of that day" rule of the contract holds for every row, even though
-the season is computed in one pass. Weather is read only through the platform helpers
-(`.observed(as_of=...)`).
+the season is computed in one pass. Coming days (after today) append the forecast issued today to
+the weather observed up to today (load_forecast). Weather is read only through the platform helpers
+(`.observed(as_of=...)`, `.current(as_of=...)`).
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
-from core.models import WeatherDaily, WeatherHourly
+from core.models import WeatherDaily, WeatherForecastDaily, WeatherHourly
 
 LOCAL_TZ = ZoneInfo("Europe/Warsaw")
 WET_RH = 95.0        # % relative humidity counted as wet leaves (leaf wetness proxy), team assumption
@@ -45,6 +46,25 @@ def load_daily(grid_id: str, start: date, end: date) -> pd.DataFrame:
     # model's value when present, else IMERG. Engine code reads "precip".
     df["precip"] = df["total_precipitation"].fillna(df["imerg_total_precipitation"])
     return df
+
+
+def load_forecast(grid_id: str, issued_on: date) -> pd.DataFrame:
+    """
+    The daily forecast issued on `issued_on` (the next 7 days), with the same columns as load_daily so the
+    coming days can be appended to the observed weather. There is no IMERG forecast: "precip" is the
+    forecast's own total_precipitation (the demo seed fills it from the observed day's IMERG value).
+    """
+    cols = [c for c in DAILY_COLS if not c.startswith("imerg_")]
+    qs = (WeatherForecastDaily.objects.current(as_of=issued_on).filter(grid_id=grid_id)
+          .order_by("date").values(*cols))
+    df = pd.DataFrame.from_records(qs, columns=cols)
+    if df.empty:
+        return df
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.set_index("date").astype(float)
+    df["imerg_total_precipitation"] = np.nan
+    df["precip"] = df["total_precipitation"]
+    return df[[c for c in DAILY_COLS if c != "date"] + ["precip"]]
 
 
 def load_hourly(grid_id: str, start: date, end: date) -> pd.DataFrame:

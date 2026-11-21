@@ -2,6 +2,29 @@
 
 History of the engine's versions and the findings behind them. The reference documentation is [README.md](README.md).
 
+## v0.9: predict() contract from the platform review
+
+Closes the seven gaps in `docs/engine-predict-review.md`; its contract tests are `engine/test_predict_contract.py` (all pass).
+
+- **Coming days from the forecast:** today + 1 … + 7 use weather observed up to today, then the forecast issued today
+  (`features.load_forecast`; daily only, so hourly rules use the daily estimate). Before, they read weather observed
+  after today (hourly humidity and satellite rain no forecast has), and live mode had no coming days at all. The
+  spraying window and the harvest outlook of a coming day read today's forecast, not one issued later. No forecast
+  issued today → no coming-day rows (logged). New explanation key `forecast_issued_on`.
+- **Default `end`** = the later of today + 7 and the last day already stored for these fields, so a report or a crop
+  change also replaces the precomputed days. `end` is clipped to the last day with weather: days that can't be
+  recomputed keep their rows instead of disappearing.
+- **`PredictResult`**: `predict()` returns an int (rows) with `.field_ids` (every field rewritten, incl. spread).
+- **`clock_moved(old, new)`** recomputes `(min, max + 7]`; the `post_save` signal on `Clock` and
+  `refresh_forecast_confidence()` are gone. The platform calls it after saving the date; `engine_set_date D` does both.
+- **`precompute_season(season)`** for the seed: previous season, then this one to its end. `predict --season`.
+- **Reports count once:** an `assistant.Observation` row whose `idempotency_key` is in `core.Observation` is skipped.
+- **Field facts without a date** (`tillage`, `resistant_to`) apply from the current season's start, not from 2000.
+- Dev seed: forecast rain filled from IMERG, as the platform seed does.
+- Tests: rule tests that score days after 15 June now run with the clock on 31 July (as-of days); new tests for the
+  window of `clock_moved`, `precompute_season`, the result's field ids, the delete guard, no-forecast behaviour,
+  today's forecast for coming-day spraying windows, and season-bound field facts.
+
 ## v0.8: cross-component consistency
 
 - **Levels = the map's and the assistant's:** low < 0.33 ≤ medium < 0.66 ≤ high (was 0.3 / 0.6). A farmer-seen symptom is always high (floor 0.66 + 0.3 × severity).

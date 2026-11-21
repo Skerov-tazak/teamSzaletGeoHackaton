@@ -1,12 +1,19 @@
 """
-The engine's entry point, as agreed in docs/interfaces.md:
+The engine's entry points, as agreed in docs/interfaces.md and docs/engine-predict-review.md:
 
-    predict(field_ids=None, start=None, end=None) -> int
+    predict(field_ids=None, start=None, end=None) -> PredictResult   (an int: rows written, + .field_ids)
+    clock_moved(old, new) -> PredictResult                            (the platform calls it when the demo date moves)
+    precompute_season(season=None) -> PredictResult                   (the demo seed calls it once)
 
-Computes the risk of every threat of each field's crop, for every day from `start` to `end`
-(default: the current season, 1 September .. today + 7), and overwrites them in Risk in one bulk
-write. Each day is assessed as of that day: features are trailing windows over weather observed up
-to that day (see engine/features.py), and the spraying window comes from the forecast issued that day.
+Computes the risk of every threat of each field's crop, for every day from `start` to `end`, and
+overwrites them in Risk in one transaction. Which weather a day is assessed with:
+
+    day <= today                 weather observed up to that day ("as of that day")
+    today < day <= today + 7     weather observed up to today, then the forecast issued today (coming days)
+    day > today + 7              weather observed up to that day; only the demo precompute writes these, and
+                                 clock_moved() recomputes them as coming days once the date gets within 7 days
+
+Features are trailing windows (engine/features.py), so a day never reads weather after itself.
 """
 
 from __future__ import annotations
@@ -16,11 +23,11 @@ from datetime import date, timedelta
 
 import pandas as pd
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Max
 from django.utils import timezone
 
 from core import clock
-from core.models import Field, Risk, Threat, WeatherForecastDaily
+from core.models import Field, Risk, Threat, WeatherDaily, WeatherForecastDaily
 from engine import features as F
 from engine import observations as OBS
 from engine.catalog import CARRYOVER, MAIZE, RULES, rules_for_crop
@@ -34,19 +41,58 @@ log = logging.getLogger(__name__)
 SPREAD_RADIUS_M = 3000  # symptoms on one field raise the risk on fields of the same crop within this distance
 
 
-def predict(field_ids: list[int] | None = None, start: date | None = None, end: date | None = None,
-            observations: list | None = None) -> int:
+class PredictResult(int):
     """
+    The number of Risk rows written (an int, so callers that only count keep working), plus
+    `.field_ids`: every field whose rows were rewritten, including nearby fields that a symptoms report
+    spread to (the assistant returns them in updated_field_ids so the map reloads them).
+    """
+
+    def __new__(cls, rows: int = 0, field_ids=()):
+        obj = super().__new__(cls, rows)
+        obj.field_ids = sorted(set(field_ids))
+        return obj
+
+    def __add__(self, other):
+        return PredictResult(int(self) + int(other), list(self.field_ids) + list(getattr(other, "field_ids", [])))
+
+    def __repr__(self):
+        return f"PredictResult({int(self)}, field_ids={self.field_ids})"
+
+
+def last_computable_day(today: date | None = None) -> date | None:
+    """The last day that has weather: observed (demo) or in the forecast issued today (live)."""
+    today = today or clock.today()
+    obs = WeatherDaily.objects.aggregate(m=Max("date"))["m"]
+    fc = WeatherForecastDaily.objects.current(as_of=today).aggregate(m=Max("date"))["m"]
+    days = [d for d in (obs, fc) if d is not None]
+    return max(days) if days else None
+
+
+def predict(field_ids: list[int] | None = None, start: date | None = None, end: date | None = None,
+            observations: list | None = None) -> PredictResult:
+    """
+    start: default the season start (1 September).
+    end:   default the later of today + 7 and the last day already stored for these fields, so a
+           recompute after a farmer report or a crop change also replaces the precomputed days.
     `observations`: optional farmer reports (engine.observations.Report) to use instead of the
     Observation table, e.g. in tests or a scripted demo. Each report affects days >= its date only.
     Symptoms reported on a field also raise the risk on nearby fields of the same crop, so those
-    fields are recomputed too.
+    fields are recomputed too (and listed in the result's .field_ids).
     """
     today = clock.today()
-    end = end or today + timedelta(days=clock.FORECAST_DAYS)
     start = start or season_bounds(season_of(today))[0]
+    if end is None:
+        stored = Risk.objects.filter(**({"field_id__in": field_ids} if field_ids is not None else {}))
+        last = stored.aggregate(m=Max("date"))["m"]
+        end = max(today + timedelta(days=clock.FORECAST_DAYS), last or today)
+    last_day = last_computable_day(today)
+    if last_day is None:
+        log.warning("predict: no weather at all, nothing computed")
+        return PredictResult(0)
+    end = min(end, last_day)  # days without any weather can't be recomputed: leave their rows alone
     if start > end:
-        return 0
+        return PredictResult(0)
     rows, n_fields, field_list = compute_rows(field_ids, start, end, observations, with_fields=True)
     with transaction.atomic():
         # replace the whole range for these fields: rows of threats that no longer apply (the crop changed,
@@ -57,7 +103,37 @@ def predict(field_ids: list[int] | None = None, start: date | None = None, end: 
             unique_fields=["field", "threat", "date"], update_fields=["score", "explanation", "computed_at"],
         )
     log.info("predict: %d risk rows for %d fields, %s..%s", len(rows), n_fields, start, end)
-    return len(rows)
+    return PredictResult(len(rows), [f.id for f in field_list])
+
+
+def clock_moved(old: date, new: date | None = None) -> PredictResult:
+    """
+    The demo date moved from `old` to `new` (default: the Clock's current date). Recomputes exactly the
+    days whose inputs changed, (min(old, new), max(old, new) + 7], for every field: days that were
+    coming days and are now past go back to "as of that day", and the new coming days are computed
+    from the forecast issued on `new`. Nothing else is rewritten.
+
+    Called explicitly by the platform after saving the Clock (PUT /api/clock/, the admin's clock page);
+    there is no signal. Use clock.save() or Clock.objects.update(); either way, call this afterwards.
+    """
+    new = new or clock.today()
+    if old == new:
+        return PredictResult(0)
+    lo, hi = min(old, new), max(old, new)
+    return predict(start=lo + timedelta(days=1), end=hi + timedelta(days=clock.FORECAST_DAYS))
+
+
+def precompute_season(season: int | None = None) -> PredictResult:
+    """
+    For the demo seed: computes the previous season (this season's carry-over reads its peaks from
+    Risk), then this season to its end (maize to 31 December), in that order. Days after today + 7
+    are assessed as of that day and recomputed by clock_moved() when the date comes within 7 days.
+    """
+    season = season or season_of(clock.today())
+    p0, p1 = season_bounds(season - 1)
+    first = predict(start=p0, end=p1)
+    s0, _ = season_bounds(season)
+    return first + predict(start=s0, end=date(season, 12, 31))
 
 
 def compute_rows(field_ids, start: date, end: date, observations=None, with_fields: bool = False):
@@ -210,41 +286,73 @@ def _field_rows(field: Field, threats: dict, start: date, end: date, now, report
 
 def _season_rows(field, threats, rules, season, start, end, now, reports=(), crop=None, crop_source="field") -> list[Risk]:
     grid = field.weather_grid_id
+    today = clock.today()
+    horizon = today + timedelta(days=clock.FORECAST_DAYS)
     load_start = min(start, season_bounds(season)[0])
-    daily = F.load_daily(grid, load_start, end)
-    if daily.empty:
-        log.warning("predict: no daily weather for grid %s, %s..%s", grid, load_start, end)
-        return []
-    hourly = F.load_hourly(grid, load_start, end)
-    days = pd.date_range(max(pd.Timestamp(start), daily.index.min()), min(pd.Timestamp(end), daily.index.max()), freq="D")
-    if len(days) == 0:
-        return []
     ctx = field_context(field, season, crop_code=crop, crop_source=crop_source)
     ctx.last_season = last_season_peaks(field, season)
-    stages = bbch_series(ctx.crop, daily["avg_temperature"], season)
     from engine.satellite import fieldndvi
     anchors = fieldndvi.phenology_anchors(fieldndvi.load(field, season), ctx.crop, season)
-    stages = calibrate(stages, ctx.crop, anchors)
     s0, s1 = season_bounds(season)
     sow = OBS.sowing_override([r for r in reports if r.observed_on <= end], window=(s0 - timedelta(days=60), s1))
+
+    out: list[Risk] = []
+    # 1. days assessed "as of that day": up to today, and (demo precompute only) after today + 7
+    daily = F.load_daily(grid, load_start, end)
+    if not daily.empty:
+        hourly = F.load_hourly(grid, load_start, end)
+        span = pd.date_range(max(pd.Timestamp(start), daily.index.min()), min(pd.Timestamp(end), daily.index.max()), freq="D")
+        days = span[(span <= pd.Timestamp(today)) | (span > pd.Timestamp(horizon))]
+        if len(days):
+            stages = _stages(ctx, daily, season, anchors, sow)
+            out += _score(field, threats, rules, ctx, daily, hourly, stages, season, days, reports, now, today, forecast_from=None)
+
+    # 2. coming days: weather observed up to today, then the forecast issued today
+    c0, c1 = max(start, today + timedelta(days=1)), min(end, horizon)
+    if c0 <= c1:
+        obs = F.load_daily(grid, load_start, today)
+        fc = F.load_forecast(grid, today)
+        fc = fc[fc.index > pd.Timestamp(today)] if not fc.empty else fc
+        if fc.empty:
+            log.warning("predict: no forecast issued on %s for grid %s: no coming-day risks", today, grid)
+        elif not obs.empty:
+            daily_c = pd.concat([obs, fc])
+            hourly_c = F.load_hourly(grid, load_start, today)  # the forecast is daily only: infection hours fall back to daily estimates
+            days = pd.date_range(pd.Timestamp(c0), min(pd.Timestamp(c1), daily_c.index.max()), freq="D")
+            if len(days):
+                known = [a for a in anchors if a.detected_on <= today]  # no satellite scene after today
+                stages = _stages(ctx, daily_c, season, known, sow)
+                out += _score(field, threats, rules, ctx, daily_c, hourly_c, stages, season, days, reports, now, today, forecast_from=today)
+    if not out and daily.empty:
+        log.warning("predict: no daily weather for grid %s, %s..%s", grid, load_start, end)
+    return out
+
+
+def _stages(ctx, daily, season, anchors, sow):
+    stages = calibrate(bbch_series(ctx.crop, daily["avg_temperature"], season), ctx.crop, anchors)
     if sow:  # the farmer's sowing date replaces the assumed one from the day it was reported
         told = bbch_series(ctx.crop, daily["avg_temperature"], season, sowing=sow[0])
         use = told.index >= pd.Timestamp(sow[1])
         stages = stages.copy()
         stages.loc[use] = told.loc[use]
+    return stages
+
+
+def _score(field, threats, rules, ctx, daily, hourly, stages, season, days, reports, now, today, forecast_from) -> list[Risk]:
+    """Scores the rules on `days`. forecast_from: the forecast's issue day when these are coming days."""
     dd10 = degree_days_base10(daily["avg_temperature"], season)
+    grid = field.weather_grid_id
     out = []
     forecast_cache: dict[date, pd.DataFrame] = {}
-    today = clock.today()
     for rule in rules:
         for res in score_rule(rule, ctx, daily, hourly, stages, dd10, days, reports):
             lead = (res.day - today).days
-            if lead > 0:  # a coming day: its weather is a forecast, less certain the further ahead
-                adjust_for_lead(res.explanation, lead)
+            if forecast_from is not None:  # a coming day: its weather is the forecast, less certain the further ahead
+                adjust_for_lead(res.explanation, lead, forecast_from)
             if res.explanation["action"]["type"] == "treat":
                 fc = forecast_cache.get(res.day)
                 if fc is None:
-                    fc = _forecast(grid, res.day)
+                    fc = _forecast(grid, res.day, today)
                     forecast_cache[res.day] = fc
                 res.explanation["action"]["spray_window"] = spray_window(fc)
             out.append(Risk(field=field, threat=threats[rule.code], date=res.day, score=res.score,
@@ -255,48 +363,16 @@ def _season_rows(field, threats, rules, season, start, end, now, reports=(), cro
 FORECAST_CONFIDENCE_DROP = 0.06  # per day ahead (team assumption): day +7 keeps 58 % of the confidence
 
 
-def clear_lead(expl: dict) -> dict:
-    """The day is no longer in the future: confidence back to the observed value, forecast note removed."""
-    if "confidence_observed" in expl:
-        expl["confidence"] = expl.pop("confidence_observed")
-    expl.pop("forecast_lead_days", None)
-    expl["notes"] = [n for n in expl.get("notes", []) if not n.startswith("Day +")]
-    return expl
-
-
-def refresh_forecast_confidence(today: date | None = None) -> int:
-    """
-    Re-measures "days ahead" from the current demo date for rows already written: rows computed when the
-    clock was earlier keep their score, but their forecast discount and "Day +N" note follow the new
-    date. Runs automatically when the Clock row is saved (engine/apps.py). Returns the rows changed.
-    """
-    today = today or clock.today()
-    rows = list(Risk.objects.filter(Q(date__gt=today) | Q(explanation__has_key="forecast_lead_days")).only("id", "date", "explanation"))
-    changed = []
-    for r in rows:
-        e = r.explanation or {}
-        if "confidence" not in e:
-            continue
-        lead = (r.date - today).days
-        if lead > 0:
-            if e.get("forecast_lead_days") == lead:
-                continue
-            adjust_for_lead(e, lead)
-        else:
-            clear_lead(e)
-        changed.append(r)
-    Risk.objects.bulk_update(changed, ["explanation"], batch_size=2000)
-    return len(changed)
-
-
-def adjust_for_lead(expl: dict, lead: int) -> dict:
-    """Confidence of a day `lead` days after today (weather from the forecast). Idempotent."""
+def adjust_for_lead(expl: dict, lead: int, issued_on: date | None = None) -> dict:
+    """Confidence of a day `lead` days after today (weather from the forecast issued today). Idempotent."""
     base = expl.get("confidence_observed", expl["confidence"])
     expl["confidence_observed"] = base
     expl["forecast_lead_days"] = lead
+    if issued_on is not None:
+        expl["forecast_issued_on"] = issued_on.isoformat()
     expl["confidence"] = round(base * max(0.4, 1 - FORECAST_CONFIDENCE_DROP * lead), 2)
-    note = (f"Day +{lead}: the weather for this day is a forecast, so the risk is less certain. "
-            "In the historical demo the forecast is the observed weather (a perfect forecast).")
+    note = (f"Day +{lead}: weather after today is the forecast issued today (daily values only), "
+            "so the risk is a projection and less certain.")
     expl["notes"] = [n for n in expl.get("notes", []) if not n.startswith("Day +")] + [note]
     return expl
 
@@ -319,11 +395,17 @@ def last_season_peaks(field: Field, season: int) -> dict:
     return peaks
 
 
-def _forecast(grid: str, day: date) -> pd.DataFrame:
+def _forecast(grid: str, day: date, today: date | None = None) -> pd.DataFrame:
+    """
+    The forecast for the days after `day`, as known on `day`; for a coming day (after today) that is the
+    forecast issued today, never one issued in the future.
+    """
+    issued = min(day, today) if today else day
     cols = ["date", "max_temperature", "min_temperature", "total_precipitation", "avg_wind_speed", "avg_relative_humidity"]
-    qs = WeatherForecastDaily.objects.current(as_of=day).filter(grid_id=grid).order_by("date").values(*cols)
+    qs = (WeatherForecastDaily.objects.current(as_of=issued).filter(grid_id=grid, date__gt=day)
+          .order_by("date").values(*cols))
     df = pd.DataFrame.from_records(qs, columns=cols)
     return df.set_index("date") if not df.empty else df
 
 
-__all__ = ["predict", "compute_rows", "what_if", "farm_spread", "adjust_for_lead", "field_context", "RULES"]
+__all__ = ["predict", "clock_moved", "precompute_season", "PredictResult", "compute_rows", "what_if", "farm_spread", "adjust_for_lead", "field_context", "RULES"]

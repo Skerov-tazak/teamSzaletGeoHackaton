@@ -95,7 +95,7 @@ class Command(BaseCommand):
             self.load_soil(D, region, {c for f in made for c in f.h3_cells})
             Clock(today=today).save()
         call_command("engine_load_threats")
-        self.stdout.write(self.style.SUCCESS(f"Dev farm ready. Clock = {today}. Run: python manage.py predict"))
+        self.stdout.write(self.style.SUCCESS(f"Dev farm ready. Clock = {today}. Run: python manage.py predict --season"))
 
     # --- fields ---------------------------------------------------------------------------------
     def parcels(self, D: Path, bbox, year: int, n: int) -> list[dict]:
@@ -260,11 +260,15 @@ class Command(BaseCommand):
         WeatherForecastDaily.objects.filter(grid_id__in=grid_ids).delete()
         rows = []
         for g in grid_ids:
-            obs = {r["date"]: r for r in WeatherDaily.objects.filter(grid_id=g, date__range=(start, end)).values("date", *cols)}
+            obs = {r["date"]: r for r in WeatherDaily.objects.filter(grid_id=g, date__range=(start, end))
+                   .values("date", *cols, "imerg_total_precipitation")}
             for issued in sorted(obs):
                 for k in range(1, 8):
                     r = obs.get(issued + timedelta(days=k))
                     if r:
+                        r = {c: v for c, v in r.items() if c != "imerg_total_precipitation"}
+                        if r.get("total_precipitation") is None:  # the weather packages have no rain: IMERG, as the platform seed does
+                            r["total_precipitation"] = obs[issued + timedelta(days=k)]["imerg_total_precipitation"]
                         rows.append(WeatherForecastDaily(grid_id=g, issued_on=issued, **r))
         WeatherForecastDaily.objects.bulk_create(rows, batch_size=5000)
         self.stdout.write(f"forecast: {len(rows)} rows")
