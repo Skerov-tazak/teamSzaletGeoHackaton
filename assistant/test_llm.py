@@ -60,7 +60,9 @@ class FallbackTests(SimpleTestCase):
             L.FallbackLLM([])
 
     def test_get_llm_without_keys_raises(self):
-        with mock.patch.dict("os.environ", {"GEMINI_API_KEY": "", "GROQ_API_KEY": ""}):
+        # pinned, so a developer's .env (e.g. LLM_PROVIDERS=openai,groq with a key) cannot configure one
+        with mock.patch.dict("os.environ", {"LLM_PROVIDERS": "gemini,groq,openai", "GEMINI_API_KEY": "",
+                                            "GROQ_API_KEY": "", "OPENAI_API_KEY": ""}):
             with self.assertRaises(L.LLMError):
                 L.get_llm()
 
