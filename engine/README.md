@@ -52,7 +52,7 @@ From Python (the assistant after recording an observation): `from engine import 
 | [`satellite/`](satellite/) | Sentinel-2 NDVI from Earth Search (only the needed window), season calendar grid. For the crop model. |
 | [`management/commands/engine_dev_seed.py`](management/commands/engine_dev_seed.py) | **Dev only:** a 6-field farm near Krapkowice (Opolskie) with weather, soil and crop history, until the platform import exists. |
 
-Threats (16): wheat — fusarium head blight, septoria leaf blotch, brown rust, yellow rust, powdery mildew, tan spot, take-all, snow mould; maize — seedling blight, fusarium ear rot, fusarium stalk rot, crazy top, European corn borer, western corn rootworm, aphids, frit fly. Codes like `wheat.fusarium_head_blight`.
+Threats (25): **wheat** — fusarium head blight, septoria leaf blotch, glume blotch, brown rust, yellow rust, powdery mildew, tan spot, eyespot, fusarium foot rot, take-all, snow mould (fungal); grain aphids, cereal leaf beetle (pests); barley yellow dwarf virus carried by aphids in warm autumns (viral). **Maize** — seedling blight, fusarium ear rot, fusarium stalk rot, northern leaf blight, eyespot (Kabatiella), common rust, crazy top (fungal); European corn borer, western corn rootworm, aphids, frit fly (pests). Codes like `wheat.fusarium_head_blight`.
 
 ### What the score means (proposal)
 
@@ -135,3 +135,21 @@ Until the `Observation` table exists, `observations.load()` returns nothing; `pr
 **Field history:**
 - Previous crop and maize monoculture (crop maps) - multipliers per threat.
 - **Carry-over from last season:** if the same pathogen peaked >= 0.6 on this field last season, × 1.2 (infected residue). Fusarium is shared by maize and wheat, so a bad maize year raises next year's head blight. Last season is scored with last season's crop from the crop map, not with `Field.crop`.
+
+
+### v0.3: more from the guides, field ranking, what-if, harvest
+
+From a second read of the metodyki and the GIORiN guide:
+- **9 more threats** (above): Tabela 25 lists eyespot and fusarium foot rot as "+++" for winter wheat; Tabela 31/33 the wheat pests and their thresholds; p. 100 "a long, warm autumn favours aphids and the spread of viruses"; maize leaf diseases from p. 86.
+- **Thresholds per growth stage** (Tabela 30, p. 94-95): the action shows the guide's threshold for the field's current stage (tillering / stem elongation / heading).
+- **Spraying window = Tabela 40/42 in full:** 1-25 °C, the following night >= 1 °C, RH 50-95 %, no rain, wind <= 4 m/s; "optimal" at 12-20 °C, RH 75-95 %, wind 0.5-1.5 m/s.
+- **Head blight:** Fusarium species conditions and "+1 % infected ears = about +0.3 mg/kg DON" (GIORiN p. 4) in the notes.
+- **Harvest outlook** ([`harvest.py`](harvest.py)): wheat - fully ripe, next dry day, sprouting risk after 2+ rainy days in a row (p. 176); maize - safe storage days of undried grain by moisture and temperature (Tab. 37, p. 202).
+- European corn borer calendar from p. 118.
+
+Engine features:
+- **Field ranking** ([`summary.py`](summary.py), `python manage.py engine_summary --date ...`): per field and day the highest score, the share of yield at risk (1 - prod(1 - score x severity)), top 3 threats, actions with spraying windows, the harvest outlook, and the fields ordered by urgency with the reason. Pure read of `Risk`, nothing stored - the API or the assistant can call `field_day(field_id, day)` / `farm_ranking(day)`.
+- **What-if for the assistant**: `from engine import what_if; what_if(field_id, day, [Report(...)])` -> per threat the score now and with the hypothetical reports ("if I spray on Friday", "if I sowed on 10 October"). Writes nothing.
+- **Spread within the farm**: symptoms reported on one field raise the risk on fields of the same crop within 3 km (as a "neighbour" report with the distance); those fields are recomputed too.
+- **Coming days are less certain**: days after today get `forecast_lead_days` and confidence x (1 - 0.06 x days ahead); `adjust_for_lead()` can redo it when the clock moves.
+- **Maize season runs to 31 December** (sown in April, harvested in autumn); seasons after the current one are not computed (crop unknown). `predict()` replaces the whole range for the fields it computes, so rows of threats that no longer apply disappear.

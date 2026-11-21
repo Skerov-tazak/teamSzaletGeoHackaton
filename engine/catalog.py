@@ -23,6 +23,7 @@ MAIZE = 1130
 W_DOC = "metodyka_-_PSZENICA_-_www.pdf"
 M_DOC = "Metodyka_integrowanej_ochrony_kukurydzy_dla_doradcow_2019.pdf"
 XLSX = "ryzyka_zebrane.xlsx"
+GIORIN = "PORADNIK_METODYCZNY_-_ZBOZA_GIORiN.pdf"
 
 
 def src(document: str, page: int | None = None, note: str = "") -> dict:
@@ -65,6 +66,8 @@ class Rule:
     heavy_soil: float = 1.0           # clay >= 30 %
     severity: float = 0.1             # potential yield loss if the threat materialises, 0-1 (assumption)
     action_threshold: str = ""        # the guide's monitoring / economic threshold, quoted
+    stage_thresholds: tuple = ()      # ((bbch_from, bbch_to, text), ...) the guide's threshold for the current stage
+    warm_ramp: tuple | None = None    # pests: activity x (0.5 + 0.5 x ramp(7-day mean temperature, lo, hi))
     sources: tuple = ()
     notes: tuple[str, ...] = ()
     assumptions: dict = field(default_factory=dict)
@@ -86,8 +89,12 @@ _add(Rule(
     stage_min=61, stage_max=69, stage_ramp=6, temp_min=15, temp_max=25, moisture="wet",
     window_days=5, hours_low=4, hours_high=16, needs_rain_days=1, after_maize=1.5, severity=0.15,
     action_threshold="Infection happens at flowering (BBCH 61-69); treatment only works preventively around flowering.",
-    sources=TAB26 + (src(W_DOC, 76, "Tabela 27: objawy"), src(W_DOC, 89, "metody ograniczania"), src(XLSX, note="pszenica: 15-25 °C, ciepło, wysoka wilgotność")),
-    notes=("Maize residue (previous crop maize) and reduced tillage raise the risk (ryzyka_zebrane.xlsx).",),
+    sources=TAB26 + (src(W_DOC, 76, "Tabela 27: objawy"), src(W_DOC, 89, "metody ograniczania"), src(XLSX, note="pszenica: 15-25 °C, ciepło, wysoka wilgotność"),
+                     src(GIORIN, 4, "warunki dla gatunków Fusarium, sygnalizacja od BBCH 51, DON")),
+    notes=("Maize residue (previous crop maize) and reduced tillage raise the risk (ryzyka_zebrane.xlsx).",
+           "Species differ: F. graminearum 16-18 °C, F. culmorum 20-22 °C, F. avenaceum 5-10 °C with dew, fog or 2-5 mm rain (GIORiN p. 4).",
+           "Each 1 % of infected ears can add about 0.3 mg/kg DON (mycotoxin) to the grain (GIORiN p. 4).",
+           "Fields with head blight in past seasons and cereal monocultures are at higher risk (GIORiN p. 4)."),
     assumptions={"hours_low": 4, "hours_high": 16, "window_days": 5, "after_maize": 1.5},
 ))
 _add(Rule(
@@ -95,6 +102,7 @@ _add(Rule(
     name_pl="septorioza paskowana liści pszenicy", name_en="Septoria leaf blotch",
     stage_min=30, stage_max=59, temp_min=4, temp_max=18, moisture="wet",
     window_days=10, hours_low=15, hours_high=50, needs_rain_days=2, cereal_after_cereal=1.2, severity=0.15,
+    stage_thresholds=((21, 29, "Tillering: 30-50 % of leaves with first symptoms or 1 % of leaves with fruiting bodies"), (30, 39, "Stem elongation: 10-20 % of the area of the leaf below the flag leaf or 1 % of leaves with fruiting bodies"), (51, 59, "Heading: 5-10 % of the flag leaf area or 1 % of leaves with fruiting bodies")),
     action_threshold="Tillering: 30-50 % of leaves with first symptoms, or 1 % of leaves with fruiting bodies (guide p. 95).",
     sources=TAB26 + (src(W_DOC, 79, "Tabela 27: objawy"), src(W_DOC, 95, "progi szkodliwości")),
     notes=("Spread by rain splash: rain days in the window are required.",),
@@ -105,6 +113,7 @@ _add(Rule(
     name_pl="rdza brunatna pszenicy", name_en="Brown (leaf) rust",
     stage_min=30, stage_max=75, temp_min=15, temp_max=18, moisture="wet",
     window_days=7, hours_low=3, hours_high=12, severity=0.10,
+    stage_thresholds=((21, 29, "Tillering: 10-15 % of leaves with first symptoms"), (30, 39, "Stem elongation: 10 % of stems with first symptoms"), (51, 59, "Heading: first symptoms on the flag leaf or the leaf below it")),
     action_threshold="Tillering: 10-15 % of leaves with first symptoms; stem elongation: 10 % of stems (guide p. 94).",
     sources=TAB26 + (src(W_DOC, 78, "Tabela 27: objawy"), src(W_DOC, 94, "progi szkodliwości")),
     notes=("Source condition: periodic daily rise of air humidity (dew); counted as wet hours at 15-18 °C.",),
@@ -115,6 +124,7 @@ _add(Rule(
     name_pl="mączniak prawdziwy zbóż i traw", name_en="Powdery mildew",
     stage_min=21, stage_max=59, temp_min=5, temp_max=30, moisture="mild",
     window_days=7, hours_low=90, hours_high=150, severity=0.08,
+    stage_thresholds=((21, 29, "Tillering: 50-70 % of plants with first symptoms"), (30, 39, "Stem elongation: 10 % of plants with first symptoms"), (51, 59, "Heading: first symptoms on the flag leaf, the leaf below it or the ear")),
     action_threshold="Tillering: 50-70 % of plants with first symptoms (guide p. 94).",
     sources=TAB26 + (src(W_DOC, 78, "Tabela 27: objawy"), src(W_DOC, 94, "progi szkodliwości")),
     notes=("Warm, sunny weather with humid but not rainy air favours spore production (guide p. 74).",
@@ -126,6 +136,7 @@ _add(Rule(
     name_pl="rdza żółta", name_en="Yellow (stripe) rust",
     stage_min=29, stage_max=69, temp_min=10, temp_max=15, moisture="wet",
     window_days=7, hours_low=5, hours_high=20, severity=0.15,
+    stage_thresholds=((21, 29, "Tillering: 30 % of plants with first symptoms"), (30, 39, "Stem elongation: 10 % of the area of the leaf below the flag leaf"), (51, 59, "Heading: first symptoms on the flag leaf or the leaf below it")),
     action_threshold="Tillering: 30 % of plants with first symptoms; stem elongation: 10 % of the 2nd leaf area (guide p. 95).",
     sources=TAB26 + (src(W_DOC, 79, "Tabela 27: objawy"), src(W_DOC, 95, "progi szkodliwości")),
     notes=("New pathotypes (Warrior, Kranich) also develop at 10-28 °C in dry, warm weather (guide p. 74).",),
@@ -136,6 +147,7 @@ _add(Rule(
     name_pl="brunatna plamistość liści", name_en="Tan spot (DTR)",
     stage_min=37, stage_max=75, temp_min=18, temp_max=28, moisture="wet",
     window_days=7, hours_low=5, hours_high=20, cereal_after_cereal=1.3, severity=0.10,
+    stage_thresholds=((21, 29, "Tillering: 10-15 % of plants with first symptoms"), (30, 39, "Stem elongation: 5 % of leaves with first symptoms"), (51, 59, "Heading: 5 % of leaves with first symptoms")),
     action_threshold="Tillering: 10-15 % of plants with first symptoms; stem elongation: 5 % of leaves (guide p. 95).",
     sources=TAB26 + (src(W_DOC, 76, "Tabela 27: objawy"), src(W_DOC, 95, "progi szkodliwości")),
     notes=("Needs wet leaves to infect; survives on wheat residue (wheat after wheat raises the risk).",),
@@ -209,7 +221,8 @@ _add(Rule(
     maize_monoculture=1.4, severity=0.10,
     action_threshold="Tasseling (BBCH 51-59): 6-8 egg masses per 100 plants, or 15 % plants damaged last year (guide p. 140).",
     sources=(src(M_DOC, 117, "omacnica prosowianka: biologia"), src(M_DOC, 118), src(M_DOC, 140, "progi ekonomicznej szkodliwości")),
-    notes=("Moths fly from June, egg laying and caterpillars mainly in July, at tasseling (ryzyka_zebrane.xlsx).",
+    notes=("Moths fly from early/mid June, peak in the 1st-2nd ten days of July; eggs from the 2nd half of June, most in mid July; caterpillars hatch from mid June (guide p. 118).",
+           "Hot, dry summers shorten the flight (ends late July / early August), cool rainy ones extend it to the end of August (guide p. 118).",
            "Local maize intensity also matters; we only know this field's own history."),
     assumptions={"dd10_start": 150, "dd10_peak": [420, 650], "dd10_end": 900, "base_pressure": 0.6, "maize_monoculture": 1.4},
 ))
@@ -242,6 +255,95 @@ _add(Rule(
     notes=("Cool springs and nearby winter cereals raise the risk (ryzyka_zebrane.xlsx); counted as a cool 7-day mean (< 15 °C).",),
     assumptions={"cool_mean_c": 15},
 ))
+
+# --- Added from a second read of the guides (Tabela 25 "+++" diseases, wheat pests, maize leaf diseases) ---
+_add(Rule(
+    code="wheat.eyespot", crop=WHEAT, category="fungal", kind="infection_hours",
+    name_pl="łamliwość źdźbła zbóż", name_en="Eyespot",
+    stage_min=21, stage_max=32, stage_ramp=4, temp_min=5, temp_max=15, moisture="humid",
+    window_days=14, hours_low=60, hours_high=200, cereal_after_cereal=1.5, severity=0.15,
+    action_threshold="From stem elongation to the first node (BBCH 30-31): 20-30 % of stems with symptoms (guide p. 94).",
+    sources=TAB26 + (src(W_DOC, 73, "Tabela 25: +++ w pszenicy ozimej"), src(W_DOC, 94, "Tabela 30: próg")),
+    notes=("High air and soil humidity at 5-15 °C; builds up in cereal monocultures (guide p. 75, p. 91).",),
+    assumptions={"hours_low": 60, "hours_high": 200, "window_days": 14, "cereal_after_cereal": 1.5},
+))
+_add(Rule(
+    code="wheat.fusarium_foot_rot", crop=WHEAT, category="fungal", kind="infection_hours",
+    name_pl="fuzaryjna zgorzel podstawy źdźbła i korzeni", name_en="Fusarium foot and root rot",
+    stage_min=21, stage_max=39, temp_min=5, temp_max=25, moisture="humid",
+    window_days=14, hours_low=100, hours_high=250, cereal_after_cereal=1.3, after_maize=1.3, severity=0.12,
+    action_threshold="No threshold; prevention by rotation, residue management and seed treatment (guide p. 89).",
+    sources=TAB26 + (src(W_DOC, 73, "Tabela 25: +++ w pszenicy ozimej"), src(W_DOC, 77, "Tabela 27: objawy")),
+    notes=("Wet air and soil, or a dried-out soil, favour it (guide p. 75).",),
+    assumptions={"hours_low": 100, "hours_high": 250, "window_days": 14},
+))
+_add(Rule(
+    code="wheat.glume_blotch", crop=WHEAT, category="fungal", kind="infection_hours",
+    name_pl="septorioza plew", name_en="Septoria glume blotch",
+    stage_min=37, stage_max=75, temp_min=10, temp_max=20, moisture="wet",
+    window_days=10, hours_low=12, hours_high=40, needs_rain_days=2, severity=0.10,
+    stage_thresholds=((21, 29, "Tillering: 20 % of plants with first symptoms"), (30, 39, "Stem elongation: 20 % of the area of the leaf below the flag leaf or 1 % of leaves with fruiting bodies"), (51, 59, "Heading: 10 % of the leaf below the flag leaf, at full heading 1 % of the flag leaf")),
+    action_threshold="See the stage thresholds (guide p. 95).",
+    sources=TAB26 + (src(W_DOC, 95, "Tabela 30: progi"),),
+    notes=("Spread by rain splash onto leaves and ears.",),
+    assumptions={"hours_low": 12, "hours_high": 40, "needs_rain_days": 2},
+))
+_add(Rule(
+    code="wheat.barley_yellow_dwarf", crop=WHEAT, category="viral", kind="vector_days",
+    name_pl="żółta karłowatość jęczmienia (wirus przenoszony przez mszyce)", name_en="Barley yellow dwarf (aphid-borne virus)",
+    stage_min=10, stage_max=29, stage_ramp=3, window_days=60, hours_low=8, hours_high=30, severity=0.12,
+    action_threshold="Aphids as virus vectors: watch for the first flights into the crop in autumn and in spring (guide p. 118); yellow traps help (p. 119). No cure once infected.",
+    sources=(src(W_DOC, 100, "długa i ciepła jesień sprzyja mszycom i ekspansji wirusów"), src(W_DOC, 118, "Tabela 33: mszyce - wektory")),
+    notes=("Counted as autumn days warm enough for aphids to fly (max >= 12 °C) since the crop emerged.",),
+    assumptions={"aphid_flight_max_c": 12, "days_low": 8, "days_high": 30},
+))
+_add(Rule(
+    code="wheat.aphids", crop=WHEAT, category="pest", kind="pest_activity",
+    name_pl="mszyce (na kłosach)", name_en="Grain aphids",
+    stage_min=51, stage_max=75, stage_ramp=4, dd10_start=0, dd10_peak=(0, 1e9), dd10_end=2e9, warm_ramp=(14, 20),
+    severity=0.08,
+    action_threshold="At or just after heading: 5 aphids per ear (guide p. 118).",
+    sources=(src(W_DOC, 98, "Tabela 31: +++ w pszenicy ozimej"), src(W_DOC, 118, "Tabela 33: próg")),
+    notes=("Warm weather speeds up aphid build-up.",),
+    assumptions={"warm_mean_c": [14, 20]},
+))
+_add(Rule(
+    code="wheat.cereal_leaf_beetle", crop=WHEAT, category="pest", kind="pest_activity",
+    name_pl="skrzypionki", name_en="Cereal leaf beetle",
+    stage_min=37, stage_max=59, stage_ramp=4, dd10_start=0, dd10_peak=(0, 1e9), dd10_end=2e9, warm_ramp=(12, 18),
+    severity=0.10,
+    action_threshold="When the flag leaf appears: 1-1.5 larvae per stem (guide p. 119). One larva can destroy 10 % of the flag leaf, about 10 % yield (p. 100).",
+    sources=(src(W_DOC, 98, "Tabela 31: ++(+)"), src(W_DOC, 100, "szkodliwość larw"), src(W_DOC, 119, "Tabela 33: próg")),
+    assumptions={"warm_mean_c": [12, 18]},
+))
+_add(Rule(
+    code="maize.northern_leaf_blight", crop=MAIZE, category="fungal", kind="infection_hours",
+    name_pl="żółta plamistość liści kukurydzy", name_en="Northern corn leaf blight",
+    stage_min=30, stage_max=85, stage_ramp=6, temp_min=18, temp_max=27, moisture="wet",
+    window_days=10, hours_low=15, hours_high=50, maize_monoculture=1.3, severity=0.08,
+    action_threshold="Inspect lower leaves; residue shredding and rotation limit it (guide p. 94).",
+    sources=(src(M_DOC, 86, "lata ciepłe i umiarkowanie deszczowe"), src(XLSX, note="kukurydza: lata ciepłe, umiarkowane opady")),
+    assumptions={"temp_range_c": [18, 27], "hours_low": 15, "hours_high": 50},
+))
+_add(Rule(
+    code="maize.eyespot", crop=MAIZE, category="fungal", kind="infection_hours",
+    name_pl="drobna plamistość liści kukurydzy", name_en="Maize eyespot (Kabatiella)",
+    stage_min=30, stage_max=85, stage_ramp=6, temp_min=10, temp_max=20, moisture="wet",
+    window_days=10, hours_low=20, hours_high=60, maize_monoculture=1.3, severity=0.06,
+    action_threshold="Inspect leaves after cool, rainy spells; residue shredding and rotation limit it (guide p. 94).",
+    sources=(src(M_DOC, 86, "lata chłodne i wilgotne; wilgotne liście, deszcz lub rosa"), src(XLSX, note="kukurydza: chłód, deszcz i rosa")),
+    assumptions={"temp_range_c": [10, 20], "hours_low": 20, "hours_high": 60},
+))
+_add(Rule(
+    code="maize.common_rust", crop=MAIZE, category="fungal", kind="infection_hours",
+    name_pl="rdza kukurydzy", name_en="Common rust",
+    stage_min=30, stage_max=85, stage_ramp=6, temp_min=16, temp_max=25, moisture="wet",
+    window_days=10, hours_low=15, hours_high=50, severity=0.05,
+    action_threshold="Inspect leaves in warm, humid weather (guide p. 86).",
+    sources=(src(M_DOC, 86, "lata ciepłe i wilgotne"), src(XLSX, note="kukurydza: lata ciepłe, wilgotne warunki")),
+    assumptions={"temp_range_c": [16, 25], "hours_low": 15, "hours_high": 50},
+))
+
 
 CEREALS = {1110, 1120, 1150}
 

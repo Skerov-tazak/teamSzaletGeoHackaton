@@ -12,3 +12,10 @@ def predict(*args, **kwargs):
     from engine.compute import predict as _predict
 
     return _predict(*args, **kwargs)
+
+
+def what_if(*args, **kwargs):
+    """Dry run for the assistant: see engine.compute.what_if."""
+    from engine.compute import what_if as _what_if
+
+    return _what_if(*args, **kwargs)

@@ -144,6 +144,14 @@ def score_rule(rule: Rule, ctx: FieldContext, daily: pd.DataFrame, hourly: pd.Da
         main = {"factor": "waterlogged_days", "values": win, "unit": "days",
                 "label": f"Days with saturated topsoil or >= 30 mm rain in the last {rule.window_days} days",
                 "threshold": f"{rule.hours_low:g} day starts the risk, {rule.hours_high:g} days = full risk"}
+    elif rule.kind == "vector_days":
+        emerged = (stages["bbch"].reindex(d.index).fillna(-1) >= 10).astype(float)
+        flight = ((d["max_temperature"] >= 12).astype(float) * emerged)
+        win = F.trailing_sum(flight, rule.window_days).reindex(days).fillna(0)
+        base = ramp(win, rule.hours_low, rule.hours_high)
+        main = {"factor": "aphid_flight_days", "values": win, "unit": "days",
+                "label": f"Days warm enough for aphids to fly (max >= 12 °C) since emergence, last {rule.window_days} days",
+                "threshold": f"{rule.hours_low:g} days starts the risk, {rule.hours_high:g} days = full risk"}
     elif rule.kind == "pest_activity":
         mean7 = F.trailing_mean(d["avg_temperature"], 7).reindex(days)
         if rule.code == "maize.frit_fly":
@@ -162,6 +170,9 @@ def score_rule(rule: Rule, ctx: FieldContext, daily: pd.DataFrame, hourly: pd.Da
                                 if ctx.maize_years_in_row >= 2 else "first season of maize here: larvae have no eggs to hatch from")
             if rule.code == "maize.aphids":
                 act = act * (0.5 + 0.5 * ramp(mean7.to_numpy(), 14, 20))
+            elif rule.warm_ramp:
+                act = act * (0.5 + 0.5 * ramp(mean7.to_numpy(), *rule.warm_ramp))
+                extra["mean_temperature_7d"] = mean7
             base = act * pressure
             extra["local_pressure"] = pd.Series(pressure, index=days)
             extra["_pressure_reason"] = f"local pressure {pressure:.0%}: {pressure_why}"
@@ -265,7 +276,7 @@ def _explain(rule, ctx, day, final, base, sw, bbch, m_total, mults, main, i, sta
         "growth_stage": {"bbch": int(round(bbch)), "name": stage_name(bbch), "method": st_method,
                          "sowing_assumed": str(st["sowing"]) if st is not None else None, "confidence": st_conf},
         "drivers": drivers,
-        "action": _action(rule, level, sw, treated),
+        "action": _action(rule, level, sw, treated, bbch),
         "severity": rule.severity,
         "expected_loss": round(final * rule.severity, 4),
         "confidence": round(confidence, 2),
@@ -284,7 +295,20 @@ _EXTRA_LABELS = {"rain_days": "Days with >= 1 mm rain in the window (rain splash
 _EXTRA_UNITS = {"rain_days": "days", "mean_temperature_7d": "°C", "water_balance_30d": "mm", "local_pressure": "0-1", "degree_days_10": "°C·days"}
 
 
-def _action(rule: Rule, level: str, sw: float, treated=()) -> dict:
+def stage_threshold(rule: Rule, bbch: float) -> str | None:
+    for lo, hi, text in rule.stage_thresholds:
+        if lo <= bbch <= hi:
+            return text + " (guide's threshold for this stage)"
+    return rule.action_threshold or None
+
+
+def _action(rule: Rule, level: str, sw: float, treated=(), bbch: float = 0) -> dict:
+    out = _action_base(rule, level, sw, treated)
+    out["threshold"] = stage_threshold(rule, bbch)
+    return out
+
+
+def _action_base(rule: Rule, level: str, sw: float, treated=()) -> dict:
     if treated:
         t = max(treated, key=lambda r: r.observed_on)
         return {"type": "wait", "text": f"Protected by the treatment on {t.observed_on.isoformat()}; inspect again when the protection ends (about 14-21 days).",
@@ -302,24 +326,42 @@ def _action(rule: Rule, level: str, sw: float, treated=()) -> dict:
 
 
 def spray_window(forecast: pd.DataFrame) -> dict | None:
-    """First forecast day meeting the spraying conditions of Tabela 40 (daily approximation)."""
+    """
+    First forecast day suitable for spraying, from the daily forecast (Tabela 40 kukurydza p. 216 /
+    Tabela 42 pszenica p. 197): 1-25 °C, the following night >= 1 °C, RH 50-95 %, no rain, wind <= 4 m/s.
+    "optimal" when 12-20 °C, RH 75-95 % and wind 0.5-1.5 m/s as well. Daily values approximate the hours.
+    """
     if forecast is None or forecast.empty:
         return None
-    for d, row in forecast.sort_index().iterrows():
-        checks = {
-            "max_temperature": row.get("max_temperature") is not None and row["max_temperature"] <= SPRAY["max_temperature"],
-            "min_temperature": row.get("min_temperature") is not None and row["min_temperature"] >= SPRAY["min_temperature"],
-            "total_precipitation": pd.isna(row.get("total_precipitation")) or row["total_precipitation"] < SPRAY["total_precipitation"],
-            "avg_wind_speed": row.get("avg_wind_speed") is not None and row["avg_wind_speed"] <= SPRAY["avg_wind_speed"],
-        }
-        if all(checks.values()):
-            rain = row.get("total_precipitation")
-            rain = None if rain is None or pd.isna(rain) else round(float(rain), 1)
-            return {"date": pd.Timestamp(d).date().isoformat(),
-                    "conditions": {"max_temperature_c": round(float(row["max_temperature"]), 1),
-                                   "min_temperature_c": round(float(row["min_temperature"]), 1),
-                                   "precipitation_mm": rain, "avg_wind_kmh": round(float(row["avg_wind_speed"]), 1)},
-                    "rule": "1-25 °C, no rain, wind <= 14.4 km/h (4 m/s)",
-                    "note": None if rain is not None else "The forecast has no precipitation: check rain before spraying.",
-                    "source": SPRAY_SOURCE}
+    fc = forecast.sort_index()
+    rows = list(fc.iterrows())
+    for k, (d, row) in enumerate(rows):
+        def val(name):
+            v = row.get(name)
+            return None if v is None or pd.isna(v) else float(v)
+        tmax, tmin, rh, wind, rain = val("max_temperature"), val("min_temperature"), val("avg_relative_humidity"), val("avg_wind_speed"), val("total_precipitation")
+        night = None
+        if k + 1 < len(rows):
+            nv = rows[k + 1][1].get("min_temperature")
+            night = None if nv is None or pd.isna(nv) else float(nv)
+        ok = (tmax is not None and tmax <= 25 and tmin is not None and tmin >= 1
+              and (night is None or night >= 1) and (rh is None or 50 <= rh <= 95)
+              and (rain is None or rain < 1.0) and wind is not None and wind <= 14.4)
+        if not ok:
+            continue
+        mean_t = (tmax + tmin) / 2
+        optimal = 12 <= mean_t <= 20 and (rh is None or 75 <= rh <= 95) and 1.8 <= wind <= 5.4
+        notes = []
+        if rain is None:
+            notes.append("The forecast has no precipitation: check rain before spraying (and < 2 mm in the 3-6 h after).")
+        if rh is None:
+            notes.append("No humidity in the forecast.")
+        return {"date": pd.Timestamp(d).date().isoformat(), "quality": "optimal" if optimal else "acceptable",
+                "conditions": {"max_temperature_c": round(tmax, 1), "min_temperature_c": round(tmin, 1),
+                               "next_night_min_c": None if night is None else round(night, 1),
+                               "avg_relative_humidity": None if rh is None else round(rh), "precipitation_mm": rain,
+                               "avg_wind_kmh": round(wind, 1)},
+                "rule": "1-25 °C, next night >= 1 °C, RH 50-95 %, no rain, wind <= 14.4 km/h (4 m/s); optimal 12-20 °C, RH 75-95 %, wind 1.8-5.4 km/h",
+                "note": " ".join(notes) or None,
+                "source": SPRAY_SOURCE}
     return None

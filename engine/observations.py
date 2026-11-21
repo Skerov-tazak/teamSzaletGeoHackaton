@@ -81,6 +81,24 @@ def load(field_id: int, start: date, end: date) -> list[Report]:
     return out
 
 
+def load_all(start: date, end: date) -> list[Report]:
+    """All reports of the farm observed up to `end` (empty while the table does not exist)."""
+    from django.apps import apps
+
+    try:
+        model = apps.get_model("core", "Observation")
+    except LookupError:
+        return []
+    out = []
+    for r in model.objects.filter(observed_on__lte=end):
+        out.append(Report(
+            observed_on=r.observed_on, kind=getattr(r, "kind", "symptoms"), threat_code=getattr(r, "threat_code", None) or None,
+            severity=getattr(r, "severity", None), distance_m=getattr(r, "distance_m", None),
+            details=getattr(r, "details", None) or {}, text=getattr(r, "text", "") or "", field_id=r.field_id, id=r.pk,
+        ))
+    return out
+
+
 def for_field(reports: list[Report] | None, field_id: int) -> list[Report]:
     return [r for r in (reports or []) if r.field_id in (None, field_id)]
 

@@ -205,3 +205,78 @@ class ObservationTests(EngineTestBase):
         self.assertLess(r1.explanation["growth_stage"]["bbch"], r0.explanation["growth_stage"]["bbch"])
         self.assertEqual(r1.explanation["growth_stage"]["sowing_assumed"], "2025-05-20")
         self.assertIn("farmer", r1.explanation["growth_stage"]["method"])
+
+
+class PureFunctionTests(TestCase):
+    def test_safe_storage_days_matches_table_37(self):
+        from engine.harvest import safe_storage_days
+        self.assertAlmostEqual(safe_storage_days(22, 15.6), 17, delta=0.5)
+        self.assertAlmostEqual(safe_storage_days(18, -1.1), 648, delta=1)
+        self.assertGreater(safe_storage_days(20, 5), safe_storage_days(26, 5))
+        self.assertGreater(safe_storage_days(24, 5), safe_storage_days(24, 20))
+
+    def test_spray_window_rules(self):
+        import pandas as pd
+        from engine.scoring import spray_window
+        fc = pd.DataFrame({
+            "max_temperature": [28, 18, 18], "min_temperature": [12, 8, 0.5], "total_precipitation": [0, 0, 0],
+            "avg_wind_speed": [5, 5, 5], "avg_relative_humidity": [80, 80, 80],
+        }, index=[date(2025, 6, 2), date(2025, 6, 3), date(2025, 6, 4)])
+        self.assertIsNone(spray_window(fc))  # 2 Jun too hot; 3 Jun ok but the next night is 0.5 °C; 4 Jun itself 0.5 °C
+        fc.loc[date(2025, 6, 4), "min_temperature"] = 6
+        w = spray_window(fc)
+        self.assertEqual(w["date"], "2025-06-03")
+        self.assertEqual(w["quality"], "optimal")
+
+    def test_lead_adjust_is_idempotent(self):
+        from engine.compute import adjust_for_lead
+        e = {"confidence": 0.6, "notes": []}
+        adjust_for_lead(e, 5); adjust_for_lead(e, 5)
+        self.assertAlmostEqual(e["confidence"], round(0.6 * 0.7, 2))
+        self.assertEqual(len([n for n in e["notes"] if n.startswith("Day +")]), 1)
+
+
+class FarmFeatureTests(EngineTestBase):
+    wet_days = {date(2025, 6, d) for d in range(18, 24)}
+
+    def test_ranking_orders_by_expected_loss(self):
+        from engine.summary import farm_ranking
+        predict(start=date(2025, 6, 15), end=date(2025, 6, 23))
+        r = farm_ranking(date(2025, 6, 23))
+        self.assertEqual([x["rank"] for x in r], list(range(1, len(r) + 1)))
+        losses = [x["expected_loss"] for x in r]
+        self.assertEqual(losses, sorted(losses, reverse=True))
+        self.assertIn("why", r[0])
+
+    def test_symptoms_spread_to_nearby_same_crop_field(self):
+        from engine.observations import Report
+        code = "wheat.fusarium_head_blight"
+        predict(start=date(2025, 6, 15), end=date(2025, 6, 23))
+        before = Risk.objects.get(field=self.wheat_after_wheat, threat__code=code, date=date(2025, 6, 23)).score
+        rep = Report(observed_on=date(2025, 6, 20), kind="symptoms", threat_code=code, severity=0.8, field_id=self.wheat.id)
+        predict(field_ids=[self.wheat.id], start=date(2025, 6, 15), end=date(2025, 6, 23), observations=[rep])
+        after = Risk.objects.get(field=self.wheat_after_wheat, threat__code=code, date=date(2025, 6, 23))
+        self.assertGreaterEqual(after.score, before)  # may already be saturated at 1.0
+        self.assertTrue(any(d["factor"] == "farmer_report" and d["kind"] == "neighbour" for d in after.explanation["drivers"]))
+
+    def test_what_if_does_not_write(self):
+        from engine import what_if
+        from engine.observations import Report
+        code = "wheat.fusarium_head_blight"
+        predict(start=date(2025, 6, 15), end=date(2025, 6, 23))
+        stored = Risk.objects.get(field=self.wheat, threat__code=code, date=date(2025, 6, 23)).score
+        res = what_if(self.wheat.id, date(2025, 6, 23), [Report(observed_on=date(2025, 6, 22), kind="treatment", threat_code=code, field_id=self.wheat.id)])
+        fhb = next(x for x in res if x["threat_code"] == code)
+        self.assertLess(fhb["score_if"], fhb["score_now"])
+        self.assertEqual(Risk.objects.get(field=self.wheat, threat__code=code, date=date(2025, 6, 23)).score, stored)
+
+    def test_coming_days_have_lower_confidence(self):
+        predict(start=date(2025, 6, 14), end=date(2025, 6, 20))  # clock: 15 June
+        today_row = Risk.objects.filter(field=self.wheat, date=date(2025, 6, 15)).first()
+        ahead = Risk.objects.get(field=self.wheat, threat=today_row.threat, date=date(2025, 6, 20))
+        self.assertEqual(ahead.explanation["forecast_lead_days"], 5)
+        self.assertLess(ahead.explanation["confidence"], today_row.explanation["confidence"])
+
+    def test_maize_season_continues_after_1_september(self):
+        n = predict(field_ids=[self.maize.id], start=date(2025, 7, 25), end=date(2025, 7, 31))
+        self.assertGreater(n, 0)
