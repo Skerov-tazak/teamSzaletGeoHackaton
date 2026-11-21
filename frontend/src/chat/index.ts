@@ -6,31 +6,41 @@
 import { errorMessage } from "../api/client";
 import type { ChatMessage } from "../api/types";
 import type { AppContext } from "../context";
-import { h } from "../dom";
+import { h, icon, ICONS } from "../dom";
 import { type MessageHooks, renderMessage } from "./render";
 
 const NEW_CONVERSATION = "";
 
 export function initChat(container: HTMLElement, ctx: AppContext): void {
   const conversations = h("select", { class: "chat-conversations", "aria-label": "Rozmowy" });
-  const newButton = h("button", { type: "button", class: "chat-new", title: "Nowa rozmowa" }, "Nowa rozmowa");
+  const newButton = h("button", { type: "button", class: "chat-new", title: "Nowa rozmowa" }, icon(ICONS.plus), "Nowa");
   const list = h("div", { class: "chat-messages", role: "log", "aria-live": "polite" });
   const contextName = h("strong");
-  const contextLine = h("div", { class: "chat-context", hidden: true }, "Pytasz o: ", contextName);
+  const contextLine = h("div", { class: "chat-context", hidden: true }, icon(ICONS.field), "Pytasz o: ", contextName);
   const input = h("textarea", {
     class: "chat-input",
-    rows: 2,
+    rows: 1,
     placeholder: "Zapytaj o pole, zagrożenie albo zabieg…",
     "aria-label": "Wiadomość",
   });
-  const sendButton = h("button", { type: "submit", class: "primary" }, "Wyślij");
-  const form = h("form", { class: "chat-form" }, input, sendButton);
+  const sendButton = h("button", { type: "submit", class: "chat-send", title: "Wyślij", "aria-label": "Wyślij" }, icon(ICONS.send));
+  const form = h("form", { class: "chat-form" }, h("div", { class: "composer" }, input, sendButton));
   container.replaceChildren(
-    h("div", { class: "chat-toolbar" }, h("h2", {}, "Asystent"), conversations, newButton),
+    h(
+      "div",
+      { class: "chat-toolbar" },
+      h("div", { class: "chat-title" }, h("h2", {}, "Asystent"), h("span", {}, "metodyki i ryzyka Twoich pól")),
+      h("div", { class: "chat-tools" }, conversations, newButton),
+    ),
     list,
-    contextLine,
-    form,
+    h("div", { class: "chat-footer" }, contextLine, form),
   );
+  // the composer grows with the text, up to its CSS max-height
+  const fitInput = () => {
+    input.style.height = "auto";
+    input.style.height = `${input.scrollHeight}px`;
+  };
+  input.addEventListener("input", fitInput);
 
   let conversationId: number | null = null;
   let lastMessageId: number | null = null; // the conversation's last message on the server, if known
@@ -78,6 +88,7 @@ export function initChat(container: HTMLElement, ctx: AppContext): void {
       h(
         "div",
         { class: "chat-empty" },
+        icon(ICONS.chat, "chat-empty-icon"),
         h("p", {}, "Zapytaj o ryzyka na swoich polach, zalecenia z metodyk albo opisz, co widzisz na polu."),
         h("p", { class: "muted" }, "Kliknij pole na mapie, żeby pytać właśnie o nie."),
       ),
@@ -164,10 +175,16 @@ export function initChat(container: HTMLElement, ctx: AppContext): void {
     loadToken++; // a conversation still loading must not replace what happens now
     const draftText = input.value;
     input.value = "";
+    fitInput();
     list.querySelector(".chat-empty")?.remove();
     list.querySelectorAll(".chat-error").forEach((element) => element.remove());
     const userBubble = h("article", { class: "msg msg-user" }, h("div", { class: "msg-text" }, message));
-    const thinking = h("div", { class: "msg msg-assistant thinking" }, "Myślę…");
+    const thinking = h(
+      "div",
+      { class: "msg msg-assistant thinking" },
+      h("span", { class: "dots", "aria-hidden": "true" }, h("i"), h("i"), h("i")),
+      "Myślę…",
+    );
     list.append(userBubble, thinking);
     scrollToEnd();
 
@@ -191,6 +208,7 @@ export function initChat(container: HTMLElement, ctx: AppContext): void {
       lastMessageId = null; // the server may have saved the message (and dropped a pending draft)
       thinking.replaceWith(h("div", { class: "chat-error" }, `Nie udało się wysłać: ${errorMessage(error)}`));
       if (!input.value) input.value = draftText || message; // keep what the user typed
+      fitInput();
       scrollToEnd();
     } finally {
       setBusy(false);

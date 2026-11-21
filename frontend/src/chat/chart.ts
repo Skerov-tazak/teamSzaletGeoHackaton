@@ -31,9 +31,13 @@ export async function renderChart(container: HTMLElement, spec: ChartSpec): Prom
   if (hasDataUrl(spec)) return; // never fetch chart data from a URL
   try {
     const { default: embed } = await import("vega-embed");
-    await embed(container, { ...spec, width: "container" } as Parameters<typeof embed>[1], {
+    const dark =
+      document.documentElement.dataset.theme === "dark" ||
+      (document.documentElement.dataset.theme !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    await embed(container, { ...spec, width: "container", background: "transparent" } as Parameters<typeof embed>[1], {
       actions: false,
       renderer: "svg",
+      theme: dark ? "dark" : undefined,
       timeFormatLocale: TIME_LOCALE_PL,
       formatLocale: NUMBER_LOCALE_PL,
     });

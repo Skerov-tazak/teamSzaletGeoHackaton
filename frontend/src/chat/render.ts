@@ -5,7 +5,7 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 
 import { type ChatMessage, type Citation, type GuideCitation, isConfirmObservation, toCitation } from "../api/types";
-import { formatDate, h } from "../dom";
+import { formatDate, h, icon, ICONS } from "../dom";
 import { hasDataUrl, renderChart } from "./chart";
 
 export interface MessageHooks {
@@ -64,8 +64,16 @@ function linkMarkers(root: HTMLElement, anchors: Map<number, string>): void {
         void target?.offsetWidth; // restart the animation
         target?.classList.add("flash");
       });
-      fragment.append(link);
       last = match.index + match[0].length;
+      // punctuation right after the marker stays on its line ("… 0,72 [1].")
+      const trail = /^[.,;:!?)]+/.exec(text.slice(last))?.[0];
+      if (trail) {
+        fragment.append(h("span", { class: "cite-nowrap" }, link, trail));
+        last += trail.length;
+        pattern.lastIndex = last;
+      } else {
+        fragment.append(link);
+      }
     }
     fragment.append(text.slice(last));
     node.replaceWith(fragment);
@@ -74,18 +82,20 @@ function linkMarkers(root: HTMLElement, anchors: Map<number, string>): void {
 
 function sourceItem(citation: Citation, anchor: string, hooks: MessageHooks): HTMLLIElement {
   if (citation.type === "guide") {
-    const number = citation.ref !== null && citation.ref !== undefined ? `[${citation.ref}] ` : "";
+    const ref = citation.ref !== null && citation.ref !== undefined ? String(citation.ref) : null;
     return h(
       "li",
       { id: anchor, class: "source source-guide", title: citation.section ?? undefined },
-      `${number}${guideLabel(citation)}`,
+      ref ? h("span", { class: "src-ref" }, ref) : icon(ICONS.doc, "src-icon"),
+      h("span", { class: "src-text" }, guideLabel(citation)),
     );
   }
-  const link = h("button", { type: "button", class: "link source-risk" }, `ryzyko: pole #${citation.field_id}`);
+  const text = h("span", { class: "src-text" }, `ryzyko: pole #${citation.field_id}`);
+  const link = h("button", { type: "button", class: "source-risk", title: "Pokaż pole na mapie" }, icon(ICONS.pin, "src-icon"), text);
   link.addEventListener("click", () => hooks.focusField(citation.field_id));
   void Promise.all([hooks.fieldName(citation.field_id), hooks.threatName(citation.threat_code)]).then(
     ([field, threat]) => {
-      link.textContent = `${field}: ${threat}, ${formatDate(citation.date)}`;
+      text.textContent = `${field}: ${threat}, ${formatDate(citation.date)}`;
     },
   );
   return h("li", { id: anchor, class: "source" }, link);
@@ -124,13 +134,15 @@ export function renderMessage(message: ChatMessage, hooks: MessageHooks): Render
   if (isConfirmObservation(action)) {
     const fieldId = typeof action.draft.field_id === "number" ? action.draft.field_id : null;
     for (const answer of ["Zapisz", "Anuluj"] as const) {
-      const button = h("button", { type: "button", class: answer === "Zapisz" ? "primary" : "" }, answer);
+      const button = h("button", { type: "button", class: answer === "Zapisz" ? "primary" : "ghost" }, answer);
       button.addEventListener("click", () => hooks.answerDraft(answer, fieldId));
       actionButtons.push(button);
     }
     element.append(h("div", { class: "msg-actions" }, ...actionButtons));
   }
 
-  if (items.length) element.append(h("ul", { class: "msg-sources", "aria-label": "Źródła" }, ...items));
+  if (items.length) {
+    element.append(h("div", { class: "msg-sources" }, h("div", { class: "src-title" }, "Źródła"), h("ul", { "aria-label": "Źródła" }, ...items)));
+  }
   return { element, actionButtons };
 }

@@ -4,21 +4,31 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>Field Under Pressure</title>
+  <link rel="icon" type="image/svg+xml" href="{% static 'frontend/favicon.svg' %}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="{% static 'frontend/dist/main.css' %}">
   <link rel="stylesheet" href="{% static 'frontend/style.css' %}">
   <script type="module" src="{% static 'frontend/dist/main.js' %}"></script>
 </head>
 <body>
   <header class="app-header">
-    <h1>Field Under Pressure</h1>
-    <div id="date-control" class="date-control" aria-label="Data demo"></div>
+    <div class="brand">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M4 20c0-8 5-14 16-16-1 9-6 15-14 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 19 13 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </span>
+      <h1>Field Under Pressure</h1>
+    </div>
     <p id="platform-status" class="platform-status" role="status">Sprawdzanie platformy…</p>
+    <div id="date-control" class="date-control" role="group" aria-label="Data demo"></div>
   </header>
   <main id="app-main" class="app-main">
     <section id="map" class="map-area" aria-label="Mapa pól"></section>
     <aside id="chat" class="chat-area" aria-label="Asystent"></aside>
   </main>
-  <noscript>Ta strona potrzebuje JavaScriptu.</noscript>
+  <noscript><p class="page-error">Ta strona potrzebuje JavaScriptu.</p></noscript>
 </body>
 </html>

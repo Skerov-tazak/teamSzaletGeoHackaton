@@ -1,34 +1,44 @@
-// The demo date control in the header: a date input and ±1 day buttons -> PUT /api/clock/.
-// Moving the date makes the engine recompute risks, which can take seconds, so the control is
-// disabled and shows that it is working until the request returns.
+// The demo date control in the header: ‹ [date] › +7 dni -> PUT /api/clock/. The date box opens the
+// browser's date picker. Moving the date makes the engine recompute risks, which can take seconds, so the
+// control is disabled and shows that it is working until the request returns.
 
 import { errorMessage } from "./api/client";
 import type { Clock } from "./api/types";
 import type { AppContext } from "./context";
-import { h, isIsoDate, shiftDate } from "./dom";
+import { h, isIsoDate, longDate, shiftDate } from "./dom";
 
 const TYPING_PAUSE_MS = 700; // the input fires "change" for every typed part of a date
 
 export function initDateControl(container: HTMLElement, ctx: AppContext, onSaved: (clock: Clock) => void): void {
-  const input = h("input", { type: "date", value: ctx.clock.today, "aria-label": "Data demo" });
-  const back = h("button", { type: "button", title: "Dzień wcześniej", "aria-label": "Dzień wcześniej" }, "◀");
-  const next = h("button", { type: "button", title: "Dzień później", "aria-label": "Dzień później" }, "▶");
+  const label = h("span", { class: "date-label" });
+  const input = h("input", { type: "date", value: ctx.clock.today, "aria-label": "Wybierz datę demo" });
+  const box = h("label", { class: "date-box", title: "Zmień datę demo" }, label, input);
+  const back = h("button", { type: "button", class: "step", title: "Dzień wcześniej", "aria-label": "Dzień wcześniej" }, "‹");
+  const next = h("button", { type: "button", class: "step", title: "Dzień później", "aria-label": "Dzień później" }, "›");
+  const week = h("button", { type: "button", class: "wide", title: "Tydzień później" }, "+7 dni");
   const status = h("span", { class: "date-status", role: "status" });
-  container.replaceChildren(h("span", { class: "date-label" }, "Data demo"), back, input, next, status);
+  container.replaceChildren(back, box, next, week, status);
 
   let busy = false;
   let pending: number | undefined;
 
+  const show = () => {
+    input.value = ctx.clock.today;
+    label.textContent = longDate(ctx.clock.today);
+  };
+
   const setBusy = (value: boolean) => {
     busy = value;
-    for (const control of [input, back, next]) control.disabled = value;
+    for (const control of [input, back, next, week]) control.disabled = value;
     container.classList.toggle("busy", value);
+    container.setAttribute("aria-busy", String(value));
   };
 
   const save = async (today: string) => {
     window.clearTimeout(pending);
-    if (busy || !isIsoDate(today) || today === ctx.clock.today) return;
+    if (busy || !isIsoDate(today) || today === ctx.clock.today) return show();
     setBusy(true);
+    label.textContent = longDate(today);
     status.textContent = "Przeliczanie ryzyk…";
     status.dataset.state = "busy";
     try {
@@ -40,8 +50,8 @@ export function initDateControl(container: HTMLElement, ctx: AppContext, onSaved
       status.textContent = `Nie zmieniono daty: ${errorMessage(error)}`;
       status.dataset.state = "error";
     } finally {
-      input.value = ctx.clock.today;
       setBusy(false);
+      show();
     }
   };
 
@@ -52,6 +62,16 @@ export function initDateControl(container: HTMLElement, ctx: AppContext, onSaved
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") void save(input.value);
   });
+  // a click anywhere on the box opens the picker (the input itself is invisible, on top of the label)
+  input.addEventListener("click", () => {
+    try {
+      input.showPicker();
+    } catch {
+      // older browsers: the focused input still takes typing
+    }
+  });
   back.addEventListener("click", () => void save(shiftDate(ctx.clock.today, -1)));
   next.addEventListener("click", () => void save(shiftDate(ctx.clock.today, 1)));
+  week.addEventListener("click", () => void save(shiftDate(ctx.clock.today, 7)));
+  show();
 }

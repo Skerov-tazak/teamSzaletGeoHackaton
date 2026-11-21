@@ -19,6 +19,7 @@ function byId(id: string): HTMLElement {
 
 function setStatus(element: HTMLElement, text: string, state: "ok" | "error" | "busy"): void {
   element.textContent = text;
+  element.title = text; // the header may cut a long message short
   element.dataset.state = state;
 }
 
