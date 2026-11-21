@@ -348,3 +348,35 @@ class ReportKindTests(SimpleTestCase):
         self.assertEqual(detect_kind("Sąsiad za drogą ma fuzariozę", today), ("neighbour", {"distance_m": 300}))
         self.assertEqual(detect_kind("Przeszedłem pole, jest czyste", today)[0], "absence")
         self.assertEqual(detect_kind("Widzę rdzawe plamy", today)[0], "symptoms")
+
+
+class FollowUpTests(WorldTestCase):
+    def test_follow_up_keeps_field_of_previous_answer(self):
+        c = self.conv()
+        r1 = answer(c, "Jakie jest ryzyko na polu Długie?", None, llm=FakeLLM(cite_first))
+        self.assertEqual(r1.meta["route"], "pytanie_o_pole")
+        c.refresh_from_db()
+        r2 = answer(c, "co mogę zrobić żeby zmniejszyć ryzyko?", None, llm=FakeLLM(cite_first))
+        self.assertEqual(r2.meta["route"], "pytanie_o_pole")
+        self.assertEqual(r2.meta["field_id"], self.f["Pole Długie"].id)
+        self.assertEqual(r2.meta["field_choice"], "conversation")
+
+
+class EmptyReasoningAnswerTests(SimpleTestCase):
+    def test_retry_when_reasoning_used_the_whole_budget(self):
+        from types import SimpleNamespace as NS
+        from assistant.orchestrator.llm import OpenAICompatLLM
+        calls = []
+
+        def create(**kw):
+            calls.append(kw)
+            empty = len(calls) == 1
+            msg = NS(content="" if empty else "Odpowiedź.", tool_calls=None)
+            return NS(choices=[NS(message=msg, finish_reason="length" if empty else "stop")],
+                      usage=NS(prompt_tokens=10, completion_tokens=700, total_tokens=710))
+        llm = OpenAICompatLLM("groq", "https://example.test/v1", "k", "openai/gpt-oss-120b")
+        llm.client = NS(chat=NS(completions=NS(create=create)))
+        r = llm.complete([{"role": "user", "content": "x"}])
+        self.assertEqual(r.text, "Odpowiedź.")
+        self.assertEqual([c["max_tokens"] for c in calls], [700, 1400])
+        self.assertEqual(calls[0]["reasoning_effort"], "low")

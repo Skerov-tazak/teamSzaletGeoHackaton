@@ -48,6 +48,8 @@ OFF_TOPIC = [r"przepis na", r"kto wygral", r"napisz wiersz", r"bitcoin", r"\bfil
 DATE_RANGE = [r"\bod \d{1,2}[ .]\w+ do\b", r"\bod (stycznia|lutego|marca|kwietnia|maja|czerwca|lipca|sierpnia)",
               r"\bw (marcu|kwietniu|maju|czerwcu|lipcu|sierpniu)\b", r"\bcaly sezon", r"\bod poczatku sezonu"]
 COMPARE = [r"porownaj", r"porownani", r"roznic", r"\bvs\b", r"\bczy bardziej"]
+FOLLOW_UP = [r"^a\b", r"\btam\b", r"\btego\b", r"\btym\b", r"\bto\b", r"\bzmniejsz", r"\bograniczyc",
+             r"\bzapobiec", r"\bpomoc", r"\bco dalej", r"\bkiedy\b"]
 CROP_WORDS = {"pszenic": "pszenica", "kukurydz": "kukurydza", "zboz": "zboza"}
 
 
@@ -108,6 +110,17 @@ def route(message: str, selected_field=None, state=None) -> Route:
         field_id, field_source = named[0][0], "named"
     elif selected_field is not None:
         field_id, field_source = selected_field.id, "selected"
+    elif state is not None and state.data.get("last_field_id") and not named and (
+            _any(RISK_INTENT, t) or _any(FOLLOW_UP, t) or _any(CHART, t)):
+        # a follow-up ("co mogę zrobić?", "a dlaczego?") continues with the field of the previous answer
+        from core.models import Field
+        last = Field.objects.filter(pk=state.data["last_field_id"]).first()
+        if last is not None:
+            field_id, field_source = last.id, "conversation"
+            if crop is None:
+                crop = domain.crop_pl(last.crop_id)
+                if not threats:
+                    threats = [m.code for m in domain.resolve_threats(message, last.crop_id)]
     base = dict(field_id=field_id, field_ids=[f for f, _ in named], crop=crop, threats=threats,
                 field_source=field_source)
 

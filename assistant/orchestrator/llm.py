@@ -133,12 +133,16 @@ class OpenAICompatLLM:
         self.name, self.model = name, model
         self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=0)
         self._json_mode_supported = True
+        # reasoning models (gpt-oss, Gemini 3.x) spend output tokens on thinking first; keep it short
+        self._reasoning_effort = os.getenv("LLM_REASONING_EFFORT", "low") or None
 
     def complete(self, messages: list[dict], json_mode: bool = False, max_tokens: int | None = None,
                  temperature: float = 0.2, tools: list | None = None, **_) -> LLMResult:
         import openai
-        kwargs: dict = {"model": self.model, "messages": messages, "max_tokens": max_tokens or max_tokens_out(),
-                        "temperature": temperature}
+        max_tokens = max_tokens or max_tokens_out()
+        kwargs: dict = {"model": self.model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature}
+        if self._reasoning_effort:
+            kwargs["reasoning_effort"] = self._reasoning_effort
         if tools:
             kwargs["tools"] = tools
         msgs = messages
@@ -152,6 +156,10 @@ class OpenAICompatLLM:
         try:
             resp = self.client.chat.completions.create(**kwargs)
         except openai.BadRequestError as e:
+            if "reasoning_effort" in kwargs and "reason" in str(e).lower():  # not a reasoning model / not supported
+                log.info("%s rejected reasoning_effort (%s); sending without it", self.name, e)
+                self._reasoning_effort = None
+                return self.complete(messages, json_mode=json_mode, max_tokens=max_tokens, temperature=temperature, tools=tools)
             if json_mode and "response_format" in kwargs:  # provider rejected JSON mode: instruct instead
                 log.info("%s rejected response_format (%s); falling back to instruction", self.name, e)
                 self._json_mode_supported = False
@@ -159,6 +167,11 @@ class OpenAICompatLLM:
             raise
         msg = resp.choices[0].message
         text = msg.content or ""
+        if not text.strip() and not getattr(msg, "tool_calls", None) and max_tokens < 1400 \
+                and resp.choices[0].finish_reason == "length":
+            # the whole output budget went to reasoning: one retry with a larger budget (still < 6k per call)
+            log.warning("%s returned no text (output limit reached while reasoning); retrying with 1400", self.name)
+            return self.complete(messages, json_mode=json_mode, max_tokens=1400, temperature=temperature, tools=tools)
         return LLMResult(text=text, provider=self.name, model=self.model, usage=_usage(resp.usage, msgs, text),
                          duration_ms=int((time.perf_counter() - t0) * 1000),
                          tool_calls=getattr(msg, "tool_calls", None), message=msg)

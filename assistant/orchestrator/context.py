@@ -137,8 +137,8 @@ def guide_sources(queries: list[tuple[str, str | None, int]], budget: int = SOUR
     from assistant.rag.store import QdrantUnavailable
     results = []
     try:
-        for q, crop, k in queries:
-            results.append(search(q, crop=crop, k=k, include_pesticide_doses=False))
+        for q, crop, k in queries:  # no crop -> only the farm's crops' guides (not oats, rye, potatoes…)
+            results.append(search(q, crop=crop or "farm", k=k, include_pesticide_doses=False))
     except QdrantUnavailable:
         return [], "Wyszukiwarka metodyk jest niedostępna — odpowiadaj bez cytatów z metodyk i powiedz o tym."
     seen = set(exclude or ())

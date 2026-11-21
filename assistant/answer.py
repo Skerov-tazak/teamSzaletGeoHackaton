@@ -73,6 +73,9 @@ def answer(conversation: Conversation, message: str, selected_field=None, llm=No
                         "zlozone": flows.complex_question}[route.type]
                 result = flow(route, message, hist, llm, conv_id)
 
+        last_field = result.meta.get("field_id") or route.field_id or result.focus_field_id
+        if last_field:
+            state.data["last_field_id"] = last_field
         allowed = dict(state.seen) | {s["chunk_id"]: s["citation"] for s in result.sources}
         text, guide_cits, unknown = citations.finalize(result.text, allowed)
         state.remember({s["chunk_id"]: s["citation"] for s in result.sources})
