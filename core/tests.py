@@ -12,6 +12,7 @@ from core.models import (
     CropClass,
     Field,
     FieldCropYear,
+    Observation,
     Risk,
     SoilCell,
     Threat,
@@ -186,6 +187,59 @@ class RiskTests(FarmTestCase):
         old.refresh_from_db()
         self.assertEqual(Risk.objects.count(), 2)
         self.assertEqual((old.score, old.explanation), (0.9, {"v": 2}))
+
+
+
+class ObservationTests(FarmTestCase):
+    def report(self, **kwargs) -> Observation:
+        values = {"field": self.field, "observed_on": TODAY, "kind": Observation.Kind.SYMPTOMS} | kwargs
+        return Observation.objects.create(**values)
+
+    def test_a_report_can_be_about_the_whole_farm(self):
+        self.assertIsNone(self.report(field=None).field)
+
+    def test_severity_must_be_between_0_and_1(self):
+        self.report(severity=0.9)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self.report(severity=1.5)
+
+    def test_distance_cannot_be_negative(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self.report(kind=Observation.Kind.NEIGHBOUR, distance_m=-1)
+
+    def test_idempotency_key_prevents_duplicates_but_is_optional(self):
+        self.report(idempotency_key="abc")
+        self.report()  # no key
+        self.report()  # several rows without a key are fine
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self.report(idempotency_key="abc")
+
+    def test_observed_excludes_reports_after_today(self):
+        self.report(observed_on=TODAY - timedelta(days=2))
+        self.report(observed_on=TODAY + timedelta(days=1))
+        self.assertEqual(Observation.objects.observed().count(), 1)
+        self.assertEqual(Observation.objects.observed(as_of=TODAY + timedelta(days=1)).count(), 2)
+
+    def test_deleting_a_threat_keeps_the_report(self):
+        threat = Threat.objects.create(
+            code="wheat.brown_rust", crop=self.wheat, name="rdza brunatna", category=Threat.Category.FUNGAL, source="test"
+        )
+        obs = self.report(threat=threat)
+        threat.delete()
+        obs.refresh_from_db()
+        self.assertIsNone(obs.threat)
+
+    def test_field_reports_are_reachable_from_the_field(self):
+        self.report()
+        self.report(field=None)
+        self.assertEqual(self.field.observations.count(), 1)
+
+
+class SoilBandTests(TestCase):
+    def test_bands_store_the_source_text(self):
+        SoilCell.objects.create(h3_index_10="8a1e20000000fff", band_ph=SoilCell.Band.MODERATE, clay=0.18)
+        cell = SoilCell.objects.get()
+        self.assertEqual((cell.band_ph, cell.clay), ("moderate", 0.18))
 
 
 class AdminSmokeTests(FarmTestCase):

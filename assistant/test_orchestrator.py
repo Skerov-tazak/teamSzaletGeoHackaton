@@ -11,7 +11,8 @@ from django.test import SimpleTestCase, TestCase
 
 from assistant import devdata
 from assistant.answer import Reply, answer
-from assistant.models import Conversation, Message, Observation
+from assistant.models import Conversation, Message
+from core.models import Observation
 from assistant.orchestrator import citations, guard, prompts, router
 from assistant.orchestrator.llm import FakeLLM, LLMError
 from assistant.orchestrator.state import State
@@ -335,3 +336,69 @@ class ChatEndpointTests(WorldTestCase):
         self.assertEqual(self.client.post("/api/chat/", {"message": ""}, content_type="application/json").status_code, 400)
         self.assertEqual(self.client.post("/api/chat/", {"message": "x", "conversation_id": 999999},
                                           content_type="application/json").status_code, 404)
+
+
+class ReportKindTests(SimpleTestCase):
+    def test_kinds_and_facts(self):
+        from assistant.orchestrator.observations import detect_kind
+        today = dt.date(2025, 6, 10)
+        self.assertEqual(detect_kind("Wczoraj był grad", today), ("event", {"type": "hail"}))
+        self.assertEqual(detect_kind("Siałem 8 października", today), ("field_fact", {"sowing_date": "2024-10-08"}))
+        self.assertEqual(detect_kind("Na tym polu nie orałem", today), ("field_fact", {"tillage": "reduced"}))
+        self.assertEqual(detect_kind("Opryskałem w piątek na septoriozę", today)[0], "treatment")
+        self.assertEqual(detect_kind("Sąsiad za drogą ma fuzariozę", today), ("neighbour", {"distance_m": 300}))
+        self.assertEqual(detect_kind("Przeszedłem pole, jest czyste", today)[0], "absence")
+        self.assertEqual(detect_kind("Widzę rdzawe plamy", today)[0], "symptoms")
+
+
+class FollowUpTests(WorldTestCase):
+    def test_follow_up_keeps_field_of_previous_answer(self):
+        c = self.conv()
+        r1 = answer(c, "Jakie jest ryzyko na polu Długie?", None, llm=FakeLLM(cite_first))
+        self.assertEqual(r1.meta["route"], "pytanie_o_pole")
+        c.refresh_from_db()
+        r2 = answer(c, "co mogę zrobić żeby zmniejszyć ryzyko?", None, llm=FakeLLM(cite_first))
+        self.assertEqual(r2.meta["route"], "pytanie_o_pole")
+        self.assertEqual(r2.meta["field_id"], self.f["Pole Długie"].id)
+        self.assertEqual(r2.meta["field_choice"], "conversation")
+
+
+class EmptyReasoningAnswerTests(SimpleTestCase):
+    def test_retry_when_reasoning_used_the_whole_budget(self):
+        from types import SimpleNamespace as NS
+        from assistant.orchestrator.llm import OpenAICompatLLM
+        calls = []
+
+        def create(**kw):
+            calls.append(kw)
+            empty = len(calls) == 1
+            msg = NS(content="" if empty else "Odpowiedź.", tool_calls=None)
+            return NS(choices=[NS(message=msg, finish_reason="length" if empty else "stop")],
+                      usage=NS(prompt_tokens=10, completion_tokens=700, total_tokens=710))
+        llm = OpenAICompatLLM("groq", "https://example.test/v1", "k", "openai/gpt-oss-120b")
+        llm.client = NS(chat=NS(completions=NS(create=create)))
+        r = llm.complete([{"role": "user", "content": "x"}])
+        self.assertEqual(r.text, "Odpowiedź.")
+        self.assertEqual([c["max_tokens"] for c in calls], [700, 1400])
+        self.assertEqual(calls[0]["reasoning_effort"], "low")
+
+
+class EngineAlignmentTests(WorldTestCase):
+    def test_level_comes_from_the_engine_explanation(self):
+        from assistant import domain
+        self.assertEqual(domain.level_from_explanation({"level": "high"}, 0.4), (3, "wysokie"))
+        self.assertEqual(domain.level_from_explanation({}, 0.4), (2, "średnie"))
+        self.assertEqual(domain.level(0.32)[1], "niskie")   # same cut-offs as engine/scoring.py and the map
+        self.assertEqual(domain.level(0.65)[1], "średnie")
+        self.assertEqual(domain.level(0.66)[1], "wysokie")
+
+    def _draft(self, msg, category):
+        llm = FakeLLM(json.dumps({"category": category, "note": msg}, ensure_ascii=False))
+        return answer(self.conv(), msg, self.wheat, llm=llm).pending_action["draft"]
+
+    def test_report_kinds_the_engine_can_use(self):
+        self.assertIsNone(self._draft("Widzę dużo chwastów przy miedzy", "chwasty")["kind"])
+        d = self._draft("Opryskałem to pole 5 czerwca", None)
+        self.assertEqual((d["kind"], d["category"]), ("treatment", "choroba"))
+        d = self._draft("Sąsiad za drogą ma fuzariozę kłosów", None)
+        self.assertEqual((d["kind"], d["category"], d["facts"]), ("neighbour", "choroba", {"distance_m": 300}))

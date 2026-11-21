@@ -86,11 +86,11 @@ class Message(models.Model):
 
 class Observation(models.Model):
     """
-    A farmer's field observation, recorded by the assistant after the farmer confirmed a draft.
-
-    INTERIM: the agreed home is an `Observation` table in `core` (docs/database.md, open
-    questions). Until Jan + Szymek add it, the assistant keeps observations here; the proposed
-    columns are in assistant/INTERFACE_PROPOSALS.md, so moving the rows later is a plain copy.
+    DEPRECATED, kept EMPTY. The interim table of farmer reports before core.Observation existed.
+    Its rows were moved to core.Observation (migration 0003); the assistant now writes only
+    core.Observation. The table stays because the decision engine (and its tests) still read it:
+    rows here would be counted twice, so nothing may write to it. Drop it together with the engine's
+    adapter (engine/observations.py) once Bartek removes that.
     """
 
     class Category(models.TextChoices):

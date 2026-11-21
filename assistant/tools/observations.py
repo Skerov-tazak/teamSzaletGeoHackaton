@@ -1,9 +1,12 @@
 """
-record_observation: write a farmer's observation, then ask the engine to reassess the field.
+record_observation: write a farmer's report to core.Observation, then ask the engine to reassess.
 
 Only after the user confirmed a draft (orchestrator flow / MCP `confirm=true`). Idempotent by
-`idempotency_key`. Stored in the interim assistant.Observation table until core.Observation exists.
-An engine failure does not undo the observation (reassessment.status = "failed"/"unavailable").
+`idempotency_key`. Columns and meanings: docs/database.md -> Observation. An engine failure does not
+undo the report (reassessment.status = "failed" / "unavailable").
+
+The chat speaks Polish (choroba, niskie…); core.Observation stores the contract values
+(disease, 0.3…): the mapping is here, in one place.
 """
 from __future__ import annotations
 
@@ -19,12 +22,24 @@ from .registry import ToolError, register
 
 log = logging.getLogger("assistant.tools")
 
-Category = Literal["choroba", "szkodnik", "chwasty", "uszkodzenie", "inne"]
+Category = Literal["choroba", "szkodnik", "chwasty", "uszkodzenie", "inne",
+                   "disease", "pest", "weeds", "damage", "other"]
 Severity = Literal["niskie", "srednie", "wysokie"]
+Kind = Literal["symptoms", "absence", "neighbour", "treatment", "field_fact", "event"]
+
+# Polish chat values -> core.Observation contract values
+CATEGORY_TO_CORE = {"choroba": "disease", "szkodnik": "pest", "chwasty": "weeds", "uszkodzenie": "damage",
+                    "inne": "other", "disease": "disease", "pest": "pest", "weeds": "weeds", "damage": "damage",
+                    "other": "other"}
+CATEGORY_PL = {"disease": "choroba", "pest": "szkodnik", "weeds": "chwasty", "damage": "uszkodzenie", "other": "inne"}
+SEVERITY_TO_CORE = {"niskie": 0.3, "srednie": 0.6, "wysokie": 0.9}
+SEVERITY_PL = [(0.45, "niskie"), (0.75, "srednie"), (1.01, "wysokie")]
+DEFAULT_KIND = {"disease": "symptoms", "pest": "symptoms", "damage": "event", "weeds": "symptoms", "other": "symptoms"}
+DETAIL_KEYS = ("sowing_date", "tillage", "resistant_to", "type", "scope")  # what the engine reads from details
 
 
 def engine_predict():
-    """engine.predict(field_ids=..., start=...) if the engine exists, else None."""
+    """engine.predict(field_ids=..., start=..., end=...) if the engine exists, else None."""
     for mod, attr in (("engine", "predict"), ("engine.predict", "predict"), ("engine.engine", "predict")):
         try:
             m = __import__(mod, fromlist=[attr])
@@ -38,18 +53,30 @@ def engine_predict():
 
 def field_levels(field, day: dt.date) -> dict[str, dict]:
     from core.models import Risk
-    return {r.threat.code: {"threat": r.threat.name, "score": round(r.score, 2), "level": domain.level(r.score)[1]}
+    return {r.threat.code: {"threat": r.threat.name, "score": round(r.score, 2),
+                            "level": domain.level_from_explanation(r.explanation, r.score)[1]}
             for r in Risk.objects.filter(field=field, date=day).select_related("threat")}
+
+
+def severity_pl(value: float | None) -> str | None:
+    if value is None:
+        return None
+    return next(label for upper, label in SEVERITY_PL if value < upper)
 
 
 class ObservationIn(BaseModel):
     field_id: int
-    date: dt.date | None = Field(None, description="Dzień obserwacji; domyślnie dziś (data sezonu).")
+    date: dt.date | None = Field(None, description="Dzień obserwacji (kiedy rolnik to zobaczył/zrobił); domyślnie dziś.")
     category: Category
     threat: str | None = Field(None, description="Kod lub nazwa zagrożenia (opcjonalnie).")
     severity: Severity | None = None
     note: str = Field(description="Opis rolnika jego słowami.")
     idempotency_key: str = Field(min_length=8, max_length=64)
+    kind: Kind | None = Field(None, description="symptoms (widzę objawy; domyślnie) | absence (sprawdziłem, czysto) | "
+                                                "neighbour (u sąsiada) | treatment (wykonałem zabieg) | field_fact (fakt o polu: "
+                                                "data siewu, uprawa) | event (grad, wyleganie, zalanie)")
+    facts: dict | None = Field(None, description="Dla silnika: sowing_date (YYYY-MM-DD), tillage (reduced|plough), "
+                                                 "distance_m (sąsiad), type (hail|lodging|flood), scope (farm)")
 
 
 def resolve_draft(field_id, date, category, threat, severity, note) -> dict:
@@ -60,21 +87,31 @@ def resolve_draft(field_id, date, category, threat, severity, note) -> dict:
     if d > today:
         raise ToolError(f"Data obserwacji {d} jest w przyszłości (dziś w sezonie: {today}).")
     t = domain.threat_by_code_or_name(threat, f.crop_id) if threat else None
-    return {"field_id": f.id, "field": f.name, "crop": domain.crop_pl(f.crop_id), "date": d, "category": category,
+    return {"field_id": f.id, "field": f.name, "crop": domain.crop_pl(f.crop_id), "date": d,
+            "category": CATEGORY_PL.get(CATEGORY_TO_CORE.get(category, ""), category),
             "threat_code": t.code if t else None, "threat": t.name if t else None,
             "threat_unrecognized": bool(threat and not t), "severity": severity, "note": note}
 
 
+def _predict_end(field) -> dt.date | None:
+    """Recompute up to the last precomputed day of the field, not only today + 7 (known predict() gap,
+    docs/interfaces.md: otherwise later precomputed days miss the report's effect)."""
+    from django.db.models import Max
+
+    from core.models import Risk
+    return Risk.objects.filter(field=field).aggregate(m=Max("date"))["m"]
+
+
 @register("record_observation", """
-Zapisuje obserwację rolnika z pola (choroba, szkodnik, chwasty, uszkodzenie, inne) i uruchamia
-ponowną ocenę ryzyka pola przez silnik. ZAPIS: wolno wywołać tylko po tym, jak użytkownik
-zobaczył szkic i potwierdził. Ten sam idempotency_key nie tworzy duplikatu. Zwraca id obserwacji
-i zmianę ryzyka (przed/po) dla pola na dziś.
+Zapisuje zgłoszenie rolnika (objawy, „sprawdziłem — czysto”, sąsiad ma, wykonany zabieg, fakt o polu,
+grad/wyleganie/zalanie) i uruchamia ponowną ocenę ryzyka pola przez silnik. ZAPIS: wolno wywołać tylko
+po tym, jak użytkownik zobaczył szkic i potwierdził. Ten sam idempotency_key nie tworzy duplikatu.
+Zwraca id zgłoszenia i zmianę ryzyka (przed/po) dla pola na dziś.
 """, ObservationIn, writes=True, agent_visible=False)
-def record_observation(field_id, date, category, threat, severity, note, idempotency_key) -> dict:
+def record_observation(field_id, date, category, threat, severity, note, idempotency_key, kind=None, facts=None) -> dict:
     from django.db import transaction
 
-    from assistant.models import Observation
+    from core.models import Observation, Threat
 
     existing = Observation.objects.filter(idempotency_key=idempotency_key).first()
     if existing:
@@ -84,16 +121,19 @@ def record_observation(field_id, date, category, threat, severity, note, idempot
     f = _field(field_id)
     today = season_today()
     before = field_levels(f, today)
+    core_category = CATEGORY_TO_CORE[category]
+    facts = {k: v for k, v in (facts or {}).items() if v not in (None, "")}
+    details = {k: v for k, v in facts.items() if k in DETAIL_KEYS}
+    details |= {"source": "assistant", "draft": {k: str(v) if isinstance(v, dt.date) else v for k, v in draft.items()}}
     with transaction.atomic():
         obs, created = Observation.objects.get_or_create(
             idempotency_key=idempotency_key,
-            defaults={"field": f, "date": draft["date"], "category": category,
-                      "threat_id": None, "severity": severity or "", "note": note,
-                      "details": {"draft": {k: str(v) if isinstance(v, dt.date) else v for k, v in draft.items()}}})
-        if created and draft["threat_code"]:
-            from core.models import Threat
-            obs.threat = Threat.objects.get(code=draft["threat_code"])
-            obs.save(update_fields=["threat"])
+            defaults={"field": f, "observed_on": draft["date"], "kind": kind or DEFAULT_KIND[core_category],
+                      "category": core_category,
+                      "threat": Threat.objects.filter(code=draft["threat_code"]).first() if draft["threat_code"] else None,
+                      "severity": SEVERITY_TO_CORE.get(severity or ""),
+                      "distance_m": float(facts["distance_m"]) if facts.get("distance_m") is not None else None,
+                      "details": details, "text": note})
     if not created:
         return {"observation_id": obs.id, "created": False, "draft": draft,
                 "reassessment": obs.details.get("reassessment", {"status": "skipped"})}
@@ -104,15 +144,25 @@ def record_observation(field_id, date, category, threat, severity, note, idempot
                         "before": before, "after": before}
     else:
         try:
-            rows = predict(field_ids=[f.id], start=draft["date"])
+            from django.utils import timezone
+
+            from core.models import Risk
+            t0 = timezone.now()
+            end = _predict_end(f)
+            rows = predict(field_ids=[f.id], start=draft["date"], **({"end": end} if end and end > today else {}))
             after = field_levels(f, today)
             changed = {c: {"before": before.get(c), "after": a} for c, a in after.items()
                        if before.get(c, {}).get("score") != a["score"]}
-            reassessment = {"status": "ok", "rows_written": rows, "before": before, "after": after, "changed": changed}
-        except Exception as e:  # noqa: BLE001 - the observation stays saved
+            # predict() returns only a count; nearby fields it recomputed (spread of symptoms) are found
+            # by their new rows (known gap in docs/interfaces.md)
+            recomputed = sorted(set(Risk.objects.filter(computed_at__gte=t0).values_list("field_id", flat=True))) or [f.id]
+            reassessment = {"status": "ok", "rows_written": rows, "before": before, "after": after, "changed": changed,
+                            "recomputed_field_ids": recomputed}
+        except Exception as e:  # noqa: BLE001 - the report stays saved
             log.exception("engine.predict failed after observation %s", obs.id)
             reassessment = {"status": "failed", "message": f"Ponowna ocena ryzyka nie powiodła się: {e}",
                             "before": before, "after": before}
-    obs.details = obs.details | {"reassessment": {k: v for k, v in reassessment.items() if k in ("status", "message", "rows_written")}}
+    obs.details = obs.details | {"reassessment": {k: v for k, v in reassessment.items()
+                                                  if k in ("status", "message", "rows_written", "recomputed_field_ids")}}
     obs.save(update_fields=["details"])
     return {"observation_id": obs.id, "created": True, "draft": draft, "reassessment": reassessment}

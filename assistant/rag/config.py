@@ -84,6 +84,7 @@ RRF_WEIGHT_DENSE = 1.0
 RRF_WEIGHT_BM25 = 1.0
 LEGAL_PENALTY = 0.5
 CROP_EXPANSION = {
+    "farm": ["pszenica", "kukurydza", "zboza"],   # the demo farm's crops (no crop named in the question)
     "pszenica": ["pszenica", "zboza"],
     "zboza": ["zboza", "pszenica"],
 }

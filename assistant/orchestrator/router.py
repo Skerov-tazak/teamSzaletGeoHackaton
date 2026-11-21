@@ -24,7 +24,11 @@ CONFIRM_NO = {"nie", "anuluj", "nie zapisuj", "rezygnuje", "odrzuc", "stop", "ni
 
 CHART = [r"\bpokaz", r"\bwykres", r"\btrend", r"jak sie zmienial", r"\bprzebieg", r"\bnarysuj", r"\bzobrazuj"]
 OBSERVATION = [r"\bwidze\b", r"zauwazyl", r"pojawil\w* sie", r"znalazl", r"zapisz obserwacj", r"\bdostrzegl",
-               r"na polu (sa|jest|maja)", r"mam na polu", r"zaobserwowal", r"odnotuj"]
+               r"na polu (sa|jest|maja)", r"mam na polu", r"zaobserwowal", r"odnotuj",
+               r"oprysk\w*al\w*", r"\bpryskal", r"wykonal\w* zabieg", r"\b(zasial|posial|sialem|sialam|wysial)",
+               r"\b(przeszedl|przeszlam|obszedl|obeszlam|sprawdzil)\w*", r"\bgrad\b", r"wylegl|polegl", r"zalal\w*|podtopi",
+               r"nie oral|bez orki"]
+OBSERVATION_STATEMENT = [r"\bsasiad\w*"]   # only when it is a statement, not a question
 FARM = [r"wszystkie pola", r"wszystkich pol", r"najpilniejsz", r"gospodarstw", r"ktore pole", r"na ktorym polu",
         r"podsumuj", r"przeglad pol", r"cala farm", r"wszystkich uprawach"]
 FIELD_REF = [r"\bto pole", r"\btym polu", r"\btego pola", r"\bmoje pole", r"\bmoim polu", r"\bmojego pola",
@@ -44,6 +48,8 @@ OFF_TOPIC = [r"przepis na", r"kto wygral", r"napisz wiersz", r"bitcoin", r"\bfil
 DATE_RANGE = [r"\bod \d{1,2}[ .]\w+ do\b", r"\bod (stycznia|lutego|marca|kwietnia|maja|czerwca|lipca|sierpnia)",
               r"\bw (marcu|kwietniu|maju|czerwcu|lipcu|sierpniu)\b", r"\bcaly sezon", r"\bod poczatku sezonu"]
 COMPARE = [r"porownaj", r"porownani", r"roznic", r"\bvs\b", r"\bczy bardziej"]
+FOLLOW_UP = [r"^a\b", r"\btam\b", r"\btego\b", r"\btym\b", r"\bto\b", r"\bzmniejsz", r"\bograniczyc",
+             r"\bzapobiec", r"\bpomoc", r"\bco dalej", r"\bkiedy\b"]
 CROP_WORDS = {"pszenic": "pszenica", "kukurydz": "kukurydza", "zboz": "zboza"}
 
 
@@ -104,6 +110,17 @@ def route(message: str, selected_field=None, state=None) -> Route:
         field_id, field_source = named[0][0], "named"
     elif selected_field is not None:
         field_id, field_source = selected_field.id, "selected"
+    elif state is not None and state.data.get("last_field_id") and not named and (
+            _any(RISK_INTENT, t) or _any(FOLLOW_UP, t) or _any(CHART, t)):
+        # a follow-up ("co mogę zrobić?", "a dlaczego?") continues with the field of the previous answer
+        from core.models import Field
+        last = Field.objects.filter(pk=state.data["last_field_id"]).first()
+        if last is not None:
+            field_id, field_source = last.id, "conversation"
+            if crop is None:
+                crop = domain.crop_pl(last.crop_id)
+                if not threats:
+                    threats = [m.code for m in domain.resolve_threats(message, last.crop_id)]
     base = dict(field_id=field_id, field_ids=[f for f, _ in named], crop=crop, threats=threats,
                 field_source=field_source)
 
@@ -119,6 +136,8 @@ def route(message: str, selected_field=None, state=None) -> Route:
     # 3. observation
     if p := _any(OBSERVATION, t):
         return Route("obserwacja", reason=f"observation word {p}", **base)
+    if not message.strip().endswith("?") and (p := _any(OBSERVATION_STATEMENT, t)):
+        return Route("obserwacja", reason=f"observation statement {p}", **base)
     # 4. farm overview
     complex_q = len(named) >= 2 or (len(threats) >= 2 and _any(COMPARE, t)) or bool(_any(DATE_RANGE, t))
     if agent and complex_q:

@@ -55,14 +55,28 @@ def _range(date_from, date_to, back: int, ahead: int) -> tuple[dt.date, dt.date,
 
 
 def _expl(e) -> dict:
-    """Defensive read of Risk.explanation (format still open): keep summary + factors if present."""
+    """Read Risk.explanation: the engine's version 1 (summary, drivers, action, growth_stage, confidence),
+    or the older {summary, factors} shape. Unknown keys are ignored."""
     if not isinstance(e, dict):
         return {"summary": str(e) if e else ""}
     out = {"summary": e.get("summary", "")}
-    if isinstance(e.get("factors"), list):
+    if isinstance(e.get("drivers"), list):  # engine v1: why, with each factor's effect on the score
+        drivers = sorted(e["drivers"], key=lambda d: -(d.get("effect") or 0))
+        out["drivers"] = [{k: d.get(k) for k in ("label", "value", "unit", "threshold", "effect", "kind", "observed_on", "text")
+                           if d.get(k) not in (None, "")} for d in drivers[:5]]
+    elif isinstance(e.get("factors"), list):
         out["factors"] = e["factors"][:6]
-    if e.get("source"):
-        out["source"] = e["source"]
+    act = e.get("action")
+    if isinstance(act, dict):
+        out["action"] = {"type": act.get("type"), "text": act.get("text"), "threshold": act.get("threshold")}
+        if isinstance(act.get("spray_window"), dict) and act["spray_window"].get("date"):
+            out["action"]["weather_window"] = act["spray_window"]["date"]
+    gs = e.get("growth_stage")
+    if isinstance(gs, dict) and gs.get("bbch") is not None:
+        out["growth_stage"] = {k: gs.get(k) for k in ("bbch", "name", "sowing_assumed", "confidence") if gs.get(k) is not None}
+    for k in ("confidence", "source"):
+        if e.get(k) is not None:
+            out[k] = e[k]
     return out
 
 
@@ -105,7 +119,7 @@ class FieldIn(BaseModel):
 
 @register("get_field", """
 Szczegóły pola: uprawa, powierzchnia [ha], położenie (środek), historia upraw z ostatnich lat,
-gleba (pH, uziarnienie, próchnica; średnia z komórek pola). Bez geometrii.
+gleba (pH, udział iłu/piasku/pyłu w %, materia organiczna; średnia z komórek pola). Bez geometrii.
 """, FieldIn)
 def get_field(field_id: int) -> dict:
     f = _field(field_id)
@@ -118,7 +132,13 @@ def get_field(field_id: int) -> dict:
     cells = list(f.soil_cells().values("ph", "soil_texture", "clay", "sand", "silt", "om"))
     if cells:
         num = {k: [c[k] for c in cells if c[k] is not None] for k in ("ph", "clay", "sand", "silt", "om")}
-        out["soil"] = {k: round(sum(v) / len(v), 1) for k, v in num.items() if v}
+        avg = {k: sum(v) / len(v) for k, v in num.items() if v}
+        out["soil"] = {"ph": round(avg["ph"], 1)} if "ph" in avg else {}
+        for k in ("clay", "sand", "silt"):  # core.SoilCell stores fractions 0-1 (as in the real files)
+            if k in avg:
+                out["soil"][f"{k}_pct"] = round(avg[k] * 100 if avg[k] <= 1 else avg[k], 1)
+        if "om" in avg:
+            out["soil"]["om"] = round(avg["om"], 2)
         textures = [c["soil_texture"] for c in cells if c["soil_texture"]]
         if textures:
             out["soil"]["soil_texture"] = max(set(textures), key=textures.count)
@@ -148,7 +168,7 @@ def summarize_threat(threat, rows, today: dt.date, field_id: int) -> dict:
     past = [r for r in rows if r.date <= today]
     now = next((r for r in reversed(past)), None) or (rows[0] if rows else None)
     peak = max(rows, key=lambda r: r.score)
-    lvl_n, lvl = domain.level(now.score if now else None)
+    lvl_n, lvl = domain.level_from_explanation(now.explanation, now.score) if now else domain.level(None)
     scores_to_today = [r.score for r in past]
     return {
         "threat_code": threat.code, "threat": threat.name, "category": threat.category,
@@ -166,7 +186,7 @@ def summarize_threat(threat, rows, today: dt.date, field_id: int) -> dict:
 
 @register("get_field_risks", """
 Ryzyko zagrożeń pola według silnika decyzyjnego (score 0–1, poziom: niskie/średnie/wysokie —
-progi tymczasowe), dziś i w zakresie dat: maksimum, trend (liczony w kodzie), wyjaśnienie silnika
+progi silnika), dziś i w zakresie dat: maksimum, trend (liczony w kodzie), wyjaśnienie silnika
 (dlaczego) i punkty dzienne. Bez filtra zwraca szczegóły tylko zagrożeń istotnych (score ≥ 0,33
 w zakresie) + nazwy pozostałych. Powody ryzyka bierz tylko z pola `explanation`.
 """, FieldRisksIn)
@@ -198,7 +218,7 @@ def get_field_risks(field_id: int, date_from=None, date_to=None, threat: str | N
                 weeks[p["date"] - dt.timedelta(days=p["date"].weekday())].append(p["score"])
             x["points"] = [{"week_start": w, "max_score": max(s)} for w, s in sorted(weeks.items())]
     return {"field": field_summary(f), "today": today, "date_from": a, "date_to": b, "cut_at_forecast": cut,
-            "levels_note": "poziomy tymczasowe: <0,33 niskie, <0,66 średnie, ≥0,66 wysokie",
+            "levels_note": "poziomy silnika: <0,33 niskie, <0,66 średnie, ≥0,66 wysokie",
             "threats": relevant, "other_threats_low": other}
 
 
@@ -227,7 +247,8 @@ def get_farm_risk_summary(date: dt.date | None = None) -> dict:
         if last.date != d:
             continue
         pairs.append({"field_id": fid, "field": fields[fid].name, "threat_code": last.threat.code,
-                      "threat": last.threat.name, "score": round(last.score, 2), "level": domain.level(last.score)[1],
+                      "threat": last.threat.name, "score": round(last.score, 2),
+                      "level": domain.level_from_explanation(last.explanation, last.score)[1],
                       "trend": domain.trend([r.score for r in rs]), "explanation": _expl(last.explanation).get("summary", ""),
                       "citation": {"type": "risk", "field_id": fid, "threat_code": last.threat.code,
                                    "date": d.isoformat()}})
@@ -303,17 +324,26 @@ class ObservationsIn(BaseModel):
 
 
 @register("get_observations", """
-Obserwacje rolnika zapisane dla pola (data, kategoria, zagrożenie, nasilenie, opis), najnowsze
-pierwsze. Tylko do dzisiejszej daty sezonu.
+Zgłoszenia rolnika dla pola (i te dotyczące całego gospodarstwa): data, rodzaj (objawy / czysto /
+sąsiad / zabieg / fakt o polu / zdarzenie), kategoria, zagrożenie, nasilenie, jego słowa. Najnowsze
+pierwsze, tylko do dzisiejszej daty sezonu.
 """, ObservationsIn)
 def get_observations(field_id: int, date_from=None, date_to=None) -> dict:
-    from assistant.models import Observation
+    from django.db.models import Q
+
+    from core.models import Observation
+
+    from .observations import CATEGORY_PL, severity_pl
     f = _field(field_id)
     today = season_today()
-    qs = Observation.objects.filter(field=f, date__lte=min(date_to or today, today)).select_related("threat")
+    qs = (Observation.objects.observed(min(date_to or today, today))
+          .filter(Q(field=f) | Q(field__isnull=True)).select_related("threat"))
     if date_from:
-        qs = qs.filter(date__gte=date_from)
+        qs = qs.filter(observed_on__gte=date_from)
     return {"field_id": f.id, "observations": [
-        {"id": o.id, "date": o.date, "category": o.category, "threat": o.threat.name if o.threat else None,
-         "threat_code": o.threat.code if o.threat else None, "severity": o.severity or None, "note": o.note}
+        {"id": o.id, "date": o.observed_on, "kind": o.kind, "category": CATEGORY_PL.get(o.category, o.category),
+         "threat": o.threat.name if o.threat else None, "threat_code": o.threat.code if o.threat else None,
+         "severity": severity_pl(o.severity), "distance_m": o.distance_m, "whole_farm": o.field_id is None,
+         "facts": {k: v for k, v in (o.details or {}).items() if k in ("sowing_date", "tillage", "resistant_to", "type")},
+         "text": o.text}
         for o in qs[:50]]}

@@ -5,6 +5,7 @@ from .models import (
     CropClass,
     Field,
     FieldCropYear,
+    Observation,
     Risk,
     SoilCell,
     Threat,
@@ -72,12 +73,19 @@ class FieldCropYearInline(admin.TabularInline):
     extra = 0
 
 
+class ObservationInline(admin.TabularInline):
+    model = Observation
+    extra = 0
+    fields = ["observed_on", "kind", "category", "threat", "severity", "text"]
+    raw_id_fields = ["threat"]
+
+
 @admin.register(Field)
 class FieldAdmin(admin.ModelAdmin):
     list_display = ["name", "crop", "area_ha", "weather_grid"]
     list_filter = ["crop"]
     raw_id_fields = ["weather_grid"]
-    inlines = [FieldCropYearInline]
+    inlines = [FieldCropYearInline, ObservationInline]
 
 
 @admin.register(Threat)
@@ -85,6 +93,15 @@ class ThreatAdmin(admin.ModelAdmin):
     list_display = ["code", "name", "crop", "category"]
     list_filter = ["crop", "category"]
     search_fields = ["code", "name"]
+
+
+@admin.register(Observation)
+class ObservationAdmin(admin.ModelAdmin):
+    list_display = ["observed_on", "field", "kind", "category", "threat", "severity", "recorded_at"]
+    list_filter = ["kind", "category", "field"]
+    date_hierarchy = "observed_on"
+    search_fields = ["text", "threat__code"]
+    raw_id_fields = ["threat"]
 
 
 @admin.register(Risk)
