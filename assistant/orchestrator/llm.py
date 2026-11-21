@@ -55,6 +55,7 @@ class LLMResult:
     tool_calls: list | None = None
     message: Any = None  # raw assistant message (agent mode)
     truncated: bool = False  # the output limit cut the answer (finish_reason == "length")
+    fallback_errors: list = field(default_factory=list)  # providers that failed before this one answered
 
 
 class LLM(Protocol):
@@ -129,8 +130,9 @@ RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
 class OpenAICompatLLM:
     """One OpenAI-compatible endpoint (Gemini's /v1beta/openai/, Groq's /openai/v1)."""
 
-    def __init__(self, name: str, base_url: str, api_key: str, model: str, timeout: float = 45.0):
+    def __init__(self, name: str, base_url: str, api_key: str, model: str, timeout: float | None = None):
         from openai import OpenAI
+        timeout = timeout or float(os.getenv("LLM_TIMEOUT_S", "25"))  # a farmer waits; the next provider is faster
         self.name, self.model = name, model
         self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=0)
         self._json_mode_supported = True
@@ -197,6 +199,9 @@ def _retry_after(e) -> float:
         return 2.0
 
 
+MAX_WAIT_BEFORE_NEXT_S = 3.0  # a longer Retry-After goes to the next provider instead of waiting
+
+
 class FallbackLLM:
     """Try providers in order: retryable error -> one retry after waiting -> next provider."""
 
@@ -212,10 +217,13 @@ class FallbackLLM:
     def complete(self, messages: list[dict], json_mode: bool = False, **opts) -> LLMResult:
         import openai
         errors = []
-        for p in self.providers:
+        for i, p in enumerate(self.providers):
+            has_next = i + 1 < len(self.providers)
             for attempt in (1, 2):
                 try:
-                    return p.complete(messages, json_mode=json_mode, **opts)
+                    res = p.complete(messages, json_mode=json_mode, **opts)
+                    res.fallback_errors = list(errors)  # what failed before this answer (kept in the message's meta)
+                    return res
                 except (openai.APITimeoutError, openai.APIConnectionError) as e:
                     errors.append(f"{p.name}: {type(e).__name__}")
                     wait = 2.0
@@ -225,6 +233,9 @@ class FallbackLLM:
                         break  # e.g. 401/400: next provider, no retry
                     wait = _retry_after(e)
                 if attempt == 1:
+                    if has_next and wait > MAX_WAIT_BEFORE_NEXT_S:  # rate-limited for a while: the next provider now
+                        log.warning("LLM %s failed (%s, retry in %.0fs); trying the next provider", p.name, errors[-1], wait)
+                        break
                     log.warning("LLM %s failed (%s); retrying in %.1fs", p.name, errors[-1], wait)
                     self.sleep(wait)
             log.warning("LLM %s gave up, trying next provider", p.name)

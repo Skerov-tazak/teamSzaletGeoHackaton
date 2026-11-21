@@ -46,6 +46,37 @@ def default_llm():
     return _LLM
 
 
+ENGINE_ONLY_NOTE = "Model językowy jest chwilowo niedostępny, więc podaję samą ocenę silnika (bez metodyk):"
+LEVEL_WORD = {"high": "wysokie", "medium": "średnie", "low": "niskie"}
+
+
+def engine_only_reply(route, selected_field=None) -> Reply | None:
+    """When the LLM fails on a field or farm question: the engine's own summary, its action and risk citations."""
+    from core import clock
+    from engine.summary import farm_ranking, field_day
+
+    try:
+        today = clock.today()
+        if route.type == "pytanie_o_pole" and (route.field_id or selected_field is not None):
+            s = field_day(route.field_id or selected_field.id, today)
+            lines = [ENGINE_ONLY_NOTE, "",
+                     f"**{s['name']}**: ryzyko {LEVEL_WORD.get(s['level'], s['level'])}. {s['why']}"]
+            lines += [f"- {a['text']}" for a in s["actions"][:2]]
+            cits = [{"type": "risk", "field_id": s["field_id"], "threat_code": t["threat_code"], "date": today.isoformat()}
+                    for t in s["top_threats"]]
+            return Reply(text="\n".join(lines), citations=cits, meta={"route": route.type, "engine_only": True})
+        if route.type == "podsumowanie_farmy":
+            ranking = farm_ranking(today)[:4]
+            lines = [ENGINE_ONLY_NOTE, ""] + [f"- **{s['name']}**: {LEVEL_WORD.get(s['level'], s['level'])}. {s['why']}"
+                                              for s in ranking]
+            cits = [{"type": "risk", "field_id": s["field_id"], "threat_code": t["threat_code"], "date": today.isoformat()}
+                    for s in ranking for t in s["top_threats"][:1]]
+            return Reply(text="\n".join(lines), citations=cits, meta={"route": route.type, "engine_only": True})
+    except Exception:  # noqa: BLE001 - the fallback must never fail the chat
+        log.exception("engine-only reply failed")
+    return None
+
+
 def answer(conversation: Conversation, message: str, selected_field=None, llm=None) -> Reply:
     from assistant.orchestrator import citations, flows, observations, router
     from assistant.orchestrator.llm import LLMError
@@ -94,7 +125,13 @@ def answer(conversation: Conversation, message: str, selected_field=None, llm=No
         return reply
     except LLMError as e:
         log.warning("LLM unavailable: %s", e)
-        return Reply(text=f"Nie mogę teraz odpowiedzieć, bo model językowy jest niedostępny. {e}",
+        r = locals().get("route")
+        fallback = engine_only_reply(r, selected_field) if r is not None else None
+        if fallback is not None:
+            fallback.meta |= {"error": "llm", "detail": str(e)}
+            return fallback
+        return Reply(text="Nie mogę teraz odpowiedzieć: model językowy jest chwilowo niedostępny. Spróbuj ponownie za "
+                          "minutę; mapa i panel pola pokazują ocenę ryzyka bez asystenta.",
                      meta={"error": "llm", "detail": str(e)})
     except Exception as e:  # noqa: BLE001 - never raise into the chat view
         log.exception("answer() failed")

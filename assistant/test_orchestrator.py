@@ -334,7 +334,7 @@ class ChatEndpointTests(WorldTestCase):
         body = resp.json()
         self.assertEqual(set(body), {"conversation_id", "message"})
         self.assertEqual(set(body["message"]), {"id", "role", "text", "citations", "focus_field_id",
-                                                "updated_field_ids", "created_at"})
+                                                "updated_field_ids", "chart", "pending_action", "created_at"})
         self.assertEqual(body["message"]["role"], "assistant")
         conv = self.client.get(f"/api/chat/conversations/{body['conversation_id']}/").json()
         self.assertEqual([m["role"] for m in conv["messages"]], ["user", "assistant"])
@@ -426,7 +426,7 @@ class BroaderRoutingTests(WorldTestCase):
         for q in ["Co mam tam dziś konkretnie zrobić?", "A na co mam uważać?", "Czy powinienem się martwić?"]:
             r = route(q, None, s)
             self.assertEqual((r.type, r.field_id), ("pytanie_o_pole", self.maize.id), q)
-        self.assertEqual(route("Jaka jest stolica Francji?", None, State(None)).type, "pytanie_ogolne")
+        self.assertEqual(route("Jaka jest stolica Francji?", None, State(None)).type, "poza_zakresem")  # no LLM call
         self.assertEqual(route("Cześć", None, State(None)).type, "poza_zakresem")
 
     def test_threat_sources_must_mention_the_threat(self):
@@ -509,3 +509,108 @@ class AnswerShapeTests(SimpleTestCase):
                          "**Lustracja Za Stodołą pod kątem fuzariozy dziś**.")
         self.assertEqual(fix_bold("- **Za Stodołą**: wysokie, **Pod Lasem** średnie"),
                          "- **Za Stodołą**: wysokie, **Pod Lasem** średnie")
+
+
+# ----------------------------------------------------------------------------- fixes from docs/audit-2026-11-21.md
+class AuditFixTests(WorldTestCase):
+    def test_air_humidity_sentences_are_not_greenhouse_advice(self):
+        """A-1: "powietrza" contains "wietrz"; "rozsądnie", "inspektor" are not seedlings or cold frames."""
+        from assistant.orchestrator.context import drop_off_field
+        text = ("Wysoka wilgotność powietrza (85 %) sprzyja infekcji.\n- Temperatura powietrza 18 °C sprzyja rdzy [x:1].\n"
+                "Rozsądnie jest zgłosić to inspektorowi PIORiN. W szklarni wietrz pomieszczenie.")
+        out = drop_off_field(text)
+        self.assertIn("wilgotność powietrza", out)
+        self.assertIn("Temperatura powietrza", out)
+        self.assertIn("inspektorowi", out)
+        self.assertNotIn("szklarni", out)
+
+    def test_wide_bracket_citations_and_engine_ids(self):
+        """A-3: gpt-oss cites as 【id】; A-11: [silnik:code] marks engine facts and is removed from the text."""
+        cit = {"type": "guide", "document": "x.pdf", "page": 3}
+        text, cits, _ = citations.finalize("Plamy wzdłuż nerwów【pszenica_doradcy:5.1:0018】. Wynik 0,7 [silnik:wheat.tan_spot].",
+                                           {"pszenica_doradcy:5.1:0018": cit})
+        self.assertEqual(text, "Plamy wzdłuż nerwów[1]. Wynik 0,7.")
+        self.assertEqual(cits, [cit | {"ref": 1}])
+
+    def test_unclosed_bold_is_closed(self):
+        from assistant.orchestrator.flows import fix_bold
+        self.assertEqual(fix_bold("**Deszcze zwiększają ryzyko na polu."), "**Deszcze zwiększają ryzyko na polu.**")
+
+    def test_threat_words_match_by_stem_not_by_similarity(self):
+        """A-7: "ok" and "zboża" match nothing; inflected names match; a crop in the text narrows the threats."""
+        from assistant import domain
+        self.assertEqual(domain.resolve_threats("ok"), [])
+        self.assertEqual(domain.resolve_threats("zboża"), [])
+        self.assertEqual(domain.crop_in_text("Czy mszyce zagrażają kukurydzy?"), 1130)
+        self.assertEqual(domain.crop_in_text("pszenżyto"), 1150)
+
+    def test_field_names_need_context_when_they_are_ordinary_words(self):
+        """A-8: "Długie deszcze" is rain; "na polu Długie" and "pole Długie" are the field."""
+        from core.models import Field
+        f = Field.objects.create(name="Długie", geometry=self.wheat.geometry, area_ha=5, centroid_lat=50.0, centroid_lon=19.9,
+                                 weather_grid=self.wheat.weather_grid, h3_cells=[], crop=self.wheat.crop)
+        g = Field.objects.create(name="Nad Stawem", geometry=self.wheat.geometry, area_ha=5, centroid_lat=50.0,
+                                 centroid_lon=19.9, weather_grid=self.wheat.weather_grid, h3_cells=[], crop=self.wheat.crop)
+        ids = lambda q: [i for i, _ in router.find_fields(router.domain.fold(q), q)]
+        self.assertNotIn(f.id, ids("Długie deszcze ostatnio — czy to groźne?"))
+        self.assertIn(f.id, ids("Na polu Długie widzę plamy"))
+        self.assertIn(f.id, ids("Jak jest na Długim?"))
+        self.assertNotIn(g.id, ids("Czy nadal warto stawiać na lustrację?"))
+        self.assertIn(g.id, ids("Co słychać Nad Stawem?"))
+
+    def test_only_a_short_yes_confirms_a_pending_draft(self):
+        """A-10: "tak, ale to było wczoraj" corrects the draft; "tak" confirms; "nie" cancels."""
+        s = State(self.conv())
+        s.set_draft({"draft_id": "d1", "field_id": self.wheat.id, "field": self.wheat.name, "date": "2024-05-14",
+                     "note": "plamy na liściach"})
+        self.assertEqual(router.route("tak", None, s).type, "potwierdzenie")
+        self.assertEqual(router.route("nie", None, s).type, "potwierdzenie")
+        r = router.route("tak, ale to było wczoraj rano", None, s)
+        self.assertEqual((r.type, r.reason), ("obserwacja", "draft pending + correction"))
+        self.assertEqual(r.previous_draft["draft_id"], "d1")
+
+    def test_questions_to_the_assistant_and_thanks(self):
+        """A-21, A-22: "czy pryskałeś?" is not a report; thanks get a fixed answer."""
+        self.assertNotEqual(router.route("Czy pryskałeś?", None, State(None)).type, "obserwacja")
+        r = router.route("Dzięki, to wszystko", self.wheat, State(None))
+        self.assertEqual((r.type, r.reason), ("poza_zakresem", "thanks"))
+        self.assertNotIn("Jestem asystentem", answer(self.conv(), "Dziękuję bardzo", None, llm=FakeLLM("x")).text)
+
+    def test_routed_threat_wins_over_the_models_guess(self):
+        """A-9: the router's alias match decides the threat of the draft unless the model agrees with it."""
+        from assistant.orchestrator.observations import observation
+        from core.models import Threat
+        codes = list(Threat.objects.filter(crop_id=self.maize.crop_id).values_list("code", "name")[:2])
+        (routed, _), (_, other_name) = codes
+        route_ = router.Route("obserwacja", field_id=self.maize.id, threats=[routed], crop="kukurydza")
+        llm = FakeLLM(json.dumps({"field_id": self.maize.id, "category": "szkodnik", "threat": other_name,
+                                  "severity": "srednie", "note": "x", "date": None}))
+        res = observation(route_, "widzę coś na kukurydzy", [], llm, State(self.conv()), None)
+        self.assertEqual(res.pending_action["draft"]["threat_code"], routed)
+
+    def test_chat_without_an_llm_is_503_and_stores_nothing(self):
+        before = Message.objects.count()
+        with mock.patch("assistant.answer.default_llm", side_effect=LLMError("no keys")):
+            resp = self.client.post("/api/chat/", {"message": "Dlaczego to pole jest zagrożone?"},
+                                    content_type="application/json")
+        self.assertEqual(resp.status_code, 503)
+        self.assertIn("Asystent jest wyłączony", resp.json()["detail"])
+        self.assertEqual(Message.objects.count(), before)
+
+    def test_llm_failure_on_a_field_question_answers_from_the_engine(self):
+        """A-17: the engine's own summary instead of an error."""
+        class Down:
+            def complete(self, *a, **k):
+                raise LLMError("limit")
+        r = answer(self.conv(), "Dlaczego to pole jest zagrożone?", self.wheat, llm=Down())
+        self.assertTrue(r.text.startswith("Model językowy jest chwilowo niedostępny, więc podaję samą ocenę silnika"), r.text)
+        self.assertTrue(r.meta.get("engine_only"))
+
+    def test_health_reports_the_assistant(self):
+        from assistant.status import assistant_status
+        with mock.patch("assistant.status.rag_ready", return_value=True), \
+                mock.patch("assistant.orchestrator.llm.provider_configs", return_value=[]):
+            self.assertEqual(assistant_status()["available"], False)
+        with mock.patch("assistant.status.rag_ready", return_value=True), \
+                mock.patch.dict("os.environ", {"ASSISTANT_LLM": "fake"}):
+            self.assertEqual(assistant_status(), {"available": True, "llm": True, "rag": True, "reason": None})

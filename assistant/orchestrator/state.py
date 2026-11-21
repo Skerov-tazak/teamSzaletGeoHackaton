@@ -5,7 +5,7 @@ import re
 
 MAX_SEEN = 120
 HISTORY_EXCHANGES = 3
-HISTORY_MSG_CHARS = 400
+HISTORY_MSG_CHARS = 700  # enough of an earlier answer for "nie powtarzaj" to work
 
 
 class State:

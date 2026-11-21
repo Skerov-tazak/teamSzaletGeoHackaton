@@ -59,7 +59,11 @@ def fix_bold(text: str) -> str:
                 i += 2
                 continue
             res.append(line[i]); i += 1
-        out.append("".join(res))
+        joined = "".join(res)
+        if depth >= 1:  # an opener never closed on this line: close it, or the asterisks show
+            stripped = joined.rstrip()
+            joined = stripped + "**" + joined[len(stripped):] if not stripped.endswith("**") else joined
+        out.append(joined)
     return "\n".join(out)
 
 
@@ -77,25 +81,31 @@ def finish_sentence(text: str) -> str:
     return t[:cut].rstrip()
 
 
+def _clean(raw: str, truncated: bool) -> str:
+    """The same post-processing for every answer the model writes (first try and regeneration)."""
+    text = strip_think(raw)
+    text = finish_sentence(text) if truncated else text
+    return fix_bold(ctx.drop_off_field(text))
+
+
 def ask_llm(llm: LLM, kind: str, context_lines, sources, question, history, instructions="",
             max_tokens: int | None = None, conversation_id=None) -> tuple[str, dict]:
     messages, info = build_messages(context_lines, sources, history, question, instructions)
     res: LLMResult = llm.complete(messages, max_tokens=max_tokens)
     calls = [log_usage(res, kind=kind, extra={"conversation_id": conversation_id})]
-    text = strip_think(res.text)
-    text = fix_bold(ctx.drop_off_field(finish_sentence(text) if res.truncated else text))
+    text = _clean(res.text, res.truncated)
     doses = guard.find_doses(text)
     if doses:
         log.warning("dose in answer (%s): %s — regenerating once", kind, doses)
         retry = messages + [{"role": "assistant", "content": text}, {"role": "user", "content": guard.REGENERATE_NOTE}]
         res2 = llm.complete(retry, max_tokens=max_tokens)
         calls.append(log_usage(res2, kind=kind + ":regenerate", extra={"conversation_id": conversation_id}))
-        text = strip_think(res2.text)
-        text = finish_sentence(text) if res2.truncated else text
+        text = _clean(res2.text, res2.truncated)
         if guard.find_doses(text):
             log.warning("dose again after regeneration — safe message")
             text = guard.SAFE_MESSAGE
     meta = {"llm_calls": calls, "prompt_info": info, "guard_triggered": bool(doses),
+            "llm_errors": list(getattr(res, "fallback_errors", None) or []),
             "prompt": messages}  # the prompt is kept for `manage.py chat --show-prompt`, not stored in Message.meta
     return text, meta
 
@@ -222,19 +232,59 @@ def field_question(route: Route, question: str, history, llm: LLM, conv_id=None)
 
 
 # ----------------------------------------------------------------------------- farm overview
+def farm_groups(s: dict, max_groups: int = 3) -> list[list[dict]]:
+    """
+    Each field's most dangerous threat, fields with the same threat and level in one group (three wheat fields
+    with the same leaf spot are one point, not three), most urgent first; every crop of the farm gets at least its
+    most urgent group, so maize is not left out when the wheat is worse.
+    """
+    crop_of = {f["id"]: f.get("crop_code") for f in s["fields"]}
+    groups: dict[tuple, list[dict]] = {}
+    for p in s.get("leaders") or s["most_urgent"]:
+        groups.setdefault((p["threat_code"], p["level"]), []).append(p)
+    ordered = sorted(groups.values(), key=lambda g: -max(p["score"] for p in g))
+    picked = ordered[:max_groups]
+    for g in ordered[max_groups:]:
+        crop = crop_of.get(g[0]["field_id"])
+        if crop not in {crop_of.get(x[0]["field_id"]) for x in picked}:
+            picked.append(g)
+    return picked
+
+
+def compare_fields(route: Route, question: str, history, llm: LLM, conv_id=None) -> FlowResult:
+    """"Porównaj Klin i Górkę": each named field's main threats and reasons, then the model compares them."""
+    lines = ctx.season_lines() + ["Porównywane pola (silnik):"]
+    risk_cits, focus_all = [], []
+    for fid in route.field_ids[:4]:
+        risk_lines, focus, cits = ctx.field_risk_context(fid, None, max_threats=2)
+        lines += risk_lines
+        risk_cits += cits
+        focus_all += focus
+    crop = route.crop
+    queries = [(ctx.threat_query(t["threat"], crop), crop, 2, t["threat"]) for t in focus_all[:2]]
+    sources, err = ctx.guide_sources(queries, budget=1400, max_n=3) if queries else ([], None)
+    if err:
+        lines.append(err)
+    instructions = ("Rolnik porównuje pola. Pierwsze zdanie: które pole jest bardziej zagrożone i czym (pogrubiona nazwa "
+                    "pola). Potem po jednym punkcie listy na pole: główne zagrożenie, poziom i powód z silnika. Na końcu "
+                    "jedno zdanie, od którego pola zacząć lustrację. Najwyżej 6 zdań.")
+    text, meta = ask_llm(llm, "porownanie", lines, sources, question, history, instructions, conversation_id=conv_id)
+    meta["field_id"] = route.field_ids[0]
+    return FlowResult(ensure_referral(text, question), sources=sources, risk_citations=risk_cits, meta=meta)
+
+
 def farm_summary(route: Route, question: str, history, llm: LLM, conv_id=None) -> FlowResult:
+    if len(route.field_ids) >= 2:
+        return compare_fields(route, question, history, llm, conv_id)
     s = call("get_farm_risk_summary")
-    lines = ctx.season_lines() + ["Najpilniejsze pary pole × zagrożenie (silnik; poziomy silnika):"]
-    picked, used_fields = [], set()
-    for p in s["most_urgent"]:  # prefer one pair per field
-        if p["field_id"] not in used_fields:
-            picked.append(p)
-            used_fields.add(p["field_id"])
-        if len(picked) == 3:
-            break
-    for p in picked:
-        lines.append(f"- {p['field']} (id {p['field_id']}): {p['threat']} — {ctx._fmt(p['score'])} ({p['level']}), "
-                     f"trend {p['trend']}; powody (silnik): {p['explanation']}")
+    lines = ctx.season_lines() + ["Najpilniejsze zagrożenia gospodarstwa (silnik; pola z tym samym zagrożeniem razem):"]
+    groups = farm_groups(s)
+    picked = [g[0] for g in groups]
+    for g in groups:
+        p = g[0]
+        names = ", ".join(f"{x['field']} (id {x['field_id']}, {ctx._fmt(x['score'])})" for x in g)
+        lines.append(f"- {p['threat']} [silnik:{p['threat_code']}] — {p['level']}, trend {p['trend']}; pola: {names}; "
+                     f"powody (silnik, {p['field']}): {p['explanation']}")
     lines.append("Wszystkie pola (maks. ryzyko dziś): " + "; ".join(
         f"{f['name']} {ctx._fmt(f['max_score']) if f['max_score'] is not None else '—'} ({f['max_level']})" for f in s["fields"]))
     crops = {}
@@ -245,15 +295,19 @@ def farm_summary(route: Route, question: str, history, llm: LLM, conv_id=None) -
     sources, err = ctx.guide_sources([(ctx.threat_query(t, c), c, 2, t) for t, c in threats], budget=1600, max_n=4)
     if err:
         lines.append(err)
-    instructions = ("Omów TYLKO pola z listy „Najpilniejsze pary”, od najpilniejszego. Przy każdym: zagrożenie, powód "
-                    "z silnika i JEDNO konkretne działanie (np. lustracja, metoda niechemiczna), z cytatem metodyki, jeśli "
-                    "pasuje. Każde pole to osobny punkt listy zaczynający się od pogrubionej nazwy pola (najbardziej zagrożone "
-                    "pierwsze), 1–2 zdania na pole, całość najwyżej 7 zdań. Pozostałe pola wspomnij jednym zdaniem na końcu "
-                    "(bez wymyślania powodów). Bez podsumowań i bez uwag o zgodności silnika z metodyką.")
+    instructions = ("Omów TYLKO zagrożenia z listy „Najpilniejsze zagrożenia”, od najpilniejszego. Każde to osobny punkt "
+                    "listy zaczynający się od pogrubionych nazw pól, których dotyczy: zagrożenie, powód z silnika i JEDNO "
+                    "konkretne działanie wykonalne teraz (np. lustracja), z cytatem metodyki, jeśli pasuje; 1–2 zdania na "
+                    "punkt, całość najwyżej 8 zdań. Pozostałe pola wspomnij jednym zdaniem na końcu (bez wymyślania "
+                    "powodów). Bez podsumowań i bez uwag o zgodności silnika z metodyką.")
+    if asks_for_dose(question):
+        instructions += " " + DOSE_INSTRUCTION
+    sources = ctx.adapt_sources(sources, None)  # several fields and stages: only the greenhouse/garden filter
     text, meta = ask_llm(llm, route.type, lines, sources, question, history, instructions, conversation_id=conv_id)
     if picked:  # a follow-up ("co mam zrobić?") continues with the most urgent field
         meta["field_id"] = picked[0]["field_id"]
-    return FlowResult(text, sources=sources, risk_citations=[p["citation"] for p in picked], meta=meta)
+    return FlowResult(ensure_referral(text, question), sources=sources,
+                      risk_citations=[p["citation"] for g in groups for p in g], meta=meta)
 
 
 # ----------------------------------------------------------------------------- charts
@@ -301,7 +355,12 @@ CAPABILITIES = ("Jestem asystentem agronomicznym dla pszenicy i kukurydzy w tym 
                 "roślin ani dawek.")
 
 
+THANKS_REPLY = "Proszę bardzo. Jeśli coś się zmieni na polu, napisz albo zaznacz pole na mapie."
+
+
 def out_of_scope(route: Route, question: str, history, llm: LLM, conv_id=None) -> FlowResult:
+    if route.reason == "thanks":
+        return FlowResult(THANKS_REPLY, meta={"llm_calls": []})
     return FlowResult(CAPABILITIES, meta={"llm_calls": []})
 
 

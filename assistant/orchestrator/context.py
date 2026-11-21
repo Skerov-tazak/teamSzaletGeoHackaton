@@ -34,12 +34,25 @@ ACTION_PL = {"wait": "czekać (ryzyko niskie albo poza wrażliwą fazą)",
              "treat": "lustracja teraz; zabieg uzasadniony dopiero po przekroczeniu progu szkodliwości"}
 
 
+def farmer_text(text: str, limit: int = 120) -> str:
+    """The farmer's own words inside the prompt: data, never instructions (no tags, short)."""
+    t = re.sub(r"[<>]", "", " ".join(str(text).split()))
+    return t if len(t) <= limit else t[:limit].rsplit(" ", 1)[0] + "…"
+
+
 def _driver(d: dict) -> str:
     s = d.get("label", "")
-    if d.get("value") is not None and str(d.get("value")) not in s:
-        s += f" = {d['value']} {d.get('unit', '')}".rstrip()
+    v = d.get("value")
+    if v is not None and str(v) not in s and d.get("factor") != "growth_stage":
+        unit = "" if d.get("unit") in ("0-1", None) else d["unit"]
+        s += f" = {_fmt(v, 1) if isinstance(v, float) else v} {unit}".rstrip()
+    if d.get("threshold") and d.get("factor") not in ("growth_stage",):
+        s += f" (próg: {d['threshold']})"
+    eff = d.get("effect")
+    if isinstance(eff, (int, float)) and abs(eff) >= 0.01:
+        s += f" [{'podnosi' if eff > 0 else 'obniża'} wynik o {_fmt(abs(eff))}]"
     if d.get("text"):
-        s += f" (rolnik: „{d['text']}”)"
+        s += f" (rolnik napisał: „{farmer_text(d['text'])}”)"
     return s
 
 
@@ -57,14 +70,17 @@ def growth_stage_line(threats: list[dict]) -> str | None:
 def threat_lines(t: dict, with_factors: bool = True) -> list[str]:
     today = t["today"]
     rising = f", rośnie od {t['rising_days']} dni" if t.get("rising_days", 0) >= 2 else ""
-    line = (f"- {t['threat']}: dziś {_fmt(today['score'])} ({today['level']}), trend {t['trend']}{rising}; "
+    ref = f" [silnik:{t['threat_code']}]" if t.get("threat_code") else ""
+    line = (f"- {t['threat']}{ref}: dziś {_fmt(today['score'])} ({today['level']}), trend {t['trend']}{rising}; "
             f"maks. w okresie {_fmt(t['max']['score'])} ({t['max']['level']}) dnia {t['max']['date']}")
     out = [line]
     expl = t.get("explanation") or {}
     if expl.get("summary"):
         out.append(f"  powody (silnik): {expl['summary']}")
     if with_factors and expl.get("drivers"):
-        ds = "; ".join(_driver(d) for d in expl["drivers"][:4])
+        # the farmer's own reports first: the answer must mention them ("obejrzał pole i nie znalazł objawów")
+        drivers = sorted(expl["drivers"], key=lambda d: d.get("factor") != "farmer_report")
+        ds = "; ".join(_driver(d) for d in drivers[:5])
         out.append(f"  czynniki (silnik, od najważniejszego): {ds}")
     act = expl.get("action") or {}
     if act.get("type"):
@@ -150,6 +166,10 @@ def guide_sources(queries: list[tuple[str, str | None, int]], budget: int = SOUR
             results.append(found)
     except QdrantUnavailable:
         return [], "Wyszukiwarka metodyk jest niedostępna — odpowiadaj bez cytatów z metodyk i powiedz o tym."
+    except Exception as e:  # noqa: BLE001 - no index yet (bm25.pkl missing, collection not created): answer without it
+        log.warning("guide search failed (%s: %s); answering without guide sources", type(e).__name__, e)
+        return [], ("Indeks metodyk nie jest zbudowany (python manage.py rag_ingest) — odpowiadaj bez cytatów z "
+                    "metodyk i powiedz o tym jednym zdaniem.")
     seen = set(exclude or ())
     merged = []
     for i in range(max((len(r) for r in results), default=0)):
@@ -178,10 +198,15 @@ def weather_lines(field_id: int) -> list[str]:
     except ToolError as e:
         return [f"Pogoda: brak danych ({e})."]
     out = ["Pogoda dla pola (ostatnie dni = obserwacja, dalej = prognoza; °C, mm/dzień, %, km/h):"]
+    def v(x, unit: str) -> str:
+        return "brak danych" if x is None else f"{str(x).replace('.', ',')} {unit}"
+
     for d in w["days"]:
-        out.append(f"- {d['date']} {'prognoza' if d['source'] == 'forecast' else 'obserwacja'}: "
-                   f"{d['min_temperature']}–{d['max_temperature']} °C, opad {d['total_precipitation']} mm, "
-                   f"wilgotność {d['avg_relative_humidity']} %, wiatr {d['avg_wind_speed']} km/h")
+        rain = v(d["total_precipitation"], "mm") + (" (satelita)" if d.get("precipitation_source") else "")
+        temp = ("brak danych" if d["min_temperature"] is None or d["max_temperature"] is None
+                else f"{str(d['min_temperature']).replace('.', ',')}–{str(d['max_temperature']).replace('.', ',')} °C")
+        out.append(f"- {d['date']} {'prognoza' if d['source'] == 'forecast' else 'obserwacja'}: {temp}, opad {rain}, "
+                   f"wilgotność względna {v(d['avg_relative_humidity'], '%')}, wiatr {v(d['avg_wind_speed'], 'km/h')}")
     return out
 
 
@@ -211,9 +236,16 @@ PHASES = [(r"kielk|wschod|wschodz", 0, 19), (r"\bliscia?\b|faz\w* (\d-)?\d+ lisc
           (r"kwitn", 60, 69), (r"dojrzew|dojrzal|mleczn|woskow|pelna dojrz|rozw\w* ziarn", 70, 92)]
 THRESHOLD_WORDS = re.compile(r"%|\bprog|\bszt\b|osobnik|na 1 m|na roslin|na lisc|na klos")
 # advice for greenhouses, gardens and allotments, or against the law on a farm field
-NOT_FIELD = re.compile(r"szklarn|tunel|pod oslon|inspekt|ogrod|ogrodk|doniczk|rozsad|wietrz|cyrkulacj|"
-                       r"spal\w* (resztk|reszt|slom|liscie|roslin)|palenie|zbiera\w* (recznie|reka)")
+# Whole words or phrases only: "wietrz" alone also matched "powietrza" (every humidity sentence), "rozsad" matched
+# "rozsądny", "inspekt" matched "inspektor" (PIORiN) and "palenie" matched "zapalenie".
+NOT_FIELD = re.compile(r"\bszklarn|\btunel\w* foliow|\bpod oslon(a|ami)\b|\binspekt(y|ach|ow)?\b|\bogrod(u|zie|y|ach|ow)?\b|"
+                       r"\bogrodk|\bdoniczk|\brozsad(a|y|e|zie|ami)?\b|\bwietrzeni\w*|\bwietrzyc\b|\bcyrkulacj\w* powietrza|"
+                       r"\bspal\w* (resztk|reszt|slom|liscie|roslin)|\bpalenie (resztek|slomy|lisci|roslin)|"
+                       r"\bzbiera\w* (recznie|reka)")
 SENT_SPLIT = re.compile(r"(?<=[.;!?])\s+")
+# advice that can only be done after harvest or before sowing: kept, but marked as next season's once the crop grows
+NEXT_SEASON = re.compile(r"resztk\w* (pozniw|roslin)|\bprzyora|\bzaora|\borka\b|\borke\b|\bpodoryw|plodozmian|"
+                         r"\bdob\w* odmian|odmian\w* (odporn|mniej podatn)|termin\w* siewu|gestos\w* siewu|zaprawian")
 
 
 def current_bbch(threats: list[dict]) -> int | None:
@@ -245,6 +277,8 @@ def fit_for_today(text: str, bbch: int | None) -> str:
             ranges = _phase_ranges(f)
             if ranges and not any(lo - 10 <= bbch <= hi + 10 for lo, hi in ranges):
                 continue
+        if bbch is not None and bbch >= 30 and NEXT_SEASON.search(f):
+            sent = sent.rstrip() + " (rada na przyszły sezon)"
         kept.append(sent)
     return " ".join(kept)
 

@@ -15,7 +15,6 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
-from rapidfuzz import fuzz
 
 # --- crops ------------------------------------------------------------------------------------
 CROP_PL = {1110: "pszenica", 1130: "kukurydza"}           # CropClass.code -> Polish name (also the RAG crop id)
@@ -127,13 +126,52 @@ class ThreatMatch:
     matched: str
 
 
+def _stem(word: str) -> str:
+    """Inflection-tolerant prefix: rdza/rdzy/rdzę -> rdz, omacnica/omacnicę -> omacn, septoriozy -> septo."""
+    return word[:max(3, min(5, len(word) - 1))]
+
+
+def _main_words(phrase: str) -> list[str]:
+    return [w for w in phrase.split() if len(w) >= 4]
+
+
+# crop named in a message -> crop code (stems of folded words), used when no field says which crop it is
+CROP_WORDS = (("pszen", 1110), ("jeczm", 1120), ("kukur", 1130), ("pszenz", 1150), ("zyto", 1150), ("zyta", 1150),
+              ("owies", 1150), ("owsa", 1150), ("ziemniak", 1310), ("burak", 1320), ("rzepak", 1430))
+
+
+def crop_in_text(text: str) -> int | None:
+    """The one crop a message names ("czy mszyce zagrażają kukurydzy?" -> 1130); None if none or several."""
+    found = set()
+    for w in fold(text).split():
+        hits = [(len(stem), code) for stem, code in CROP_WORDS if w.startswith(stem)]
+        if hits:
+            found.add(max(hits)[1])  # the longest stem: "pszenzyto" is triticale, not wheat
+    return found.pop() if len(found) == 1 else None
+
+
 def resolve_threats(text: str, crop_code: int | None = None, limit: int = 3, min_score: float = 86) -> list[ThreatMatch]:
-    """Threats mentioned in `text` (best first). Uses core.Threat (code, name) + ALIASES."""
+    """
+    Threats mentioned in `text` (best first). Uses core.Threat (code, name) + ALIASES, word by word:
+      exact phrase                                  100+ (a longer phrase wins)
+      every main word (4+ letters) by its stem      92+  ("septoriozę" -> alias "septorioza", "omacnicę" -> "omacnica")
+      the official name's first word                87   ("rdzę" -> every rust; dropped when a better match exists)
+    A crop named in the text narrows the threats when `crop_code` is not given.
+    Short words ("ok", "na", "ma") never match; there is no fuzzy similarity over the whole message (it matched
+    "ok" to rizoktonioza and "zboża" to rynchosporioza).
+    """
     from core.models import Threat
 
     q = fold(text)
     if not q:
         return []
+    crop_code = crop_code or crop_in_text(text)
+    q_words = [w for w in q.split() if len(w) >= 3]
+
+    def hit(word: str) -> bool:
+        st = _stem(word)
+        return any(w.startswith(st) for w in q_words)
+
     qs = Threat.objects.all()
     if crop_code:
         qs = qs.filter(crop_id=crop_code)
@@ -145,15 +183,22 @@ def resolve_threats(text: str, crop_code: int | None = None, limit: int = 3, min
         for f in forms:
             if not f:
                 continue
+            main = _main_words(f)
             if re.search(rf"\b{re.escape(f)}\b", q):
                 sc = 100 + len(f) / 100  # exact phrase; longer phrase wins
+            elif main and all(hit(w) for w in main):
+                sc = 92 + min(len(f), 40) / 100
+            elif f is name and main and hit(main[0]):
+                sc = 87
             else:
-                sc = fuzz.partial_ratio(stem5(f), stem5(q)) if len(f) >= 6 else 0
+                sc = 0
             if sc > best:
                 best, how = sc, f
         if best >= min_score:
             out.append(ThreatMatch(t.code, t.name, t.crop_id, round(best, 1), how))
     out.sort(key=lambda m: -m.score)
+    if out and out[0].score >= 92:  # a named threat: drop the ones that only share its first word
+        out = [m for m in out if m.score >= 92]
     return out[:limit]
 
 

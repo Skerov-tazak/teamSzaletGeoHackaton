@@ -15,6 +15,8 @@ log = logging.getLogger("assistant.citations")
 
 BRACKET_RE = re.compile(r"\[([^\[\]\n]{3,200})\]")
 INVISIBLE_RE = re.compile("[\u200b\u200c\u200d\u2060\ufeff]")  # zero-width chars models sometimes emit
+# gpt-oss (Groq) cites in CJK / full-width brackets: 【id】, 〔id〕, ［id］ -> [id]
+WIDE_OPEN, WIDE_CLOSE = re.compile("[\u3010\u3014\uff3b]"), re.compile("[\u3011\u3015\uff3d]")
 CHUNK_ID_RE = re.compile(r"^[a-z][a-z0-9_]*:[A-Za-z0-9_.\-]+(?::\d{4})?$")
 
 
@@ -29,6 +31,7 @@ def finalize(text: str, allowed: dict[str, dict]) -> tuple[str, list[dict], list
 
     `allowed`: chunk_id -> citation dict (Passage.to_citation() format)."""
     text = INVISIBLE_RE.sub("", text).replace("\u202f", " ").replace("\u00a0", " ")
+    text = WIDE_CLOSE.sub("]", WIDE_OPEN.sub("[", text))
     docs = _known_doc_ids()
     order: list[str] = []
     unknown: list[str] = []
@@ -37,6 +40,8 @@ def finalize(text: str, allowed: dict[str, dict]) -> tuple[str, list[dict], list
         tokens = [t.strip().strip("`'\"") for t in re.split(r"[,;]", m.group(1))]
         chunkish = [t for t in tokens if CHUNK_ID_RE.match(t) and t.split(":")[0] in docs]
         if not chunkish:
+            if tokens and all(t.startswith("silnik:") for t in tokens):
+                return ""  # engine ids only (also several in one bracket)
             return m.group(0)  # an ordinary bracket, keep
         refs = []
         for t in chunkish:
@@ -49,6 +54,8 @@ def finalize(text: str, allowed: dict[str, dict]) -> tuple[str, list[dict], list
         refs = sorted(set(refs))
         return f"[{', '.join(map(str, refs))}]" if refs else ""
 
+    # [silnik:<threat code>] marks a fact from the engine's risk (the answer's risk citations list it): no [n]
+    text = re.sub(r"\s*\[silnik:[a-z_]+\.[a-z0-9_]+\]", "", text)
     out = BRACKET_RE.sub(repl, text)
     out = re.sub(r"[ \t]+([.,;:!?])", r"\1", out)          # "tekst ." after removed refs
     out = re.sub(r"[ \t]{2,}", " ", out).strip()

@@ -107,6 +107,10 @@ def _relative_date(message: str, today: dt.date) -> dt.date | None:
     return None
 
 
+SYMPTOM_WORDS = re.compile(r"objaw|plam|nalot|przebarw|zolkn|brazow|wiedn|zamier|uszkodz|zeruj|wygryz|otwor|"
+                           r"chodnik|zlaman|deformac|gnic|zgnil|skrecan|kolonie|pustul|pierscien")
+
+
 def symptom_snippet(text: str, threat_name: str, limit: int = 260) -> str:
     """For a Markdown table: the cells of the row about this threat; otherwise the start of the text."""
     key = domain.fold(threat_name).split()[:2]
@@ -115,6 +119,10 @@ def symptom_snippet(text: str, threat_name: str, limit: int = 260) -> str:
             cells = [c.strip() for c in line.strip("|").split("|") if c.strip()]
             text = " — ".join(cells[1:]) if len(cells) > 1 else cells[0]
             break
+    else:  # prose: start at the first sentence about symptoms, not at a description of the insect or fungus
+        sentences = re.split(r"(?<=[.;!?])\s+", text)
+        i = next((k for k, x in enumerate(sentences) if SYMPTOM_WORDS.search(domain.fold(x))), 0)
+        text = " ".join(sentences[i:])
     text = re.sub(r"\s+", " ", text)
     return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "…"
 
@@ -141,6 +149,11 @@ def draft_text(d: dict) -> str:
 def observation(route: Route, question: str, history, llm: LLM, state, selected_field, conv_id=None) -> FlowResult:
     today = dt.date.fromisoformat(call("get_season_date")["today"])
     fields = call("list_fields")["fields"]
+    prev = route.previous_draft  # "tak, ale to było na polu Klin": correct the pending draft, don't start over
+    if prev:
+        question = (f"{prev.get('note') or ''}\nPoprawka rolnika do tej obserwacji (ważniejsza niż powyższe): {question}")
+        if not route.field_id and prev.get("field_id"):
+            route.field_id = prev["field_id"]
     crop_code = route.crop and {"pszenica": 1110, "kukurydza": 1130}.get(route.crop)
     if route.field_id:
         crop_code = next((f["crop_code"] for f in fields if f["id"] == route.field_id), crop_code)
@@ -159,13 +172,17 @@ def observation(route: Route, question: str, history, llm: LLM, state, selected_
     valid_ids = {f["id"] for f in fields}
     field_id = out.field_id if out.field_id in valid_ids else None
     field_id = route.field_id or field_id or (selected_field.id if selected_field else None)
-    date = _relative_date(question, today) or (out.date if out.date and out.date <= today else None) or today
+    date = (_relative_date(question, today) or (out.date if out.date and out.date <= today else None)
+            or (dt.date.fromisoformat(prev["date"]) if prev and prev.get("date") else None) or today)
     threat = None
     if field_id:
         fcrop = next(f["crop_code"] for f in fields if f["id"] == field_id)
         t = domain.threat_by_code_or_name(out.threat, fcrop) if out.threat else None
-        if t is None and route.threats:
-            t = Threat.objects.filter(code=route.threats[0], crop_id=fcrop).first()
+        # the router's match is deterministic (aliases: "gąsienice w łodygach" -> omacnica); the model's guess
+        # wins only if it is one of those ("stonka" for "gąsienice w łodygach" would raise the wrong risk)
+        routed = {x.code: x for x in Threat.objects.filter(code__in=route.threats, crop_id=fcrop)}
+        if routed and (t is None or t.code not in routed):
+            t = next(routed[c] for c in route.threats if c in routed)
         threat = t
     kind, facts = detect_kind(question, today)
     category = out.category or ("choroba" if threat and threat.category != "pest" else "szkodnik" if threat else None)
@@ -196,7 +213,7 @@ def observation(route: Route, question: str, history, llm: LLM, state, selected_
     draft = {"draft_id": uuid.uuid4().hex[:12], "field_id": field_id, "field": fname, "date": date.isoformat(),
              "category": category, "threat_code": threat.code if threat else None,
              "threat": threat.name if threat else None, "severity": out.severity if kind == "symptoms" else None,
-             "note": (out.note or question).strip()[:500], "kind": kind, "facts": facts}
+             "note": re.sub(r"[<>]", "", (out.note or question)).strip()[:500], "kind": kind, "facts": facts}
     state.set_draft(draft)
     text = draft_text(draft) + "\n\nZapisać tę obserwację? (tak / nie)"
     sources = []
@@ -218,6 +235,9 @@ def confirmation(route: Route, question: str, state, conv_id=None) -> FlowResult
         return FlowResult("Nie mam żadnej obserwacji do zapisania.")
     if t.split(" ")[0] in {"nie", "anuluj", "rezygnuje", "odrzuc", "stop"} or t in {"nie trzeba", "nie zapisuj"}:
         state.set_draft(None)
+        if draft.get("saved_observation_id"):
+            return FlowResult(f"Ta obserwacja jest już zapisana (nr {draft['saved_observation_id']}), więc nie mogę "
+                              "jej anulować. Jeśli coś się nie zgadza, opisz to jeszcze raz, a zapiszę poprawioną.")
         return FlowResult("Dobrze, nie zapisuję tej obserwacji.")
     key = hashlib.sha256(f"{conv_id}:{draft['draft_id']}".encode()).hexdigest()[:64]
     try:

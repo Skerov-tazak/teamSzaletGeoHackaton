@@ -2,14 +2,14 @@
 Question type without an LLM: keyword rules on folded text (lowercase, no Polish letters), plus
 detection of field names, crop and threats. Priority:
 
-  pending draft + yes/no -> potwierdzenie
+  pending draft + a short yes/no -> potwierdzenie ("tak, ale to było na Klinie" -> obserwacja, a correction)
   "pokaż / wykres / trend / jak się zmieniało" -> wykres
   "widzę / zauważyłem / pojawiły się / znalazłem / zapisz obserwację" -> obserwacja
   "wszystkie pola / moich polach / co najpilniejsze / gospodarstwo" (or >= 2 fields compared, or "raport"
       with no field selected or named) -> podsumowanie_farmy
   complex (>= 2 fields, several threats, explicit date ranges) and ASSISTANT_AGENT_MODE=1 -> zlozone
   field reference ("to pole", a field name, a selected field) + risk / what-to-do words -> pytanie_o_pole
-  nothing agricultural -> poza_zakresem
+  thanks, greetings, nothing agricultural (no field in context) -> poza_zakresem (fixed answer, no LLM)
   otherwise -> pytanie_ogolne
 """
 from __future__ import annotations
@@ -40,6 +40,12 @@ FARM_IF_NO_FIELD = [r"\braport", r"\bpodsumowani", r"\bzestawieni"]   # "raport 
 FARM_NO_FIELD = [r"od czego (\w+ ){0,2}zacz", r"\bco (\w+ ){0,3}(robic|zrobic)\b", r"\bsytuac", r"\bplan\w* na (dzis|dzisiaj|dzien|tydzien)",
                  r"gdzie (\w+ ){0,2}(jechac|isc|zaczac|najpierw|zajrzec)", r"\bco (slychac|nowego)", r"\bczym (\w+ ){0,2}zajac"]
 GREETING_ONLY = re.compile(r"^(czesc|hej|witam|witaj|dzien dobry|dobry wieczor|siema|halo|hello|hi)( \w+)?$")
+THANKS = re.compile(r"^(no )?(dzieki|dziekuje|dziekujemy|dzieks|thx|thanks|super|swietnie|ok dzieki)\b(\W*\w+){0,4}$|"
+                    r"^(to (juz )?wszystko|nic wiecej)\b")
+# a question to the assistant ("czy pryskałeś?", "czy sprawdziłeś pogodę?"), not a report from the field
+QUESTION_TO_ASSISTANT = re.compile(r"^czy\b|\b\w+(les|las|lescie|lyscie)\b")
+# a general question that only looks like a follow-up ("co to jest BBCH?", "ile to kosztuje?")
+NOT_FOLLOW_UP = re.compile(r"\bco to (jest|znaczy)|\bdefinic|\bile (to )?kosztuj|\bco oznacza")
 FIELD_REF = [r"\bto pole", r"\btym polu", r"\btego pola", r"\bmoje pole", r"\bmoim polu", r"\bmojego pola",
              r"\bna polu\b", r"\bpola\b", r"\bpole\b"]
 RISK_INTENT = [r"ryzyk", r"zagroz", r"dlaczego", r"\bco (\w+ ){0,5}(robic|zrobic)", r"\bco (teraz|dalej|radzisz|polecasz|proponujesz)",
@@ -53,7 +59,9 @@ AGRO = [r"choro", r"szkodni", r"\bpol[aeiuo]?\b", r"\bpol(ach|ami|om)\b", r"upra
         r"lustrac", r"objaw", r"plam", r"mszyc", r"rdz", r"septori", r"fuzari", r"maczni", r"omacni", r"herbicyd",
         r"fungicyd", r"insektycyd", r"srodek", r"srodk", r"\bdawk", r"hektar", r"/ha\b", r"zgnili", r"zgorzel",
         r"agrotechn", r"plodozmian", r"przedplon", r"\bph\b", r"susz", r"przymroz", r"gospodarstw", r"zagroz",
-        r"obserwac", r"wykres", r"trend", r"\bzbior", r"ziarn", r"kolb", r"lodyg", r"korzen", r"siewk"]
+        r"obserwac", r"wykres", r"trend", r"\bzbior", r"ziarn", r"kolb", r"lodyg", r"korzen", r"siewk",
+        r"\bpada", r"burz", r"wiatr", r"upal", r"mroz", r"\bgrad", r"zabieg", r"oprysk", r"lustr", r"\bsiac", r"\bsial",
+        r"owad", r"gasienic", r"larw", r"\bzaraz", r"choruj"]
 OFF_TOPIC = [r"przepis na", r"kto wygral", r"napisz wiersz", r"bitcoin", r"\bfilm", r"pilk\w* noz", r"\bpolityk",
              r"opowiedz (mi )?dowcip", r"\bkawal\b"]
 DATE_RANGE = [r"\bod \d{1,2}[ .]\w+ do\b", r"\bod (stycznia|lutego|marca|kwietnia|maja|czerwca|lipca|sierpnia)",
@@ -61,6 +69,7 @@ DATE_RANGE = [r"\bod \d{1,2}[ .]\w+ do\b", r"\bod (stycznia|lutego|marca|kwietni
 COMPARE = [r"porownaj", r"porownani", r"roznic", r"\bvs\b", r"\bczy bardziej"]
 FOLLOW_UP = [r"^a\b", r"\btam\b", r"\btego\b", r"\btym\b", r"\bto\b", r"\bzmniejsz", r"\bograniczyc",
              r"\bzapobiec", r"\bpomoc", r"\bco dalej", r"\bkiedy\b"]
+FOLLOW_UP_MAX_WORDS = 6   # a follow-up is short; a longer message without a field name is a new question
 CROP_WORDS = {"pszenic": "pszenica", "kukurydz": "kukurydza", "zboz": "zboza"}
 
 
@@ -73,6 +82,7 @@ class Route:
     threats: list[str] = field(default_factory=list)   # Threat codes
     reason: str = ""
     field_source: str = ""                             # selected | named | ""
+    previous_draft: dict | None = None                 # the pending draft a correction ("tak, ale…") refers to
 
 
 def _any(patterns, text) -> str | None:
@@ -82,26 +92,66 @@ def _any(patterns, text) -> str | None:
     return None
 
 
-def find_fields(text_f: str) -> list[tuple[int, str]]:
-    """Fields whose (folded) name appears in the text: exact phrase, or all name words by 4-letter prefix."""
+FIELD_CONTEXT_WORDS = {"pole", "pola", "polu", "polem", "na", "z", "ze", "o", "w", "dzialka", "dzialce", "dzialki"}
+NAME_SKIP = {"pole", "pola", "polu"}
+
+
+def _name_stem(word: str) -> str:
+    """Inflection-tolerant stem of a field-name word: Górka/Górce/Górki -> gor, Długie/Długim -> dlug, Klin/Klinie -> kli."""
+    return word[:max(3, len(word) - 2)] if len(word) >= 5 else word[:max(2, len(word) - 1)]
+
+
+def find_fields(text_f: str, message: str | None = None) -> list[tuple[int, str]]:
+    """
+    Fields whose name the text mentions. Every word of the name must be there: short words ("za", "nad", "pod",
+    "przy") as whole words, longer ones by their stem (any inflection). A one-word name that is also an ordinary
+    word ("Długie", "Klin", "Górka") counts only right after "pole / polu / na / z / o …" or written with a capital
+    letter inside the sentence: "Długie deszcze…" is about rain, "na Górce" and "pole Długie" are fields.
+    """
     from core.models import Field
     hits = []
-    words = text_f.split()
+    # folded words, each with: written with a capital letter inside a sentence (not after . ! ? or at the start)
+    if message:
+        words, capital, start = [], [], True
+        for token in message.split():
+            for k, w in enumerate(domain.fold(token).split()):
+                words.append(w)
+                capital.append(k == 0 and not start and token.lstrip("„\"'(")[:1].isupper())
+            if domain.fold(token):
+                start = token.rstrip("”\"')").endswith((".", "!", "?", ":"))
+    else:
+        words = text_f.split()
+        capital = [False] * len(words)
     for fid, name in Field.objects.values_list("id", "name"):
-        nf = domain.fold(name)
-        if re.search(rf"\b{re.escape(nf)}\b", text_f):
-            hits.append((fid, name))
+        nw = [w for w in domain.fold(name).split() if w not in NAME_SKIP]
+        if not nw:
             continue
-        nw = [w for w in nf.split() if w not in ("pole", "pola", "polu", "przy", "na", "w")]
-        if nw and all(any(t.startswith(w[:4]) for t in words) for w in nw):
-            hits.append((fid, name))
+        positions = []
+        for w in nw:
+            if len(w) <= 3:
+                pos = [i for i, t in enumerate(words) if t == w]
+            else:
+                st = _name_stem(w)
+                pos = [i for i, t in enumerate(words) if t.startswith(st) and len(t) <= len(w) + 3]
+            positions.append(pos)
+        if not all(positions):
+            continue
+        if len(nw) == 1:
+            ok = False
+            for i in positions[0]:
+                if (i > 0 and words[i - 1] in FIELD_CONTEXT_WORDS) or capital[i]:
+                    ok = True
+                    break
+            if not ok:
+                continue
+        hits.append((fid, name))
     return hits
 
 
 def route(message: str, selected_field=None, state=None) -> Route:
     t = domain.fold(message)
     agent = os.getenv("ASSISTANT_AGENT_MODE", "0") == "1"
-    named = find_fields(t)
+    named = find_fields(t, message)
     crop = next((v for k, v in CROP_WORDS.items() if k in t), None)
     crop_code = {"pszenica": 1110, "kukurydza": 1130}.get(crop or "")
     if crop_code is None and len(named) == 1:
@@ -121,8 +171,8 @@ def route(message: str, selected_field=None, state=None) -> Route:
         field_id, field_source = named[0][0], "named"
     elif selected_field is not None:
         field_id, field_source = selected_field.id, "selected"
-    elif state is not None and state.data.get("last_field_id") and not named and (
-            _any(RISK_INTENT, t) or _any(FOLLOW_UP, t) or _any(CHART, t)):
+    elif state is not None and state.data.get("last_field_id") and not named and not NOT_FOLLOW_UP.search(t) and (
+            _any(RISK_INTENT, t) or (len(t.split()) <= FOLLOW_UP_MAX_WORDS and _any(FOLLOW_UP, t)) or _any(CHART, t)):
         # a follow-up ("co mogę zrobić?", "a dlaczego?") continues with the field of the previous answer
         from core.models import Field
         last = Field.objects.filter(pk=state.data["last_field_id"]).first()
@@ -135,17 +185,23 @@ def route(message: str, selected_field=None, state=None) -> Route:
     base = dict(field_id=field_id, field_ids=[f for f, _ in named], crop=crop, threats=threats,
                 field_source=field_source)
 
-    # 1. pending observation draft
+    # 1. pending observation draft: only a short yes/no confirms; "tak, ale to było na polu Klin" or
+    # "nie, to było wczoraj" corrects the draft; "Zapisz obserwację: na Górce widzę mszyce" is a new report
     if state is not None and state.draft:
-        if t in CONFIRM_YES or t.split(" ")[0] in {"tak", "zapisz", "potwierdzam"}:
+        first, n_words = (t.split(" ")[0] if t else ""), len(t.split())
+        short = n_words <= 3 and not named and not threats
+        if short and (t in CONFIRM_YES or first in {"tak", "zapisz", "potwierdzam"}):
             return Route("potwierdzenie", reason="draft pending + yes", **base)
-        if t in CONFIRM_NO or t.split(" ")[0] in {"nie", "anuluj"}:
+        if short and (t in CONFIRM_NO or first in {"nie", "anuluj"}):
             return Route("potwierdzenie", reason="draft pending + no", **base)
+        if first in {"tak", "nie"} and not state.draft.get("saved_observation_id"):
+            return Route("obserwacja", reason="draft pending + correction", previous_draft=dict(state.draft), **base)
     # 2. chart
     if p := _any(CHART, t):
         return Route("wykres", reason=f"chart word {p}", **base)
-    # 3. observation
-    if p := _any(OBSERVATION, t):
+    # 3. observation (a question to the assistant, "czy pryskałeś?", is not a report)
+    asked = message.strip().endswith("?") and QUESTION_TO_ASSISTANT.search(t)
+    if not asked and (p := _any(OBSERVATION, t)):
         return Route("obserwacja", reason=f"observation word {p}", **base)
     if not message.strip().endswith("?") and (p := _any(OBSERVATION_STATEMENT, t)):
         return Route("obserwacja", reason=f"observation statement {p}", **base)
@@ -161,9 +217,14 @@ def route(message: str, selected_field=None, state=None) -> Route:
     field_ref = field_id is not None or bool(_any(FIELD_REF, t))
     if field_ref and (p := _any(RISK_INTENT, t)):
         return Route("pytanie_o_pole", reason=f"field ref ({field_source or 'phrase'}) + intent {p}", **base)
-    # 6. out of scope: only clearly unrelated topics and bare greetings get the fixed answer
+    # 6. out of scope: thanks, unrelated topics, bare greetings, and (with no field in context) anything without
+    # a single farming word ("Jaka jest stolica Francji?") get a fixed answer, without the LLM
+    if THANKS.match(t):
+        return Route("poza_zakresem", reason="thanks", **base)
     if _any(OFF_TOPIC, t) or GREETING_ONLY.match(t) or t in CONFIRM_YES or t in CONFIRM_NO:
         return Route("poza_zakresem", reason="off-topic, greeting or a bare yes/no", **base)
+    if field_id is None and not named and not threats and not crop and len(t.split()) >= 3 and not _any(AGRO, t):
+        return Route("poza_zakresem", reason="no farming word", **base)
     # 7. anything else goes to the model: with the field's data when a field is in context
     if field_id is not None:
         return Route("pytanie_o_pole", reason=f"open question, field in context ({field_source})", **base)

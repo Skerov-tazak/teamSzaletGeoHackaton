@@ -17,6 +17,11 @@ from django.core.management.base import BaseCommand, CommandError
 from assistant import devdata, realfarm, simfarm
 
 
+def devdata_names() -> list[str]:
+    """Fields of the toy dev seed (assistant_dev_seed), which this command replaces."""
+    return [f[0] for f in devdata.DEV_FIELDS]
+
+
 class Command(BaseCommand):
     help = "Build the demo farm (real data by default) and run the decision engine on it."
 
@@ -24,9 +29,20 @@ class Command(BaseCommand):
         parser.add_argument("--simulated", action="store_true", help="simulated weather/soil/history instead of real data")
         parser.add_argument("--wipe", action="store_true", help="only delete the demo farm")
         parser.add_argument("--no-engine", action="store_true", help="do not run engine_load_threats/predict")
+        parser.add_argument("--force", action="store_true",
+                            help="run even if the database holds other fields (e.g. a scenario): their same-named fields go")
 
     def handle(self, *args, **o):
         t0 = time.time()
+        from core.models import Field
+        own = set(realfarm.NAMES) | {f.name for f in simfarm.FIELDS} | set(devdata_names())
+        others = list(Field.objects.exclude(name__in=own).values_list("name", flat=True)[:5])
+        if others and not o["force"]:
+            # the sim farm deletes fields by name ("Długie", "Pod Lasem", "Za Stodołą" are demo_2024 fields too),
+            # recomputes every field and moves the Clock: never on top of a scenario by accident
+            raise CommandError(f"The database holds other fields ({', '.join(others)}, …), probably a scenario. "
+                               "sim_farm would delete same-named fields and move the date. Switch scenarios with "
+                               "`python manage.py scenario switch <slug>`, or pass --force.")
         if o["wipe"]:
             self.stdout.write(f"Deleted {realfarm.wipe()} demo-farm rows.")
             return
