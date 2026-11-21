@@ -325,6 +325,20 @@ class ObservationFlowTests(WorldTestCase):
 
 
 # ----------------------------------------------------------------------------- endpoint
+class MessageJsonTests(SimpleTestCase):
+    def test_chart_and_pending_action_come_from_meta(self):
+        from assistant.views import message_json
+        when = dt.datetime(2024, 5, 15, 12, 0, tzinfo=dt.timezone.utc)
+        draft = {"type": "confirm_observation", "draft": {"draft_id": "abc", "field_id": 3}}
+        m = Message(role=Message.Role.ASSISTANT, text="x", citations=[], created_at=when,
+                    meta={"chart": {"mark": "line"}, "pending_action": draft, "updated_field_ids": [3]})
+        out = message_json(m)
+        self.assertEqual((out["chart"], out["pending_action"], out["updated_field_ids"]), ({"mark": "line"}, draft, [3]))
+        self.assertEqual(out["created_at"], "2024-05-15T12:00:00Z")
+        user = message_json(Message(role=Message.Role.USER, text="y", citations=[], created_at=when, meta={}))
+        self.assertEqual((user["chart"], user["pending_action"], user["citations"]), (None, None, []))
+
+
 class ChatEndpointTests(WorldTestCase):
     def test_post_chat_contract_shape_and_history(self):
         with mock.patch("assistant.answer.default_llm", return_value=FakeLLM(cite_first)):
@@ -334,8 +348,9 @@ class ChatEndpointTests(WorldTestCase):
         body = resp.json()
         self.assertEqual(set(body), {"conversation_id", "message"})
         self.assertEqual(set(body["message"]), {"id", "role", "text", "citations", "focus_field_id",
-                                                "updated_field_ids", "created_at"})
+                                                "updated_field_ids", "chart", "pending_action", "created_at"})
         self.assertEqual(body["message"]["role"], "assistant")
+        self.assertEqual((body["message"]["chart"], body["message"]["pending_action"]), (None, None))
         conv = self.client.get(f"/api/chat/conversations/{body['conversation_id']}/").json()
         self.assertEqual([m["role"] for m in conv["messages"]], ["user", "assistant"])
         self.assertEqual(conv["messages"][0]["citations"], [])
@@ -347,6 +362,18 @@ class ChatEndpointTests(WorldTestCase):
         self.assertEqual(self.client.post("/api/chat/", {"message": ""}, content_type="application/json").status_code, 400)
         self.assertEqual(self.client.post("/api/chat/", {"message": "x", "conversation_id": 999999},
                                           content_type="application/json").status_code, 404)
+
+    def test_observation_draft_reaches_the_api_as_pending_action(self):
+        draft = {"field_id": None, "date": None, "category": "choroba", "threat": None, "severity": None,
+                 "note": "brunatne plamy z czarnymi kropkami", "missing": []}
+        with mock.patch("assistant.answer.default_llm", return_value=FakeLLM(json.dumps(draft, ensure_ascii=False))):
+            body = self.client.post("/api/chat/", {"message": "Widzę plamy na liściach", "field_id": self.wheat.id},
+                                    content_type="application/json").json()
+        action = body["message"]["pending_action"]
+        self.assertEqual((action["type"], action["draft"]["field_id"]), ("confirm_observation", self.wheat.id))
+        conv = self.client.get(f"/api/chat/conversations/{body['conversation_id']}/").json()
+        self.assertEqual(conv["messages"][-1]["pending_action"]["type"], "confirm_observation")
+        self.assertIsNone(conv["messages"][0]["pending_action"])
 
 
 class ReportKindTests(SimpleTestCase):
@@ -443,6 +470,16 @@ class InvisibleCharsCitationTests(SimpleTestCase):
         self.assertEqual((out, unknown), ("Zmyślone.", ["kukurydza_producenci:IV.2:0004"]))
 
 
+class FullwidthBracketCitationTests(SimpleTestCase):
+    def test_gpt_oss_fullwidth_brackets_glued_to_the_word(self):
+        allowed = {"ryzyka_zebrane:pszenica.r019": {"type": "guide", "document": "ryzyka_zebrane.xlsx"}}
+        out, cits, unknown = citations.finalize(
+            "Plamy wzdłuż nerwów liści【ryzyka_zebrane:pszenica.r019】. Zmyślone【kukurydza_doradcy:VI:0009】. Skala [1–9].", allowed)
+        self.assertEqual(out, "Plamy wzdłuż nerwów liści [1]. Zmyślone. Skala [1–9].")
+        self.assertEqual([c["ref"] for c in cits], [1])
+        self.assertEqual(unknown, ["kukurydza_doradcy:VI:0009"])
+
+
 class FitForTodayTests(SimpleTestCase):
     TEXT = ("Objawy to owalne plamy z chlorotyczną obwódką. Próg szkodliwości: w fazie krzewienia 10–15% roślin "
             "z objawami. W fazie strzelania w źdźbło 5% liści z objawami. W fazie kłoszenia i kwitnienia 5% kłosów "
@@ -464,6 +501,18 @@ class FitForTodayTests(SimpleTestCase):
         out = fit_for_today(self.TEXT, None)
         self.assertNotIn("spal", out)
         self.assertNotIn("szklarni", out)
+
+    def test_field_sentences_about_air_and_inspectors_are_kept(self):
+        from assistant.orchestrator.context import drop_off_field
+        text = ("Wysoka wilgotność powietrza (85 %) sprzyja infekcji [1]. Temperatura powietrza 18 °C sprzyja rdzy. "
+                "To rozsądny krok. Przy wietrznej pogodzie nie wykonuj zabiegu. Skontaktuj się z inspektorem PIORiN.")
+        self.assertEqual(drop_off_field(text), text)
+
+    def test_greenhouse_and_burning_sentences_are_dropped(self):
+        from assistant.orchestrator.context import drop_off_field
+        self.assertEqual(drop_off_field("Obejrzyj liście. Przewietrz tunel foliowy. Zadbaj o wietrzenie szklarni. "
+                                        "Nie zalecam palenia resztek. Rośliny w doniczkach przenieś. Zrób lustrację."),
+                         "Obejrzyj liście. Zrób lustrację.")
 
     def test_unfinished_answer_is_cut_to_the_last_sentence(self):
         from assistant.orchestrator.flows import finish_sentence

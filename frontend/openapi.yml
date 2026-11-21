@@ -368,14 +368,24 @@ components:
           type: array
           items:
             type: integer
+        chart:
+          type: object
+          additionalProperties: {}
+          nullable: true
+        pending_action:
+          type: object
+          additionalProperties: {}
+          nullable: true
         created_at:
           type: string
           format: date-time
       required:
+      - chart
       - citations
       - created_at
       - focus_field_id
       - id
+      - pending_action
       - role
       - text
       - updated_field_ids

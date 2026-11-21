@@ -295,7 +295,7 @@ Chats are stored like in any chat app. The endpoints and [`answer()`](#the-answe
 | `GET /api/chat/conversations/` | `[{id, title, updated_at}]`, newest first. The title is the start of the first message |
 | `GET /api/chat/conversations/{id}/` | `{id, title, messages: [...]}`, each message in the shape above (user messages have empty `citations` and `null` `chart` / `pending_action`) |
 
-`chart` and `pending_action` (Ola's proposals 6 and 7, accepted on 21 Nov) are always present, each `null` when unused, also in the conversation history (they are stored in `Message.meta`). **To do (Ola):** `message_json` in `assistant/views.py` does not send them yet; until it does, the chat window treats the missing keys as `null`.
+`chart` and `pending_action` (Ola's proposals 6 and 7, accepted on 21 Nov) are always present, each `null` when unused, also in the conversation history (they are stored in `Message.meta`). The chat window treats a missing key as `null`.
 
 **Not in this version:** streaming. The answer appears all at once after a "thinking…" indicator.
 
@@ -369,6 +369,9 @@ class Reply:
     citations: list[dict] = dataclass_field(default_factory=list)
     focus_field_id: int | None = None
     updated_field_ids: list[int] = dataclass_field(default_factory=list)
+    chart: dict | None = None             # Vega-Lite spec, null when the answer has no chart
+    pending_action: dict | None = None    # e.g. {"type": "confirm_observation", "draft": {...}}
+    meta: dict = dataclass_field(default_factory=dict)  # route, LLM usage; stored in Message.meta, not sent
 
 
 def answer(conversation: Conversation, message: str, selected_field: Field | None) -> Reply:

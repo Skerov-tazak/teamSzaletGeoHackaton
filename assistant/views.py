@@ -25,6 +25,8 @@ def message_json(m: Message) -> dict:
         "citations": m.citations if m.role == Message.Role.ASSISTANT else [],
         "focus_field_id": m.focus_field_id,
         "updated_field_ids": (m.meta or {}).get("updated_field_ids", []),
+        "chart": (m.meta or {}).get("chart"),                    # Vega-Lite spec or null (docs/interfaces.md -> Chat)
+        "pending_action": (m.meta or {}).get("pending_action"),  # {"type": "confirm_observation", "draft": {...}} or null
         "created_at": m.created_at.isoformat().replace("+00:00", "Z"),
     }
 
@@ -40,6 +42,8 @@ MessageOut = inline_serializer("ChatMessage", fields={
     "citations": serializers.ListField(child=serializers.DictField()),
     "focus_field_id": serializers.IntegerField(allow_null=True),
     "updated_field_ids": serializers.ListField(child=serializers.IntegerField()),
+    "chart": serializers.DictField(allow_null=True),
+    "pending_action": serializers.DictField(allow_null=True),
     "created_at": serializers.DateTimeField()})
 
 

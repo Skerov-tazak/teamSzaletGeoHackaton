@@ -178,10 +178,13 @@ def weather_lines(field_id: int) -> list[str]:
     except ToolError as e:
         return [f"Pogoda: brak danych ({e})."]
     out = ["Pogoda dla pola (ostatnie dni = obserwacja, dalej = prognoza; °C, mm/dzień, %, km/h):"]
+
+    def fmt(value, unit):
+        return "brak danych" if value is None else f"{value} {unit}"
     for d in w["days"]:
         out.append(f"- {d['date']} {'prognoza' if d['source'] == 'forecast' else 'obserwacja'}: "
-                   f"{d['min_temperature']}–{d['max_temperature']} °C, opad {d['total_precipitation']} mm, "
-                   f"wilgotność {d['avg_relative_humidity']} %, wiatr {d['avg_wind_speed']} km/h")
+                   f"{d['min_temperature']}–{d['max_temperature']} °C, opad {fmt(d['total_precipitation'], 'mm')}, "
+                   f"wilgotność {fmt(d['avg_relative_humidity'], '%')}, wiatr {fmt(d['avg_wind_speed'], 'km/h')}")
     return out
 
 
@@ -210,9 +213,11 @@ PHASES = [(r"kielk|wschod|wschodz", 0, 19), (r"\bliscia?\b|faz\w* (\d-)?\d+ lisc
           (r"lisc\w* flagow|nabrzmiew|bbch 3[7-9]|bbch 4", 37, 49), (r"klosz|wyrzucan\w* wiech", 50, 59),
           (r"kwitn", 60, 69), (r"dojrzew|dojrzal|mleczn|woskow|pelna dojrz|rozw\w* ziarn", 70, 92)]
 THRESHOLD_WORDS = re.compile(r"%|\bprog|\bszt\b|osobnik|na 1 m|na roslin|na lisc|na klos")
-# advice for greenhouses, gardens and allotments, or against the law on a farm field
-NOT_FIELD = re.compile(r"szklarn|tunel|pod oslon|inspekt|ogrod|ogrodk|doniczk|rozsad|wietrz|cyrkulacj|"
-                       r"spal\w* (resztk|reszt|slom|liscie|roslin)|palenie|zbiera\w* (recznie|reka)")
+# advice for greenhouses, gardens and allotments, or against the law on a farm field. Word starts only:
+# "wietrz" alone also matched "powietrza" (air humidity!), "rozsad" "rozsądny", "palenie" "zapalenie".
+NOT_FIELD = re.compile(r"\bszklarn|\btunel|\bpod oslon|\bogrod(?!zen)|\bdoniczk|\bwietrzeni|\bwietrzy|\bprzewietrz|"
+                       r"cyrkulacj\w* powietrza|spal\w* (resztk|reszt|slom|liscie|roslin)|\bpaleni[aeu]\b|\bpalic\b|"
+                       r"zbiera\w* (recznie|reka)")
 SENT_SPLIT = re.compile(r"(?<=[.;!?])\s+")
 
 

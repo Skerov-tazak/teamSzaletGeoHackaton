@@ -74,6 +74,12 @@ export interface components {
         }[];
       focus_field_id: number | null;
       updated_field_ids: number[];
+      chart: {
+        [key: string]: unknown;
+      } | null;
+      pending_action: {
+        [key: string]: unknown;
+      } | null;
       /** Format: date-time */
       created_at: string;
     };

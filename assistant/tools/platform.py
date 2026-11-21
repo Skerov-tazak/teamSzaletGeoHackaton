@@ -276,6 +276,7 @@ class WeatherIn(BaseModel):
 Pogoda dzienna dla pola (punkt siatki pogodowej najbliższy polu): obserwacje do dziś i prognoza
 na kolejne dni (oznaczone source=observed/forecast). Jednostki w polu `units` (°C, mm/dzień, %).
 Zakresy dłuższe niż 31 dni są agregowane tygodniowo (średnie; opady sumowane).
+Opad (total_precipitation): z modelu pogody, a gdy go brak — z satelity IMERG, jak w silniku.
 """, WeatherIn)
 def get_weather(field_id: int, date_from=None, date_to=None, variables=None) -> dict:
     from core.models import WeatherDaily, WeatherForecastDaily
@@ -288,8 +289,15 @@ def get_weather(field_id: int, date_from=None, date_to=None, variables=None) -> 
     if bad:
         raise ToolError(f"Nieznane zmienne pogody: {bad}. Dostępne m.in.: {sorted(allowed)[:12]}…")
     obs = WeatherDaily.objects.observed().filter(grid_id=f.weather_grid_id, date__gte=a, date__lte=min(b, today))
-    days = [{"date": r["date"], "source": "observed"} | {v: r[v] for v in vars_}
-            for r in obs.order_by("date").values("date", *vars_)]
+    # The weather packages carry no precipitation; it comes from IMERG (satellite), as in engine.features.
+    fill_precip = "total_precipitation" in vars_
+    cols = [*vars_, "imerg_total_precipitation"] if fill_precip and "imerg_total_precipitation" not in vars_ else vars_
+    days = []
+    for r in obs.order_by("date").values("date", *cols):
+        row = {"date": r["date"], "source": "observed"} | {v: r[v] for v in vars_}
+        if fill_precip and row["total_precipitation"] is None:
+            row["total_precipitation"] = r["imerg_total_precipitation"]
+        days.append(row)
     if b > today:
         fc = WeatherForecastDaily.objects.current().filter(grid_id=f.weather_grid_id, date__gte=max(a, today + dt.timedelta(days=1)), date__lte=b)
         days += [{"date": r["date"], "source": "forecast"} | {v: r[v] for v in vars_}

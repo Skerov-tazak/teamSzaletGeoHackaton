@@ -96,6 +96,17 @@ class PlatformToolTests(ToolTestCase):
         with self.assertRaises(ToolError):
             call("get_weather", field_id=self.wheat.id, variables=["not_a_column"])
 
+    def test_missing_precipitation_falls_back_to_imerg(self):
+        from core.models import WeatherDaily
+        day = WeatherDaily.objects.get(grid_id=self.wheat.weather_grid_id, date="2024-05-14")
+        day.total_precipitation, day.imerg_total_precipitation = None, 9.2
+        day.save()
+        w = call("get_weather", field_id=self.wheat.id, date_from="2024-05-14", date_to="2024-05-15")
+        by_date = {str(d["date"]): d for d in w["days"]}
+        self.assertEqual(by_date["2024-05-14"]["total_precipitation"], 9.2)
+        self.assertNotIn("imerg_total_precipitation", by_date["2024-05-14"])
+        self.assertIsNotNone(by_date["2024-05-15"]["total_precipitation"])
+
 
 class ChartToolTests(ToolTestCase):
     def test_risk_timeline(self):
