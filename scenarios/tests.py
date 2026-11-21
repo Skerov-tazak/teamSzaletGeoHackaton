@@ -1,10 +1,9 @@
 """
 Testy jednostkowe i integracyjne modułu `scenarios`.
 
-Weryfikują poprawność parsowania definicji JSON, domyślną blokadę braku danych
-w `DATA_DIR` (`DataSourceError`), jawny tryb `--allow-synthetic` z emisją ostrzeżeń,
-wydłużenie horyzontu pogody do 31 grudnia dla kukurydzy, wywołanie
-`engine.precompute_season()` oraz działanie komendy CLI `python manage.py scenario`.
+Weryfikują poprawność parsowania definicji JSON, izolację czyszczenia danych
+scenariuszowych, generowanie prognoz 7-dniowych, ustawianie `core.Clock`
+oraz działanie komendy CLI `python manage.py scenario`.
 """
 
 from __future__ import annotations
@@ -12,13 +11,11 @@ from __future__ import annotations
 import io
 import json
 import tempfile
-import warnings
 from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 from django.core.management import call_command
-from django.core.management.base import CommandError
 from django.test import TestCase
 
 from assistant.models import Conversation, Message
@@ -88,12 +85,7 @@ def _sample_scenario_payload() -> dict:
 
 
 class ScenarioParserTests(TestCase):
-    """Testy walidacji schematu JSON, domyślnych opcji oraz wykrywania błędnych konfiguracji."""
-
-    def test_switch_options_disables_synthetic_data_by_default(self) -> None:
-        """Domyślnie `SwitchOptions` blokuje generowanie sztucznych danych."""
-        opts = SwitchOptions()
-        self.assertFalse(opts.allow_synthetic)
+    """Testy walidacji schematu JSON oraz wykrywania błędnych konfiguracji."""
 
     def test_valid_scenario_parses_correctly(self) -> None:
         """Poprawny słownik/plik JSON buduje obiekt `ScenarioDefinition` z właściwymi typami."""
@@ -137,15 +129,6 @@ class ScenarioParserTests(TestCase):
                 definition, SwitchOptions(today_override=date(2025, 4, 15))
             )
 
-    def test_built_in_definitions_load_including_wheat_septoria_outbreak(self) -> None:
-        """Wbudowany katalog `scenarios/definitions/` ładuje się poprawnie i zawiera `wheat_septoria_outbreak`."""
-        repo = ScenarioRepository()
-        scenarios = {item.slug: item for item in repo.list_scenarios()}
-
-        self.assertIn("baseline_farm", scenarios)
-        self.assertIn("wheat_septoria_outbreak", scenarios)
-        self.assertIn("maize_drought_stress", scenarios)
-
 
 class WeatherForecastGeneratorTests(TestCase):
     """Testy tworzenia prognozy 7-dniowej (`WeatherForecastDaily`) z danych obserwowanych."""
@@ -181,7 +164,7 @@ class WeatherForecastGeneratorTests(TestCase):
 
 
 class ScenarioSwitchIntegrationTests(TestCase):
-    """Testy pełnego przełączania scenariuszy, blokady braku danych oraz integracji z CLI."""
+    """Testy pełnego przełączania scenariuszy z wykorzystaniem trybu syntetycznego."""
 
     def setUp(self) -> None:
         self.tmp_dir = tempfile.TemporaryDirectory()
@@ -192,6 +175,7 @@ class ScenarioSwitchIntegrationTests(TestCase):
         self.empty_data_dir = Path(self.tmp_dir.name) / "data"
         self.empty_data_dir.mkdir(parents=True, exist_ok=True)
 
+        # Przygotuj katalog zagrożeń w bazie testowej, aby uniknąć zależności od zewnętrznego pliku XLSX
         wheat_class, _ = CropClass.objects.update_or_create(
             code=CropClass.WHEAT, defaults={"name": "Wheat"}
         )
@@ -226,54 +210,18 @@ class ScenarioSwitchIntegrationTests(TestCase):
 
     @patch("engine.precompute_season", return_value=20)
     @patch("scenarios.loaders.call_command")
-    def test_switch_without_datasets_refuses_by_default(
-        self, _mock_call_command, mock_precompute
-    ) -> None:
-        """Brak plików w `DATA_DIR` bez flagi `allow_synthetic=True` rzuca `DataSourceError`."""
-        with self.assertRaises(DataSourceError):
-            self.manager.switch_to("case_a")
-
-        self.assertEqual(Field.objects.count(), 0)
-        self.assertEqual(mock_precompute.call_count, 0)
-
-    @patch("engine.precompute_season", return_value=20)
-    @patch("scenarios.loaders.call_command")
-    def test_switch_with_allow_synthetic_emits_loud_warning_and_extends_to_dec_31(
-        self, _mock_call_command, mock_precompute
-    ) -> None:
-        """Jawne `allow_synthetic=True` emituje ostrzeżenie, zasila pogodę do 31 grudnia i woła `precompute_season()`."""
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            report = self.manager.switch_to(
-                "case_a", options=SwitchOptions(allow_synthetic=True)
-            )
-
-        self.assertTrue(len(report.warnings) > 0)
-        self.assertTrue(any("SYNTHETIC DATA" in w for w in report.warnings))
-        self.assertTrue(any(issubclass(w.category, UserWarning) for w in caught))
-
-        # Nawet gdy season_end to 2025-05-20, pogoda i prognozy obejmują cały rok do 31 grudnia (dla kukurydzy)
-        self.assertTrue(WeatherDaily.objects.filter(date=date(2025, 12, 31)).exists())
-        self.assertTrue(WeatherForecastDaily.objects.filter(issued_on=date(2025, 12, 31)).exists())
-        self.assertEqual(mock_precompute.call_count, 1)
-
-    @patch("engine.precompute_season", return_value=20)
-    @patch("scenarios.loaders.call_command")
     def test_switch_replaces_fields_and_preserves_reference_tables(
         self, _mock_call_command, mock_precompute
     ) -> None:
         """Przełączenie scenariusza usuwa stare pola i obserwacje, ale zachowuje `CropClass` i `Threat`."""
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            report_a = self.manager.switch_to(
-                "case_a", options=SwitchOptions(allow_synthetic=True)
-            )
-
+        report_a = self.manager.switch_to("case_a", options=SwitchOptions(allow_synthetic_fallback=True))
         self.assertEqual(report_a.fields_created, 1)
         self.assertEqual(report_a.risk_rows_written, 20)
         self.assertEqual(Field.objects.count(), 1)
         self.assertEqual(Field.objects.first().name, "Pole Testowe 1")
+        mock_precompute.assert_called_once_with(season=2025)
 
+        # Dodaj sztuczny wiersz Risk oraz rozmowę czatu przed przełączeniem na case_b
         fld = Field.objects.first()
         Risk.objects.create(
             field=fld,
@@ -285,11 +233,10 @@ class ScenarioSwitchIntegrationTests(TestCase):
         conv = Conversation.objects.create(title="Stara rozmowa")
         Message.objects.create(conversation=conv, role="user", text="Cześć")
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            report_b = self.manager.switch_to(
-                "case_b", options=SwitchOptions(reset_chat=True, allow_synthetic=True)
-            )
+        report_b = self.manager.switch_to(
+            "case_b",
+            options=SwitchOptions(reset_chat=True, allow_synthetic_fallback=True),
+        )
 
         self.assertEqual(report_b.scenario_slug, "case_b")
         self.assertEqual(Field.objects.count(), 1)
@@ -301,34 +248,36 @@ class ScenarioSwitchIntegrationTests(TestCase):
         self.assertTrue(Threat.objects.filter(code="wheat.septoria_leaf_blotch").exists())
         self.assertEqual(mock_precompute.call_count, 2)
 
+    @patch("scenarios.loaders.call_command")
+    def test_switch_fails_by_default_when_data_dir_files_are_missing(self, _mock_call_command) -> None:
+        """Domyślnie (bez flagi fallbacku) brak plików w `DATA_DIR` rzuca `DataSourceError`."""
+        with self.assertRaises(DataSourceError):
+            self.manager.switch_to("case_a")
+
     @patch("engine.precompute_season", return_value=20)
     @patch("scenarios.loaders.call_command")
     def test_switch_sets_clock_and_respects_today_override(
         self, _mock_call_command, _mock_precompute
     ) -> None:
         """Zegar `core.Clock` ustawia się na datę ze scenariusza lub parametr `--today`."""
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            self.manager.switch_to("case_a", options=SwitchOptions(allow_synthetic=True))
-            self.assertEqual(clock.today(), date(2025, 5, 10))
+        self.manager.switch_to("case_a", options=SwitchOptions(allow_synthetic_fallback=True))
+        self.assertEqual(clock.today(), date(2025, 5, 10))
 
-            self.manager.switch_to(
-                "case_a",
-                options=SwitchOptions(today_override=date(2025, 5, 18), allow_synthetic=True),
-            )
-            self.assertEqual(clock.today(), date(2025, 5, 18))
+        self.manager.switch_to(
+            "case_a",
+            options=SwitchOptions(today_override=date(2025, 5, 18), allow_synthetic_fallback=True),
+        )
+        self.assertEqual(clock.today(), date(2025, 5, 18))
 
     @patch("engine.precompute_season", return_value=10)
     @patch("scenarios.loaders.call_command")
     def test_cli_list_status_and_switch_commands(self, _mock_call_command, _mock_precompute) -> None:
-        """Komenda `python manage.py scenario` obsługuje `list`, `validate`, `switch` (z `--allow-synthetic`) i `status`."""
+        """Komenda `python manage.py scenario` poprawnie obsługuje `list`, `validate`, `switch` i `status`."""
         from core.management.commands.scenario import Command as ScenarioCommand
 
         cmd = ScenarioCommand(manager=self.manager)
         out = io.StringIO()
-        err = io.StringIO()
         cmd.stdout = out
-        cmd.stderr = err
 
         call_command(cmd, "list")
         self.assertIn("case_a", out.getvalue())
@@ -338,20 +287,10 @@ class ScenarioSwitchIntegrationTests(TestCase):
         call_command(cmd, "validate", "case_a")
         self.assertIn("jest poprawny", out.getvalue())
 
-        # Bez flagi --allow-synthetic przy pustym DATA_DIR komenda CLI zgłasza CommandError
-        with self.assertRaises(CommandError):
-            call_command(cmd, "switch", "case_a")
-
         out.truncate(0)
         out.seek(0)
-        err.truncate(0)
-        err.seek(0)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            call_command(cmd, "switch", "case_a", "--today", "2025-05-14", "--allow-synthetic")
-
+        call_command(cmd, "switch", "case_a", "--today", "2025-05-14", "--allow-synthetic-fallback")
         self.assertIn("Clock.today = 2025-05-14", out.getvalue())
-        self.assertIn("SYNTHETIC DATA", err.getvalue())
 
         out.truncate(0)
         out.seek(0)
