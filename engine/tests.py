@@ -6,6 +6,7 @@ Engine tests on synthetic weather (no downloaded data needed).
 
 from datetime import date, datetime, timedelta, timezone as dt_tz
 
+import pandas as pd
 from django.test import TestCase
 
 from core.models import (Clock, CropClass, Field, FieldCropYear, Risk, Threat, WeatherDaily, WeatherGrid,
@@ -31,7 +32,8 @@ class EngineTestBase(TestCase):
 
     @classmethod
     def setUpTestData(cls):
-        for code, name in ((0, "No cropland"), (1110, "Wheat"), (1120, "Barley"), (1130, "Maize")):
+        from engine.catalog import CROP_NAMES
+        for code, name in ((0, "No cropland"), *CROP_NAMES.items()):
             CropClass.objects.create(code=code, name=name)
         for rule in RULES.values():
             Threat.objects.create(code=rule.code, crop_id=rule.crop, name=rule.name_pl, category=rule.category, source="test")
@@ -249,6 +251,130 @@ class AssistantObservationTests(EngineTestBase):
         days = pd.date_range("2025-06-01", "2025-06-05")
         self.assertTrue(effects(RULES["wheat.brown_rust"], [rep], days))
         self.assertFalse(effects(RULES["wheat.aphids"], [rep], days))
+
+
+class OtherCropTests(EngineTestBase):
+    """Barley, other cereals, rapeseed, sugar beet and potatoes get their own rules and growth stages."""
+    wet_days = {date(2025, 6, d) for d in range(18, 24)}
+
+    def test_every_engine_crop_gets_risks(self):
+        from engine.catalog import CROP_NAMES, rules_for_crop
+        day = date(2025, 6, 20)
+        for crop in CROP_NAMES:
+            f = self.make_field(f"f{crop}", crop, prev=1110)
+            n = predict(field_ids=[f.id], start=day, end=day)
+            self.assertEqual(n, len(rules_for_crop(crop)), crop)
+            r = Risk.objects.filter(field=f, date=day).first()
+            self.assertTrue(r.explanation["summary"])
+            self.assertGreaterEqual(r.explanation["growth_stage"]["bbch"], 0, crop)
+
+    def test_stage_calendars(self):
+        from engine.catalog import BARLEY, POTATO, RAPESEED, SUGAR_BEET
+        from engine.phenology import bbch_series
+        idx = pd.date_range("2024-07-01", "2025-11-30")
+        temps = pd.Series([seasonal_temp(d.date()) for d in idx], index=idx)
+
+        def first(crop, bbch):
+            s = bbch_series(crop, temps, 2025)["bbch"]
+            return s[s >= bbch].index[0].date()
+
+        self.assertTrue(date(2025, 4, 10) <= first(RAPESEED, 60) <= date(2025, 5, 10))   # rapeseed flowering
+        self.assertTrue(date(2025, 6, 25) <= first(RAPESEED, 89) <= date(2025, 7, 31))   # rapeseed harvest
+        self.assertLess(first(BARLEY, 55), first(1110, 55))                              # barley heads before wheat
+        self.assertTrue(date(2025, 4, 15) <= first(SUGAR_BEET, 10) <= date(2025, 5, 20))
+        self.assertTrue(date(2025, 6, 1) <= first(POTATO, 31) <= date(2025, 7, 15))      # potato rows closing
+        s = bbch_series(RAPESEED, temps, 2025)["bbch"]
+        self.assertGreaterEqual(s[pd.Timestamp("2024-11-15")], 14)                       # rosette before winter
+
+    def test_potato_late_blight_follows_wet_warm_days(self):
+        f = self.make_field("potato", 1310, prev=1110)
+        predict(field_ids=[f.id], start=date(2025, 6, 10), end=date(2025, 6, 24))
+        dry = Risk.objects.get(field=f, threat__code="potato.late_blight", date=date(2025, 6, 12)).score
+        wet = Risk.objects.get(field=f, threat__code="potato.late_blight", date=date(2025, 6, 22))
+        self.assertLess(dry, 0.3)
+        self.assertGreaterEqual(wet.score, 0.6)
+        self.assertIn("late blight", wet.explanation["summary"].lower())
+
+    def test_rotation_pest_needs_a_host_in_the_last_seasons(self):
+        day = date(2025, 7, 1)
+        after_beet = self.make_field("beet_after_beet", 1320, prev=1320)
+        after_wheat = self.make_field("beet_after_wheat", 1320, prev=1110)
+        predict(field_ids=[after_beet.id, after_wheat.id], start=day, end=day)
+        hi = Risk.objects.get(field=after_beet, threat__code="sugar_beet.beet_cyst_nematode", date=day)
+        lo = Risk.objects.get(field=after_wheat, threat__code="sugar_beet.beet_cyst_nematode", date=day)
+        self.assertGreater(hi.score, lo.score * 5)
+        self.assertIn("host crop", hi.explanation["summary"])
+
+    def test_beet_season_runs_into_autumn(self):
+        from engine.compute import crop_season_segments
+        f = self.make_field("beet_autumn", 1320, prev=1110)
+        segs = crop_season_segments(f, date(2025, 8, 1), date(2025, 12, 31))
+        self.assertIn((2025, date(2025, 9, 1), date(2025, 11, 30), 1320, "field"), segs)   # beet to 30 Nov
+        w = self.make_field("wheat_autumn", 1110, prev=1130)
+        self.assertEqual([s[0] for s in crop_season_segments(w, date(2025, 8, 1), date(2025, 12, 31))], [2025])
+
+
+class FieldRecordTests(TestCase):
+    """Facts stored on the field (proposed Field columns) become field_fact reports; sowing dates stay in their season."""
+
+    def test_from_field_and_sowing_window(self):
+        from types import SimpleNamespace
+        from engine.observations import from_field, sowing_override
+        f = SimpleNamespace(id=7, sowing_date=date(2024, 9, 25), tillage="reduced", resistant_to=["wheat.brown_rust"])
+        reps = from_field(f)
+        self.assertEqual({r.kind for r in reps}, {"field_fact"})
+        self.assertEqual(len(reps), 3)
+        self.assertTrue(all(r.field_id == 7 for r in reps))
+        self.assertTrue(reps[1].label().startswith("Field record"))
+        self.assertEqual(sowing_override(reps, (date(2024, 7, 3), date(2025, 8, 31))), (date(2024, 9, 25), date(2024, 9, 25)))
+        self.assertIsNone(sowing_override(reps, (date(2023, 7, 3), date(2024, 8, 31))))   # not last season's sowing
+        self.assertEqual(from_field(SimpleNamespace(id=1)), [])                           # columns absent: nothing
+
+
+class ConsistencyTests(EngineTestBase):
+    """Fixes from the cross-component review: readers, levels, threat loader, forecast lead."""
+
+    def test_reader_never_guesses_symptoms(self):
+        from types import SimpleNamespace as NS
+        from engine.observations import _to_report
+        core_like = NS(pk=1, observed_on=date(2025, 6, 1), kind="treatment", threat_code=None, severity=None, distance_m=None,
+                       details={}, text="sprayed", field_id=3)
+        self.assertEqual(_to_report(core_like, "observed_on").kind, "treatment")
+        no_kind = NS(pk=2, observed_on=date(2025, 6, 1), details={}, text="?", field_id=3)
+        self.assertIsNone(_to_report(no_kind, "observed_on"))                      # skipped, not "symptoms"
+        dmg = NS(pk=3, date=date(2025, 6, 1), category="uszkodzenie", details={}, note="coś połamało", field_id=3, threat_id=None)
+        rep = _to_report(dmg, "date")
+        self.assertEqual((rep.kind, rep.details["type"]), ("event", "damage"))
+        self.assertIn("Crop damage", rep.label())
+        num = NS(pk=4, date=date(2025, 6, 1), category="choroba", severity=0.8, details={}, note="", field_id=3, threat_id=None)
+        self.assertEqual(_to_report(num, "date").severity, 0.8)
+
+    def test_levels_match_the_map(self):
+        from engine.scoring import level_of
+        self.assertEqual([level_of(s) for s in (0.32, 0.33, 0.65, 0.66)], ["low", "medium", "medium", "high"])
+
+    def test_load_threats_keeps_platform_rows(self):
+        from django.core.management import call_command
+        import io
+        Threat.objects.filter(code="wheat.brown_rust").update(name="rdza brunatna (fixture)", source="fixture")
+        call_command("engine_load_threats", stdout=io.StringIO())
+        self.assertEqual(Threat.objects.get(code="wheat.brown_rust").source, "fixture")
+        call_command("engine_load_threats", "--overwrite", stdout=io.StringIO())
+        self.assertEqual(Threat.objects.get(code="wheat.brown_rust").source, "engine rules")
+
+    def test_forecast_lead_follows_the_clock(self):
+        day = date(2025, 6, 18)  # clock 2025-06-15 -> day +3
+        predict(field_ids=[self.wheat.id], start=day, end=day)
+        r = Risk.objects.filter(field=self.wheat, date=day).first()
+        self.assertEqual(r.explanation["forecast_lead_days"], 3)
+        c = Clock.objects.get(); c.today = date(2025, 6, 17); c.save()      # signal: day +1
+        r.refresh_from_db()
+        self.assertEqual(r.explanation["forecast_lead_days"], 1)
+        c.today = date(2025, 6, 20); c.save()                               # now in the past
+        r.refresh_from_db()
+        self.assertNotIn("forecast_lead_days", r.explanation)
+        self.assertFalse([n for n in r.explanation["notes"] if n.startswith("Day +")])
+        c.today = date(2025, 6, 15); c.save()
 
 
 class PureFunctionTests(TestCase):

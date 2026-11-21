@@ -16,7 +16,7 @@ from django.core.management.base import BaseCommand
 from core import clock
 from core.models import (Clock, CropClass, Field, FieldCropYear, SoilCell, Threat, WeatherDaily, WeatherForecastDaily,
                          WeatherGrid, WeatherHourly)
-from engine.catalog import MAIZE, RULES, WHEAT
+from engine.catalog import CROP_NAMES, RULES
 from engine.features import LOOKBACK_DAYS
 from engine.satellite.season import season_bounds, season_of
 
@@ -45,8 +45,8 @@ class Command(BaseCommand):
         s0, s1 = season_bounds(season)
         need_from = s0 - timedelta(days=LOOKBACK_DAYS)
         need_to = today + timedelta(days=clock.FORECAST_DAYS)
-        ok(f"Clock: today = {today}; season {season} = {s0} .. {s1} (maize to 31 Dec); weather needed {need_from} .. {need_to}")
-        for code in (WHEAT, MAIZE):
+        ok(f"Clock: today = {today}; season {season} = {s0} .. {s1} (maize to 31 Dec, sugar beet to 30 Nov, potato to 31 Oct); weather needed {need_from} .. {need_to}")
+        for code in CROP_NAMES:
             (ok if CropClass.objects.filter(code=code).exists() else err)(f"CropClass {code}")
         codes = set(Threat.objects.values_list("code", flat=True))
         missing_threats = sorted(set(RULES) - codes)
@@ -63,7 +63,7 @@ class Command(BaseCommand):
             return self._end()
         for f in fields:
             self.stdout.write(f"Field {f.id} '{f.name}' (crop {f.crop_id}, grid {f.weather_grid_id})")
-            if f.crop_id not in (WHEAT, MAIZE):
+            if f.crop_id not in CROP_NAMES:
                 warn(f"crop {f.crop_id} has no engine rules: no risks for this field")
             if not f.geometry or not f.geometry.get("coordinates"):
                 err("geometry: empty GeoJSON polygon")

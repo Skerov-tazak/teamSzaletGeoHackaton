@@ -9,14 +9,14 @@ Every report only affects days on or after the day it was observed (the "as of t
 every applied report becomes a driver in the explanation, with its effect on the score.
 
 Kinds:
-- symptoms   the farmer sees the threat on this field -> score floor (0.6 + 0.3 x severity), fading after 10 days;
+- symptoms   the farmer sees the threat on this field -> score floor (0.66 + 0.3 x severity: always "high"), fading after 10 days;
              without a threat code: x(1 + 0.3 x severity) for every threat of that group (disease / pest)
 - absence    inspected, nothing found -> x0.5, back to normal over 10 days (threat_code empty = all threats)
 - neighbour  a neighbour / the area has it -> x(1 + 0.5 x closeness), fading over 21 days and 3 km
 - treatment  sprayed against it -> x0.3 for 14 days, back to normal by day 21 (threat_code empty = all fungal)
 - field_fact details: sowing_date (replaces the assumed one), tillage ("plough" / "reduced"),
              resistant_to ([threat codes] -> x0.6)
-- event      details.type (or details.event): hail (fungal x1.3, 14 days), lodging (fungal x1.2, 21 days), flood (crazy top floor 0.7)
+- event      details.type (or details.event; else guessed from the text; else "damage": fungal x1.1): hail (fungal x1.3, 14 days), lodging (fungal x1.2, 21 days), flood (crazy top floor 0.7)
 """
 
 from __future__ import annotations
@@ -24,8 +24,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
+import logging
+
 import numpy as np
 import pandas as pd
+
+log = logging.getLogger(__name__)
 
 KINDS = ("symptoms", "absence", "neighbour", "treatment", "field_fact", "event")
 
@@ -60,74 +64,101 @@ class Report:
         if self.kind == "treatment":
             return f"Treatment against {what} on {when}"
         if self.kind == "event":
-            return f"{str(self.details.get('type') or self.details.get('event') or 'event').capitalize()} reported on {when}"
-        return f"Field information from the farmer on {when}: " + ", ".join(f"{k}={v}" for k, v in self.details.items())
+            what = str(self.details.get("type") or self.details.get("event") or "damage")
+            what = "Crop damage (type not given)" if what == "damage" else what.capitalize()
+            return f"{what} reported on {when}" + (f': "{self.text}"' if self.text else "")
+        facts = ", ".join(f"{k}={v}" for k, v in self.details.items() if k != "source")
+        if self.details.get("source") == "field_record":
+            return f"Field record: {facts}"
+        return f"Field information from the farmer on {when}: {facts}"
 
 
-def _from_core(r) -> Report:
+SEVERITY_WORDS = {"niskie": 0.3, "niska": 0.3, "low": 0.3, "srednie": 0.6, "średnie": 0.6, "srednia": 0.6, "średnia": 0.6,
+                  "medium": 0.6, "wysokie": 0.9, "wysoka": 0.9, "high": 0.9}
+ASSISTANT_SEVERITY = SEVERITY_WORDS  # kept for compatibility
+CATEGORY_KIND = {"choroba": "symptoms", "szkodnik": "symptoms", "uszkodzenie": "event",
+                 "disease": "symptoms", "pest": "symptoms", "damage": "event"}
+ASSISTANT_GROUP = {"choroba": "disease", "szkodnik": "pest", "disease": "disease", "pest": "pest"}
+DISEASE_CATEGORIES = ("fungal", "bacterial", "viral")
+EVENT_WORDS = (("hail", ("grad",)), ("lodging", ("wylegl", "wyległ", "polegl", "położ")),
+               ("flood", ("zalan", "zalał", "powód", "podtop", "stoi woda")))
+DETAIL_KEYS = ("sowing_date", "tillage", "resistant_to", "type", "event", "scope")
+
+
+def _severity(v) -> float | None:
+    if v in (None, ""):
+        return None
+    if isinstance(v, (int, float)):
+        return float(min(max(v, 0.0), 1.0))
+    return SEVERITY_WORDS.get(str(v).strip().lower())
+
+
+def _to_report(r, date_field: str) -> Report | None:
+    """
+    One observation row -> Report, whatever the table looks like: the proposed core.Observation columns
+    (observed_on, kind, threat_code, severity 0-1, distance_m, details, text) or the chat's interim
+    assistant.Observation (date, category, threat FK, severity niskie/srednie/wysokie, note, details).
+    A row whose kind cannot be told is skipped (logged), never guessed as "symptoms".
+    """
+    raw = getattr(r, "details", None) or {}
+    d = {**(raw.get("draft") or {}), **{k: v for k, v in raw.items() if k not in ("draft", "reassessment")}}
+    category = (getattr(r, "category", "") or "").lower()
+    kind = getattr(r, "kind", None) or d.get("kind") or CATEGORY_KIND.get(category)
+    if kind not in KINDS:
+        log.warning("observation %s skipped: unknown kind %r (category %r); set kind or details.kind", r.pk, kind, category)
+        return None
+    code = getattr(r, "threat_code", None) or None
+    if code is None and getattr(r, "threat_id", None):
+        code = r.threat.code
+    sev = _severity(getattr(r, "severity", None))
+    if kind == "symptoms" and sev is None:
+        sev = 0.5
+    text = getattr(r, "text", None) or getattr(r, "note", None) or ""
+    details = {k: v for k, v in d.items() if k in DETAIL_KEYS}
+    if kind == "event" and not (details.get("type") or details.get("event")):
+        low = text.lower()
+        details["type"] = next((t for t, words in EVENT_WORDS if any(w in low for w in words)), "damage")
+    dist = getattr(r, "distance_m", None)
+    dist = d.get("distance_m") if dist in (None, "") else dist
     return Report(
-        observed_on=r.observed_on, kind=getattr(r, "kind", "symptoms"), threat_code=getattr(r, "threat_code", None) or None,
-        severity=getattr(r, "severity", None), distance_m=getattr(r, "distance_m", None),
-        details=getattr(r, "details", None) or {}, text=getattr(r, "text", "") or "", field_id=r.field_id, id=r.pk,
+        observed_on=getattr(r, date_field), kind=kind, threat_code=code, severity=sev,
+        distance_m=float(dist) if dist not in (None, "") else (1000.0 if kind == "neighbour" else None),
+        details=details, text=text, field_id=None if d.get("scope") == "farm" else r.field_id, id=r.pk,
+        group=ASSISTANT_GROUP.get(category),
     )
 
 
-ASSISTANT_SEVERITY = {"niskie": 0.3, "srednie": 0.6, "średnie": 0.6, "wysokie": 0.9}
-ASSISTANT_GROUP = {"choroba": "disease", "szkodnik": "pest"}
-DISEASE_CATEGORIES = ("fungal", "bacterial", "viral")
+def _from_core(r) -> Report | None:
+    return _to_report(r, "observed_on" if hasattr(r, "observed_on") else "date")
 
 
 def _from_assistant(r) -> Report | None:
-    """
-    The chat's interim assistant.Observation -> Report. The kind comes from details.kind (or
-    details.draft.kind); without it: choroba / szkodnik -> symptoms, uszkodzenie -> event, others ignored.
-    """
-    raw = r.details or {}
-    d = {**(raw.get("draft") or {}), **{k: v for k, v in raw.items() if k not in ("draft", "reassessment")}}
-    kind = d.get("kind") or {"choroba": "symptoms", "szkodnik": "symptoms", "uszkodzenie": "event"}.get(r.category)
-    if kind not in KINDS:
-        return None
-    sev = ASSISTANT_SEVERITY.get((r.severity or "").lower())
-    if kind == "symptoms" and sev is None:
-        sev = 0.5
-    details = {k: v for k, v in d.items() if k in ("sowing_date", "tillage", "resistant_to", "type", "event", "scope")}
-    if kind == "event" and not (details.get("type") or details.get("event")):
-        note = (r.note or "").lower()
-        details["type"] = next((t for t, words in (("hail", ("grad",)), ("lodging", ("wylegl", "wyległ", "polegl", "położ")),
-                                                    ("flood", ("zalan", "zalał", "powód", "podtop"))) if any(w in note for w in words)), None)
-    dist = d.get("distance_m")
-    return Report(
-        observed_on=r.date, kind=kind, threat_code=r.threat.code if r.threat_id else None, severity=sev,
-        distance_m=float(dist) if dist not in (None, "") else (1000.0 if kind == "neighbour" else None),
-        details=details, text=r.note or "", field_id=None if d.get("scope") == "farm" else r.field_id, id=r.pk,
-        group=ASSISTANT_GROUP.get(r.category),
-    )
+    return _to_report(r, "date")
+
+
+def _date_field(model) -> str | None:
+    names = {f.name for f in model._meta.get_fields()}
+    return next((n for n in ("observed_on", "date") if n in names), None)
 
 
 def _query(end: date, field_id: int | None = None) -> list[Report]:
     from django.apps import apps
-    from django.db.models import Q
 
     out: list[Report] = []
-    try:
-        core = apps.get_model("core", "Observation")
-    except LookupError:
-        core = None
-    if core is not None:
-        q = core.objects.filter(observed_on__lte=end)
-        if field_id is not None:
-            q = q.filter(Q(field_id=field_id) | Q(field__isnull=True))
-        out += [_from_core(r) for r in q]
-    try:
-        interim = apps.get_model("assistant", "Observation")
-    except LookupError:
-        interim = None
-    if interim is not None:
-        q = interim.objects.filter(date__lte=end).select_related("threat")
-        rows = [x for x in (_from_assistant(r) for r in q) if x is not None]
-        if field_id is not None:
-            rows = for_field(rows, field_id)
-        out += rows
+    for app in ("core", "assistant"):  # core.Observation (agreed home) and the chat's interim table
+        try:
+            model = apps.get_model(app, "Observation")
+        except LookupError:
+            continue
+        date_field = _date_field(model)
+        if date_field is None:
+            log.warning("%s.Observation has no observed_on / date column: its reports are ignored", app)
+            continue
+        q = model.objects.filter(**{f"{date_field}__lte": end})
+        if any(f.name == "threat" for f in model._meta.get_fields()):
+            q = q.select_related("threat")
+        rows = [x for x in (_to_report(r, date_field) for r in q) if x is not None]
+        out += for_field(rows, field_id) if field_id is not None else rows
     return out
 
 
@@ -141,18 +172,44 @@ def load_all(start: date, end: date) -> list[Report]:
     return _query(end)
 
 
+FIELD_FACT_COLUMNS = ("sowing_date", "tillage", "resistant_to")
+KNOWN_SINCE = date(2000, 1, 1)  # a field record has no report date: it holds for every day computed
+
+
+def from_field(field) -> list[Report]:
+    """
+    Facts stored on the field itself (proposed columns Field.sowing_date, Field.tillage, Field.resistant_to,
+    written by the assistant when the farmer confirms them). Read only if the columns exist; each becomes a
+    field_fact report, so it is explained like a farmer report. Sowing dates apply only to their own season.
+    """
+    out = []
+    for col in FIELD_FACT_COLUMNS:
+        v = getattr(field, col, None)
+        if v in (None, "", [], ()):
+            continue
+        if col == "sowing_date":
+            v = v if isinstance(v, date) else date.fromisoformat(str(v))
+            out.append(Report(observed_on=v, kind="field_fact", details={"sowing_date": v, "source": "field_record"}, field_id=field.id))
+        else:
+            out.append(Report(observed_on=KNOWN_SINCE, kind="field_fact", details={col: v, "source": "field_record"}, field_id=field.id))
+    return out
+
+
 def for_field(reports: list[Report] | None, field_id: int) -> list[Report]:
     return [r for r in (reports or []) if r.field_id in (None, field_id)]
 
 
-def sowing_override(reports: list[Report]) -> tuple[date, date] | None:
-    """(sowing_date, reported_on) from the latest field_fact with a sowing date."""
-    facts = [r for r in reports if r.kind == "field_fact" and r.details.get("sowing_date")]
-    if not facts:
-        return None
-    r = max(facts, key=lambda x: x.observed_on)
-    sd = r.details["sowing_date"]
-    return (sd if isinstance(sd, date) else date.fromisoformat(str(sd))), r.observed_on
+def sowing_override(reports: list[Report], window: tuple[date, date] | None = None) -> tuple[date, date] | None:
+    """(sowing_date, reported_on) from the latest field_fact with a sowing date (inside `window` if given)."""
+    facts = []
+    for r in reports:
+        sd = r.details.get("sowing_date") if r.kind == "field_fact" else None
+        if not sd:
+            continue
+        sd = sd if isinstance(sd, date) else date.fromisoformat(str(sd))
+        if window is None or window[0] <= sd <= window[1]:
+            facts.append((sd, r.observed_on))
+    return max(facts, key=lambda x: x[1]) if facts else None
 
 
 def _age(days: pd.DatetimeIndex, on: date) -> np.ndarray:
@@ -196,7 +253,7 @@ def effects(rule, reports: list[Report], days: pd.DatetimeIndex) -> list[Effect]
             mult = 1 + 0.3 * sev * _fade(age, 10, 21)
         elif r.kind == "symptoms" and same:
             sev = 0.6 if r.severity is None else float(r.severity)
-            floor = (0.6 + 0.3 * sev) * _fade(age, 10, 21)
+            floor = min(1.0, 0.66 + 0.3 * sev) * _fade(age, 10, 21)
         elif r.kind == "absence" and (same or r.threat_code is None):
             mult = 1 - 0.5 * _fade(age, 0, 10)
         elif r.kind == "neighbour" and same:
@@ -218,6 +275,8 @@ def effects(rule, reports: list[Report], days: pd.DatetimeIndex) -> list[Effect]
                 mult = 1 + 0.2 * _fade(age, 14, 21)
             elif t == "flood" and rule.code == "maize.crazy_top":
                 floor = 0.7 * _fade(age, 14, 28)
+            elif t == "damage" and rule.category in ("fungal", "bacterial"):  # damage of unknown type: wounds let pathogens in
+                mult = 1 + 0.1 * _fade(age, 7, 14)
         if np.allclose(mult, 1) and not floor.any() and np.allclose(after, 1):
             continue
         out.append(Effect(r, mult, floor, after))

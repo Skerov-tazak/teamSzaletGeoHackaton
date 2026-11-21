@@ -16,6 +16,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from core import clock
@@ -23,7 +24,7 @@ from core.models import Field, Risk, Threat, WeatherForecastDaily
 from engine import features as F
 from engine import observations as OBS
 from engine.catalog import CARRYOVER, MAIZE, RULES, rules_for_crop
-from engine.phenology import bbch_series, calibrate, degree_days_base10
+from engine.phenology import bbch_series, calibrate, degree_days_base10, season_end
 from engine.satellite.season import season_bounds, season_of
 from engine.scoring import FieldContext, score_rule, spray_window
 
@@ -63,6 +64,7 @@ def compute_rows(field_ids, start: date, end: date, observations=None, with_fiel
     """Computes (does not save) the Risk rows. Shared by predict() and what_if()."""
     all_fields = list(Field.objects.select_related("crop", "weather_grid"))
     reports = list(observations) if observations is not None else OBS.load_all(start, end)
+    reports += [r for f in all_fields for r in OBS.from_field(f)]  # facts stored on the field (if those columns exist)
     reports += farm_spread(reports, all_fields)
     if field_ids is not None:
         wanted = set(field_ids)
@@ -150,7 +152,8 @@ def field_context(field: Field, season: int, crop_code: int | None = None, crop_
         if key in soil and soil[key] <= 1.0:
             soil[key] *= 100
     return FieldContext(crop=crop, crop_source=crop_source, previous_crop=prev[0] if prev else None,
-                        previous_crop_name=names.get(season - 1), maize_years_in_row=in_row, soil=soil)
+                        previous_crop_name=names.get(season - 1), maize_years_in_row=in_row, soil=soil,
+                        history={y: c for y, (c, _) in history.items()}, season=season)
 
 
 def season_crop(field: Field, season: int) -> tuple[int | None, str]:
@@ -169,9 +172,9 @@ def crop_season_segments(field: Field, start: date, end: date) -> list[tuple[int
     """
     Splits [start, end] into (season, from, to, crop, crop source) pieces.
 
-    Seasons are named by harvest year and run 1 Sep - 31 Aug (winter wheat). Maize is sown in April and
-    harvested in Sep-Nov, so a maize season stays open until 31 Dec of its year. Seasons after the
-    current one are skipped: their crop is not known yet.
+    Seasons are named by harvest year and run 1 Sep - 31 Aug (winter crops). Spring crops harvested
+    after 1 September stay open longer (maize to 31 Dec, sugar beet to 30 Nov, potato to 31 Oct;
+    engine.phenology.PROFILES). Seasons after the current one are skipped: their crop is not known yet.
     """
     current = season_of(clock.today())
     out = []
@@ -180,9 +183,10 @@ def crop_season_segments(field: Field, start: date, end: date) -> list[tuple[int
         season = season_of(s)
         s_end = min(end, season_bounds(season)[1])
         if season > current:
-            if field.crop_id == MAIZE and s.year == current:  # maize harvest after 1 September
-                s_end = min(end, date(current, 12, 31))
-                out.append((current, s, s_end, MAIZE, "field"))
+            late = season_end(field.crop_id, current) if field.crop_id else None
+            if late and late.month >= 9 and s.year == current and s <= late:  # spring crop harvested after 1 September
+                s_end = min(end, late)
+                out.append((current, s, s_end, field.crop_id, "field"))
             s = s_end + timedelta(days=1)
             continue
         crop, source = season_crop(field, season)
@@ -195,6 +199,10 @@ def _field_rows(field: Field, threats: dict, start: date, end: date, now, report
     out: list[Risk] = []
     for season, s, s_end, crop, source in crop_season_segments(field, start, end):
         rules = [r for r in rules_for_crop(crop) if r.code in threats] if crop else []
+        missing = [r.code for r in rules_for_crop(crop) if r.code not in threats] if crop else []
+        if missing:
+            log.warning("predict: %d engine threat codes have no Threat row and are skipped (run engine_load_threats): %s",
+                        len(missing), ", ".join(missing[:5]))
         if rules:
             out += _season_rows(field, threats, rules, season, s, s_end, now, reports, crop, source)
     return out
@@ -217,7 +225,8 @@ def _season_rows(field, threats, rules, season, start, end, now, reports=(), cro
     from engine.satellite import fieldndvi
     anchors = fieldndvi.phenology_anchors(fieldndvi.load(field, season), ctx.crop, season)
     stages = calibrate(stages, ctx.crop, anchors)
-    sow = OBS.sowing_override([r for r in reports if r.observed_on <= end])
+    s0, s1 = season_bounds(season)
+    sow = OBS.sowing_override([r for r in reports if r.observed_on <= end], window=(s0 - timedelta(days=60), s1))
     if sow:  # the farmer's sowing date replaces the assumed one from the day it was reported
         told = bbch_series(ctx.crop, daily["avg_temperature"], season, sowing=sow[0])
         use = told.index >= pd.Timestamp(sow[1])
@@ -244,6 +253,40 @@ def _season_rows(field, threats, rules, season, start, end, now, reports=(), cro
 
 
 FORECAST_CONFIDENCE_DROP = 0.06  # per day ahead (team assumption): day +7 keeps 58 % of the confidence
+
+
+def clear_lead(expl: dict) -> dict:
+    """The day is no longer in the future: confidence back to the observed value, forecast note removed."""
+    if "confidence_observed" in expl:
+        expl["confidence"] = expl.pop("confidence_observed")
+    expl.pop("forecast_lead_days", None)
+    expl["notes"] = [n for n in expl.get("notes", []) if not n.startswith("Day +")]
+    return expl
+
+
+def refresh_forecast_confidence(today: date | None = None) -> int:
+    """
+    Re-measures "days ahead" from the current demo date for rows already written: rows computed when the
+    clock was earlier keep their score, but their forecast discount and "Day +N" note follow the new
+    date. Runs automatically when the Clock row is saved (engine/apps.py). Returns the rows changed.
+    """
+    today = today or clock.today()
+    rows = list(Risk.objects.filter(Q(date__gt=today) | Q(explanation__has_key="forecast_lead_days")).only("id", "date", "explanation"))
+    changed = []
+    for r in rows:
+        e = r.explanation or {}
+        if "confidence" not in e:
+            continue
+        lead = (r.date - today).days
+        if lead > 0:
+            if e.get("forecast_lead_days") == lead:
+                continue
+            adjust_for_lead(e, lead)
+        else:
+            clear_lead(e)
+        changed.append(r)
+    Risk.objects.bulk_update(changed, ["explanation"], batch_size=2000)
+    return len(changed)
 
 
 def adjust_for_lead(expl: dict, lead: int) -> dict:

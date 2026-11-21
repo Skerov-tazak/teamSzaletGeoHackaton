@@ -67,6 +67,8 @@ def hourly_moisture(h: pd.DataFrame, kind: str) -> pd.Series:
         return (rh >= WET_RH) | rain
     if kind == "humid":
         return (rh >= HUMID_RH) | rain
+    if kind == "rh90":  # potato late blight (Smith-type periods): RH >= 90 % or rain
+        return (rh >= 90) | rain
     if kind == "mild":
         return (rh >= 50) & (rh < 95) & ~rain
     raise ValueError(kind)
@@ -79,6 +81,8 @@ def daily_moisture_estimate(d: pd.DataFrame, kind: str) -> pd.Series:
         share = ((rh - 82) / 15).clip(0, 1)
     elif kind == "humid":
         share = ((rh - 65) / 20).clip(0, 1)
+    elif kind == "rh90":
+        share = ((rh - 75) / 17).clip(0, 1)
     else:
         share = ((rh >= 50) & (d["precip"].fillna(0) < 1)).astype(float)
     return share

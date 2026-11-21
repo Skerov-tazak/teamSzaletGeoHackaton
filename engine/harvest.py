@@ -1,7 +1,7 @@
 """
 Harvest and storage outlook (not a Risk row: there is no threat category for it).
 
-- Wheat: harvest when fully ripe (BBCH >= 89, grain < 15 % moisture). After that, 2-3 days of rain can
+- Cereals (wheat, barley, other cereals): harvest when fully ripe (BBCH >= 89, grain < 15 % moisture). After that, 2-3 days of rain can
   start sprouting in the ear, which disqualifies the grain for bread.
   Safe storage moisture < 15 %.
 - Maize: safe storage time of grain by moisture and temperature table below);
@@ -16,7 +16,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from engine.catalog import MAIZE, WHEAT
+from engine.catalog import CEREALS, MAIZE
 
 # Safe storage table: rows grain temperature (°C), columns grain moisture (%), values safe storage days
 _T37_TEMPS = [-1.1, 1.7, 4.4, 7.2, 10.0, 12.8, 15.6, 18.3, 21.1, 23.9, 26.7]
@@ -43,7 +43,7 @@ def harvest_outlook(crop: int, bbch: float, recent: pd.DataFrame, forecast: pd.D
     recent: daily observed weather up to today (index dates; columns precip, avg_temperature, avg_relative_humidity).
     forecast: daily forecast (index dates; max/min temperature, total_precipitation, avg_relative_humidity) or None.
     """
-    if crop not in (WHEAT, MAIZE) or bbch < 83:
+    if (crop not in CEREALS and crop != MAIZE) or bbch < 83:
         return None
     out: dict = {"stage_bbch": int(round(bbch))}
     rain = recent["precip"].fillna(0) if "precip" in recent else pd.Series(dtype=float)
@@ -61,13 +61,13 @@ def harvest_outlook(crop: int, bbch: float, recent: pd.DataFrame, forecast: pd.D
                 dry_days.append(pd.Timestamp(d).date().isoformat())
     out["dry_days_ahead"] = dry_days
     out["rain_days_in_a_row"] = run
-    if crop == WHEAT:
+    if crop in CEREALS:
         ripe = bbch >= 89
         out["ready"] = ripe
         sprouting = "high" if ripe and run >= 2 else ("medium" if ripe and run == 1 else "low")
         out["sprouting_risk"] = sprouting
         out["text"] = (("Fully ripe: harvest on the next dry day" + (f" ({dry_days[0]})" if dry_days else "")
-                        + (". Rain for 2+ days in a row now: sprouting in the ear can disqualify bread wheat." if sprouting == "high" else "."))
+                        + (". Rain for 2+ days in a row now: sprouting in the ear can disqualify the grain (bread, malting, seed)." if sprouting == "high" else "."))
                        if ripe else "Ripening: plan the harvest; grain should be below 15 % moisture.")
     else:
         out["ready"] = bbch >= 87

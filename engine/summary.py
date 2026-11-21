@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from core.models import Field, Risk
-from engine.scoring import level_of
+from engine.scoring import MEDIUM, level_of
 
 TOP_N = 3
 
@@ -42,10 +42,10 @@ def _summarise(field: Field, day: date, rows: list[Risk]) -> dict:
     top = items[:TOP_N]
     if not items:
         why = "No risks computed for this day."
-    elif max_score < 0.3:
+    elif max_score < MEDIUM:
         why = "All threats low."
     else:
-        why = "; ".join(f"{it['name_en'] or it['name_pl']} {it['level']} ({it['score']:.2f})" for it in top if it["score"] >= 0.3)
+        why = "; ".join(f"{it['name_en'] or it['name_pl']} {it['level']} ({it['score']:.2f})" for it in top if it["score"] >= MEDIUM)
     bbch = next((((r.explanation or {}).get("growth_stage") or {}).get("bbch") for r in rows), None)
     return {
         "harvest": _harvest(field, day, bbch),
@@ -104,7 +104,8 @@ def _crop_check(field: Field, day: date) -> dict | None:
     from engine.satellite import fieldndvi
     from engine.satellite.season import season_of
 
-    season = season_of(day) if field.crop_id != 1130 or day.month < 9 else day.year
+    from engine.phenology import crop_season
+    season = crop_season(field.crop_id, day) if field.crop_id else season_of(day)
     out = fieldndvi.crop_check(fieldndvi.load(field, season), field.crop_id, season, day)
     try:
         from engine.cropmodel import CLASS_CODE, predict_field

@@ -235,7 +235,7 @@ The demo date control in the page header sends the `PUT`; on success `main.ts` u
 }
 ```
 
-Scores are 0–1. Days up to today are the season so far; today + 1 … today + 7 are the coming days. The `explanation` format is still open ([database.md](database.md#open-questions)).
+Scores are 0–1. Days up to today are the season so far; today + 1 … today + 7 are the coming days. The `explanation` format is still open ([database.md](database.md#open-questions)). **Update (decision engine):** the engine writes explanation version 1 — `summary`, `level` (low < 0.33 ≤ medium < 0.66 ≤ high, the map's cut-offs), `drivers` with their `effect`, `action` (with the spraying window), `confidence`, `notes`, `assumptions` — documented in [engine/README.md](../engine/README.md#what-it-writes-risk-and-the-explanation).
 
 ## Chat
 
