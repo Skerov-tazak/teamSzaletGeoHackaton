@@ -31,3 +31,7 @@ rank-bm25==0.2.2
 pystempel==2.0.0             # Polish stemmer for BM25
 rapidfuzz==3.14.6            # fuzzy matching of TOC headings and threat names
 pyyaml>=6.0                  # eval questions
+# Assistant: LLM, tools, MCP
+openai==3.57.0               # one client for Gemini + Groq (OpenAI-compatible endpoints)
+mcp==2.3.0                   # MCP server (python manage.py mcp_server)
+pydantic==2.14.4             # tool input/output schemas
