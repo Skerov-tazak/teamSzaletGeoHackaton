@@ -89,7 +89,7 @@ export type PendingAction = ConfirmObservationAction | { type: string; [key: str
 
 export interface ChatMessage extends Omit<Schemas["ChatMessage"], "citations" | "chart" | "pending_action"> {
   citations: Record<string, unknown>[]; // parse with toCitation(); unknown kinds are ignored
-  chart?: ChartSpec | null;
+  chart?: ChartSpec | null; // always sent (null when none); optional so a missing key also reads as none
   pending_action?: PendingAction | null;
 }
 

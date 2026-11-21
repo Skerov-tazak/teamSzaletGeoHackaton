@@ -372,10 +372,13 @@ components:
           type: object
           additionalProperties: {}
           nullable: true
+          description: Vega-Lite v5 spec, data inline; null when none
         pending_action:
           type: object
           additionalProperties: {}
           nullable: true
+          description: 'e.g. {"type": "confirm_observation", "draft": {"draft_id",
+            "field_id", …}}; null when none'
         created_at:
           type: string
           format: date-time

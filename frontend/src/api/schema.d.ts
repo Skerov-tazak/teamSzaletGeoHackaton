@@ -74,9 +74,11 @@ export interface components {
         }[];
       focus_field_id: number | null;
       updated_field_ids: number[];
+      /** @description Vega-Lite v5 spec, data inline; null when none */
       chart: {
         [key: string]: unknown;
       } | null;
+      /** @description e.g. {"type": "confirm_observation", "draft": {"draft_id", "field_id", …}}; null when none */
       pending_action: {
         [key: string]: unknown;
       } | null;

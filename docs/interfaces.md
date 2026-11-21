@@ -14,8 +14,8 @@ How the components talk to each other: the frontend modules, the events between 
 | [Platform API](#platform-api) | Built, except the weather endpoint (shape not defined) | Jan + Szymek |
 | [Demo date control](#clock) (`PUT /api/clock/` + header control) | Built | Jan + Szymek |
 | [Chat tables](#chat-tables) (`Conversation`, `Message`) | Exists | Jan + Szymek (first version), then Ola |
-| [Chat endpoints](#chat) | Built (Ola, `assistant/views.py`). Not yet sending the agreed `chart` and `pending_action` keys | Ola |
-| [Chat window](#chat) (`frontend/src/chat/`) | Built, including charts and the observation buttons (shown once the endpoint sends the keys) | Jan + Szymek |
+| [Chat endpoints](#chat) | Built (Ola, `assistant/views.py`), including the `chart` and `pending_action` keys | Ola |
+| [Chat window](#chat) (`frontend/src/chat/`) | Built, including charts and the observation buttons | Jan + Szymek |
 | [`answer()`](#the-answer-function), MCP tools, RAG | Built | Ola |
 | [Read-only database user](#free-form-lookups-read-only-sql) | To build | Jan + Szymek |
 | [Observation table](#writing-observations) (`core.Observation`) | Exists; the assistant writes it (its migration 0003 moved the interim rows) | Jan + Szymek (schema), Ola (writes), Bartek (reads) |

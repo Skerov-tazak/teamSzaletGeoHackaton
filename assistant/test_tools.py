@@ -118,6 +118,21 @@ class ChartToolTests(ToolTestCase):
         layer_texts = [l["encoding"].get("text", {}).get("value", "") for l in r["chart"]["layer"]]
         self.assertTrue(any(t.startswith("dziś") for t in layer_texts))
 
+    def test_today_line_has_a_date_vega_lite_can_place(self):
+        # a string datum is not parsed on a temporal axis (the line was not drawn): DateTime, one row
+        from assistant.tools.platform import season_today
+        today = season_today()
+        for r in (call("chart_risk_timeline", field_ids=[self.wheat.id], threat="septorioza paskowana"),
+                  call("chart_weather_vs_risk", field_id=self.wheat.id, variable="total_precipitation",
+                       threat="septorioza paskowana")):
+            today_layers = [l for l in r["chart"]["layer"] if isinstance(l["encoding"].get("x", {}).get("datum"), dict)]
+            self.assertEqual(len(today_layers), 2)  # the dashed rule and its "dziś" label
+            for layer in today_layers:
+                self.assertEqual(layer["encoding"]["x"]["datum"],
+                                 {"year": today.year, "month": today.month, "date": today.day, "utc": True})
+                self.assertEqual(layer["data"], {"values": [{}]})
+            self.assertFalse(any(isinstance(l["encoding"].get("x", {}).get("datum"), str) for l in r["chart"]["layer"]))
+
     def test_weather_vs_risk_and_farm_overview(self):
         r = call("chart_weather_vs_risk", field_id=self.wheat.id, variable="total_precipitation",
                  threat="septorioza paskowana")
