@@ -224,3 +224,31 @@ class GuideToolTests(unittest.TestCase):
         out = fit_passages([mk(i) for i in range(6)], budget=900)
         self.assertGreaterEqual(len(out), 1)
         self.assertLessEqual(sum(_ntok(p["text"]) for p in out), 900 + 20)
+
+
+class McpServerTests(ToolTestCase):
+    def test_specs_have_confirm_for_writes_and_no_sql(self):
+        from assistant.mcp_server import tool_specs
+        specs = {s["name"]: s for s in tool_specs()}
+        self.assertIn("confirm", specs["record_observation"]["input_schema"]["properties"])
+        self.assertFalse(specs["record_observation"]["read_only"])
+        self.assertTrue(specs["get_field_risks"]["read_only"])
+        self.assertNotIn("run_readonly_sql", specs)
+
+    def test_record_observation_is_dry_run_without_confirm(self):
+        from assistant.mcp_server import run_tool
+        args = dict(field_id=self.wheat.id, category="choroba", threat="septorioza", note="plamy",
+                    idempotency_key="mcp-test-0001")
+        res, err = run_tool("record_observation", args, manage_connections=False)
+        self.assertFalse(err)
+        self.assertTrue(res["dry_run"])
+        self.assertEqual(Observation.objects.count(), 0)
+        res, err = run_tool("record_observation", args | {"confirm": True}, manage_connections=False)
+        self.assertTrue(res["created"])
+        self.assertEqual(Observation.objects.count(), 1)
+
+    def test_errors_are_returned_not_raised(self):
+        from assistant.mcp_server import run_tool
+        res, err = run_tool("get_field", {"field_id": 999999}, manage_connections=False)
+        self.assertTrue(err)
+        self.assertIn("Nie ma pola", res["error"])
