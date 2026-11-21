@@ -229,3 +229,5 @@ __marimo__/
 logs/
 # Frontend build
 node_modules/
+# Portable Node used only when the machine has no Node.js on PATH
+.tools/

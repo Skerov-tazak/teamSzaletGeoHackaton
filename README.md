@@ -19,6 +19,7 @@ Hackathon: [Field Under Pressure](https://geo-hackathon.g.location360.ag/), 20�
 | Document | What's in it |
 |----------|--------------|
 | [architecture_overview.md](architecture_overview.md) | The product, the five components and how they work together |
+| [AGENTS.md](AGENTS.md) | Rules for coding agents: owners, hard rules, frontend stack and commands, definition of done |
 | [docs/database.md](docs/database.md) | Every table, column and unit; rules for every component; query helpers |
 | [docs/interfaces.md](docs/interfaces.md) | How the components talk: frontend modules, map–chat events, platform API, chat, assistant data access, `predict()` |
 | [engine/README.md](engine/README.md) | Decision engine: what it must provide and how it reads and writes data |
@@ -82,6 +83,33 @@ You need Python 3.11+ (the assistant's PDF library needs it; `.python-version` s
 | Rebuild TypeScript on every save | `cd frontend && npm run watch` |
 | Type-check TypeScript | `cd frontend && npm run typecheck` |
 | Run tests | `python manage.py test` |
+
+**Environment on Windows (what this branch was set up with):** `.venv` created with `python -m venv .venv`, then `.venv\Scripts\python.exe -m pip install -r requirements.txt`, `.env` copied from `.env.example`. Without Docker Desktop the page still renders, but `/api/health/` reports the database unreachable. Node is needed only for the frontend build (18+, or 22 via `fnm use 22`); if `node` is not on `PATH`, install Node.js first.
+
+## Frontend
+
+The page is one Django template ([`frontend/templates/frontend/index.html`](frontend/templates/frontend/index.html)) plus plain TypeScript in [`frontend/src/`](frontend/src/), bundled by esbuild into `frontend/static/frontend/dist/` (`main.js` + `main.css`). Built:
+
+- **top menu**: centred navigation (Map, My crops *Moje uprawy*, Own data), brand on the left, account and assistant on the right;
+- **map** (Leaflet): base maps (OSM, OpenTopoMap, orthophoto), the farm's fields, risk colouring for the demo's date, own parcels, a field card with the day's risks and the season chart;
+- **layers sidebar**: slides in from the left over the map — base map, overlays, risk legend, demo date from `/api/clock/`; the *Warstwy* button (or the ‹ in its header) opens and closes it;
+- **assistant**: a drawer on the right, opened with the *Asystent* button (conversations from `/api/chat/conversations/`, answers from `POST /api/chat/`, sanitised markdown, risk citations focus the field);
+- **Own data**: upload tab for `.shp`/`.zip`/`.gpkg`/`.geojson` — for now the file is queued locally (parsing and the backend upload come next);
+- **account**: local only (`localStorage`), available from the *Konto* button — just two fields (*E-mail lub nazwa użytkownika*, *Hasło*); *Załóż konto* registers the account and it does not block any section. Backend accounts are a later iteration.
+
+The page reads only through the platform API. Until an endpoint exists (`/api/clock/`, `/api/fields/`, `/api/risks/`, `/api/chat/`), the matching panel shows an empty state instead of failing; the map itself keeps working.
+
+### Building the frontend
+
+```bash
+cd frontend
+npm install
+npm run build        # typecheck + esbuild -> static/frontend/dist/
+# or, while developing:
+npm run watch
+```
+
+Setup details and the map's contract: [`frontend/src/map/README.md`](frontend/src/map/README.md), [docs/interfaces.md](docs/interfaces.md).
 
 Useful pages while the server runs:
 
