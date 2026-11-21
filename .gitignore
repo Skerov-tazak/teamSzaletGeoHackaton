@@ -225,5 +225,7 @@ __marimo__/
 
 # Assistant: generated RAG index (pages, chunks, BM25, embedding cache)
 /assistant/data/
+# Assistant: LLM usage logs
+logs/
 # Frontend build
 node_modules/
