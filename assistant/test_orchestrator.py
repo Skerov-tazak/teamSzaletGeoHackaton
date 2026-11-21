@@ -107,6 +107,17 @@ class RouterTests(WorldTestCase):
                 wrong.append((msg, expected, r.type, r.reason))
         self.assertEqual(wrong, [])
 
+    def test_farm_report_without_a_field(self):
+        cases = [
+            ("Daj mi raport ryzyk na moich polach", None, "podsumowanie_farmy"),
+            ("Jakie są ryzyka na moich polach?", None, "podsumowanie_farmy"),
+            ("raport ryzyk", None, "podsumowanie_farmy"),
+            ("raport ryzyk", "Pole Północne", "pytanie_o_pole"),           # a selected field: its own report
+            ("Jak zwalczać septoriozę na polach pszenicy?", None, "pytanie_ogolne"),
+        ]
+        got = [(m, router.route(m, self.f.get(sel) if sel else None, State(None)).type) for m, sel, _ in cases]
+        self.assertEqual(got, [(m, e) for m, _, e in cases])
+
     def test_detects_field_crop_threat(self):
         r = router.route("Czy na Polu Długim grozi septorioza?", None, State(None))
         self.assertEqual(r.field_id, self.f["Pole Długie"].id)
