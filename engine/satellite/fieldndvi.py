@@ -93,7 +93,7 @@ class Anchor:
 def phenology_anchors(series: pd.DataFrame | None, crop: int, season: int) -> list[Anchor]:
     """
     Growth-stage anchors from the field's NDVI curve; each is only usable from `detected_on` on.
-    Wheat: spring NDVI peak ~ heading (BBCH 55); NDVI falling below 0.5 after it ~ ripening (BBCH 83).
+    Wheat: spring NDVI peak ~ heading (BBCH 55); NDVI falling below 0.5 after it ~ yellow ripeness (BBCH 87).
     Maize: NDVI first above 0.35 after 20 April ~ 3-4 leaves (BBCH 13); summer NDVI peak ~ flowering (BBCH 65).
     """
     from engine.catalog import MAIZE, WHEAT
@@ -121,7 +121,7 @@ def phenology_anchors(series: pd.DataFrame | None, crop: int, season: int) -> li
             out.append(Anchor(pk[1].date(), pk[0].date(), 55, f"NDVI peak {pk[2]:.2f} on {pk[0].date()} (heading)"))
             low = s[(s.index > pk[0]) & (s < 0.5)]
             if not low.empty:
-                out.append(Anchor(low.index[0].date(), low.index[0].date(), 83, f"NDVI below 0.5 on {low.index[0].date()} (ripening)"))
+                out.append(Anchor(low.index[0].date(), low.index[0].date(), 87, f"NDVI below 0.5 on {low.index[0].date()} (yellow ripeness)"))
     elif crop == MAIZE:
         # emergence = the rise after the spring minimum (bare soil after ploughing and sowing); a green
         # cover crop or weeds before ploughing must not count

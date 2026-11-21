@@ -145,6 +145,7 @@ def _query(end: date, field_id: int | None = None) -> list[Report]:
     from django.apps import apps
 
     out: list[Report] = []
+    core_keys: set[str] = set()
     for app in ("core", "assistant"):  # core.Observation (agreed home) and the chat's interim table
         try:
             model = apps.get_model(app, "Observation")
@@ -154,11 +155,18 @@ def _query(end: date, field_id: int | None = None) -> list[Report]:
         if date_field is None:
             log.warning("%s.Observation has no observed_on / date column: its reports are ignored", app)
             continue
+        names = {f.name for f in model._meta.get_fields()}
         q = model.objects.filter(**{f"{date_field}__lte": end})
-        if any(f.name == "threat" for f in model._meta.get_fields()):
+        if "threat" in names:
             q = q.select_related("threat")
-        rows = [x for x in (_to_report(r, date_field) for r in q) if x is not None]
-        out += for_field(rows, field_id) if field_id is not None else rows
+        rows = list(q)
+        if "idempotency_key" in names:
+            if app == "core":
+                core_keys = {r.idempotency_key for r in rows if r.idempotency_key}
+            else:  # an interim row already moved to core.Observation must count once
+                rows = [r for r in rows if not (r.idempotency_key and r.idempotency_key in core_keys)]
+        reports = [x for x in (_to_report(r, date_field) for r in rows) if x is not None]
+        out += for_field(reports, field_id) if field_id is not None else reports
     return out
 
 
@@ -173,7 +181,15 @@ def load_all(start: date, end: date) -> list[Report]:
 
 
 FIELD_FACT_COLUMNS = ("sowing_date", "tillage", "resistant_to")
-KNOWN_SINCE = date(2000, 1, 1)  # a field record has no report date: it holds for every day computed
+def known_since() -> date:
+    """
+    A fact stored on the field has no report date: it holds from the start of the current season, so a
+    resistant variety or a tillage change sown this season does not rewrite last season's risks.
+    """
+    from core import clock
+    from engine.satellite.season import season_bounds, season_of
+
+    return season_bounds(season_of(clock.today()))[0]
 
 
 def from_field(field) -> list[Report]:
@@ -191,7 +207,7 @@ def from_field(field) -> list[Report]:
             v = v if isinstance(v, date) else date.fromisoformat(str(v))
             out.append(Report(observed_on=v, kind="field_fact", details={"sowing_date": v, "source": "field_record"}, field_id=field.id))
         else:
-            out.append(Report(observed_on=KNOWN_SINCE, kind="field_fact", details={col: v, "source": "field_record"}, field_id=field.id))
+            out.append(Report(observed_on=known_since(), kind="field_fact", details={col: v, "source": "field_record"}, field_id=field.id))
     return out
 
 
