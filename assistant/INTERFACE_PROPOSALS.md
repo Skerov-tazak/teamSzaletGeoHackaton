@@ -25,8 +25,8 @@ other, `severity` 0.3 / 0.6 / 0.9, `distance_m` for neighbour reports, engine fa
 reassessment status. The interim `assistant.Observation` rows were moved in one migration
 (`assistant/0003`) and nothing writes there any more, so no report counts twice. The empty table
 stays because the engine's adapter and its tests still read it: **Bartek**, drop the adapter when
-convenient and the assistant will drop the table. `predict()` is called with `end` = the last
-precomputed day of the field (the known gap with the default end).
+convenient and the assistant will drop the table. `predict()` is called with its default end (which now covers the
+precomputed days) and `PredictResult.field_ids` gives the fields to reload.
 
 ## 2. Read-only role and `connections["readonly"]`
 

@@ -23,7 +23,8 @@ from assistant import domain
 CONFIRM_YES = {"tak", "zapisz", "potwierdzam", "ok", "okej", "zgadza sie", "dobrze", "jasne", "tak zapisz", "zapisuj"}
 CONFIRM_NO = {"nie", "anuluj", "nie zapisuj", "rezygnuje", "odrzuc", "stop", "nie trzeba"}
 
-CHART = [r"\bpokaz", r"\bwykres", r"\btrend", r"jak sie zmienial", r"\bprzebieg", r"\bnarysuj", r"\bzobrazuj"]
+# "pokaż" (imperative) only, not "pokazuje"
+CHART = [r"\bpokaz(cie)?\b", r"\bwykres", r"\btrend", r"jak sie zmienial", r"\bprzebieg", r"\bnarysuj", r"\bzobrazuj"]
 OBSERVATION = [r"\bwidze\b", r"zauwazyl", r"pojawil\w* sie", r"znalazl", r"zapisz obserwacj", r"\bdostrzegl",
                r"na polu (sa|jest|maja)", r"mam na polu", r"zaobserwowal", r"odnotuj",
                r"oprysk\w*al\w*", r"\bpryskal", r"wykonal\w* zabieg", r"\b(zasial|posial|sialem|sialam|wysial)",
@@ -33,14 +34,20 @@ OBSERVATION_STATEMENT = [r"\bsasiad\w*"]   # only when it is a statement, not a 
 FARM = [r"wszystkie pola", r"wszystkich pol", r"najpilniejsz", r"gospodarstw", r"ktore pole", r"na ktorym polu",
         r"podsumuj", r"przeglad pol", r"cala farm", r"wszystkich uprawach",
         r"\bmoich pol", r"\bmoje pola\b", r"\bmoich upraw", r"\bmoje uprawy", r"\bnaszych pol", r"\bnasze pola\b",
-        r"\bw gospodarstwie"]
+        r"\bw gospodarstwie", r"ktore (\w+ ){0,2}pola\b", r"\bpol\w* (sa )?najbardziej"]
 FARM_IF_NO_FIELD = [r"\braport", r"\bpodsumowani", r"\bzestawieni"]   # "raport ryzyk" with no field selected or named
+# only when no field is in context: "co dziś robić?", "od czego zacząć?" = which field first
+FARM_NO_FIELD = [r"od czego (\w+ ){0,2}zacz", r"\bco (\w+ ){0,3}(robic|zrobic)\b", r"\bsytuac", r"\bplan\w* na (dzis|dzisiaj|dzien|tydzien)",
+                 r"gdzie (\w+ ){0,2}(jechac|isc|zaczac|najpierw|zajrzec)", r"\bco (slychac|nowego)", r"\bczym (\w+ ){0,2}zajac"]
+GREETING_ONLY = re.compile(r"^(czesc|hej|witam|witaj|dzien dobry|dobry wieczor|siema|halo|hello|hi)( \w+)?$")
 FIELD_REF = [r"\bto pole", r"\btym polu", r"\btego pola", r"\bmoje pole", r"\bmoim polu", r"\bmojego pola",
              r"\bna polu\b", r"\bpola\b", r"\bpole\b"]
-RISK_INTENT = [r"ryzyk", r"zagroz", r"dlaczego", r"\bco (\w+ ){0,3}(robic|zrobic)",
+RISK_INTENT = [r"ryzyk", r"zagroz", r"dlaczego", r"\bco (\w+ ){0,5}(robic|zrobic)", r"\bco (teraz|dalej|radzisz|polecasz|proponujesz)",
+               r"\bjak (\w+ ){0,2}(ograniczyc|zmniejszyc|chronic|zapobiec|uratowac|ratowac)", r"na co (\w+ )?uwazac",
+               r"\bmartwic", r"\bboje", r"\bbac\b", r"\bpilnowac", r"\bczy (\w+ ){0,2}(dobrze|zle|ok)\b",
                r"czy grozi", r"\bstan\b", r"niebezpiecz", r"\bgrozi", r"co mu dolega", r"co sie dzieje", r"\bjak (jest|wyglada)",
                r"\balarm", r"\bostrzez", r"czy (musze|trzeba|nalezy)"]
-AGRO = [r"choro", r"szkodni", r"\bpol[aeiuo]?\b", r"upraw", r"pszen", r"kukurydz", r"zboz", r"ryzyk", r"opryskiw",
+AGRO = [r"choro", r"szkodni", r"\bpol[aeiuo]?\b", r"\bpol(ach|ami|om)\b", r"upraw", r"pszen", r"kukurydz", r"zboz", r"ryzyk", r"opryskiw",
         r"nawo", r"\bsiew", r"\bplon", r"lisc", r"klos", r"metodyk", r"ochron", r"chwast", r"grzyb", r"pogod",
         r"deszcz", r"opad", r"temperatur", r"wilgot", r"bbch", r"odmian", r"gleb", r"termin", r"\bprog",
         r"lustrac", r"objaw", r"plam", r"mszyc", r"rdz", r"septori", r"fuzari", r"maczni", r"omacni", r"herbicyd",
@@ -146,13 +153,18 @@ def route(message: str, selected_field=None, state=None) -> Route:
     complex_q = len(named) >= 2 or (len(threats) >= 2 and _any(COMPARE, t)) or bool(_any(DATE_RANGE, t))
     if agent and complex_q:
         return Route("zlozone", reason="complex question (agent mode)", **base)
-    if p := (_any(FARM, t) or (len(named) >= 2 and "compare") or (field_id is None and _any(FARM_IF_NO_FIELD, t))):
+    if p := (_any(FARM, t) or (len(named) >= 2 and "compare")
+             or (field_id is None and _any(FARM_IF_NO_FIELD, t))
+             or (field_id is None and not _any(FIELD_REF, t) and _any(FARM_NO_FIELD, t))):
         return Route("podsumowanie_farmy", reason=f"farm word {p}", **base)
     # 5. question about a field
     field_ref = field_id is not None or bool(_any(FIELD_REF, t))
     if field_ref and (p := _any(RISK_INTENT, t)):
         return Route("pytanie_o_pole", reason=f"field ref ({field_source or 'phrase'}) + intent {p}", **base)
-    # 6. out of scope
-    if _any(OFF_TOPIC, t) or not (_any(AGRO, t) or named or threats):
-        return Route("poza_zakresem", reason="no agricultural words", **base)
+    # 6. out of scope: only clearly unrelated topics and bare greetings get the fixed answer
+    if _any(OFF_TOPIC, t) or GREETING_ONLY.match(t) or t in CONFIRM_YES or t in CONFIRM_NO:
+        return Route("poza_zakresem", reason="off-topic, greeting or a bare yes/no", **base)
+    # 7. anything else goes to the model: with the field's data when a field is in context
+    if field_id is not None:
+        return Route("pytanie_o_pole", reason=f"open question, field in context ({field_source})", **base)
     return Route("pytanie_ogolne", reason="default", **base)

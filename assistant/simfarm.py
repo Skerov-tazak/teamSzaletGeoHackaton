@@ -295,11 +295,13 @@ OBSERVATIONS = [
 ]
 
 
-def add_observations(log=print) -> int:
+def add_observations(log=print, field_filter: dict | None = None) -> int:
     from core.models import Field, Observation, Threat
     n = 0
     for name, d, kind, cat, threat, sev, dist, details, text in OBSERVATIONS:
-        f = Field.objects.get(name=name, weather_grid_id=SIM_GRID)
+        f = Field.objects.filter(name=name, **(field_filter or {"weather_grid_id": SIM_GRID})).first()
+        if f is None:
+            continue
         Observation.objects.create(
             field=f, observed_on=d, kind=kind, category=cat,
             threat=Threat.objects.filter(code=threat).first() if threat else None, severity=sev, distance_m=dist,
