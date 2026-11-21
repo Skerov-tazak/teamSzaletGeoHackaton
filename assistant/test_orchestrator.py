@@ -379,7 +379,7 @@ class EmptyReasoningAnswerTests(SimpleTestCase):
         llm.client = NS(chat=NS(completions=NS(create=create)))
         r = llm.complete([{"role": "user", "content": "x"}])
         self.assertEqual(r.text, "Odpowiedź.")
-        self.assertEqual([c["max_tokens"] for c in calls], [700, 1400])
+        self.assertEqual([c["max_tokens"] for c in calls], [1500, 3000])
         self.assertEqual(calls[0]["reasoning_effort"], "low")
 
 
@@ -402,3 +402,99 @@ class EngineAlignmentTests(WorldTestCase):
         self.assertEqual((d["kind"], d["category"]), ("treatment", "choroba"))
         d = self._draft("Sąsiad za drogą ma fuzariozę kłosów", None)
         self.assertEqual((d["kind"], d["category"], d["facts"]), ("neighbour", "choroba", {"distance_m": 300}))
+
+
+class BroaderRoutingTests(WorldTestCase):
+    def test_morning_questions_and_open_follow_ups(self):
+        from assistant.orchestrator.router import route
+        for q in ["od czego dziś zacząć?", "Co dziś robić na polach?", "Jak wygląda sytuacja na polach?",
+                  "Gdzie dziś jechać najpierw?"]:
+            self.assertEqual(route(q, None, State(None)).type, "podsumowanie_farmy", q)
+        s = State(None)
+        s.data["last_field_id"] = self.maize.id
+        for q in ["Co mam tam dziś konkretnie zrobić?", "A na co mam uważać?", "Czy powinienem się martwić?"]:
+            r = route(q, None, s)
+            self.assertEqual((r.type, r.field_id), ("pytanie_o_pole", self.maize.id), q)
+        self.assertEqual(route("Jaka jest stolica Francji?", None, State(None)).type, "pytanie_ogolne")
+        self.assertEqual(route("Cześć", None, State(None)).type, "poza_zakresem")
+
+    def test_threat_sources_must_mention_the_threat(self):
+        from assistant.orchestrator.context import mentions
+        self.assertTrue(mentions("rdzy brunatnej sprzyja wilgoć", "rdza brunatna pszenicy"))
+        self.assertFalse(mentions("larwy stonki kukurydzianej", "żółta plamistość liści kukurydzy"))
+
+
+class InvisibleCharsCitationTests(SimpleTestCase):
+    def test_zero_width_space_inside_brackets(self):
+        out, cits, unknown = citations.finalize("Tekst\u202f[\u200bpszenica_doradcy:5.1:0018].", {"pszenica_doradcy:5.1:0018": CIT})
+        self.assertEqual(out, "Tekst [1].")
+        out, cits, unknown = citations.finalize("Zmyślone [\u200bkukurydza_producenci:IV.2:0004].", {})
+        self.assertEqual((out, unknown), ("Zmyślone.", ["kukurydza_producenci:IV.2:0004"]))
+
+
+class FitForTodayTests(SimpleTestCase):
+    TEXT = ("Objawy to owalne plamy z chlorotyczną obwódką. Próg szkodliwości: w fazie krzewienia 10–15% roślin "
+            "z objawami. W fazie strzelania w źdźbło 5% liści z objawami. W fazie kłoszenia i kwitnienia 5% kłosów "
+            "z objawami. Usuń i spal resztki roślin. W szklarni zapewnij wietrzenie.")
+
+    def test_keeps_only_thresholds_of_todays_stage(self):
+        from assistant.orchestrator.context import fit_for_today
+        out = fit_for_today(self.TEXT, 70)
+        self.assertIn("kłoszenia i kwitnienia 5%", out)
+        self.assertNotIn("krzewienia", out)
+        self.assertNotIn("strzelania", out)
+        self.assertIn("owalne plamy", out)
+        early = fit_for_today(self.TEXT, 25)
+        self.assertIn("krzewienia 10–15%", early)
+        self.assertNotIn("kłoszenia", early)
+
+    def test_drops_greenhouse_and_burning_advice(self):
+        from assistant.orchestrator.context import fit_for_today
+        out = fit_for_today(self.TEXT, None)
+        self.assertNotIn("spal", out)
+        self.assertNotIn("szklarni", out)
+
+    def test_unfinished_answer_is_cut_to_the_last_sentence(self):
+        from assistant.orchestrator.flows import finish_sentence
+        self.assertEqual(finish_sentence("Pełne zdanie [1]. Drugie zdanie [2]. Metodyka zaleca, przyjmując pró"),
+                         "Pełne zdanie [1]. Drugie zdanie [2].")
+        self.assertEqual(finish_sentence("Całe zdanie."), "Całe zdanie.")
+        self.assertEqual(finish_sentence("Bardzo długie zdanie bez końca"), "Bardzo długie zdanie bez końca")
+
+
+
+class AnswerShapeTests(SimpleTestCase):
+    def test_intent_of_the_question(self):
+        from assistant.orchestrator.flows import question_intent
+        self.assertEqual(question_intent("co mogę zrobić żeby zmniejszyć ryzyko?"), "action")
+        self.assertEqual(question_intent("Dlaczego to pole jest na czerwono i co mam zrobić?"), "why_action")
+        self.assertEqual(question_intent("Jak wyglądają objawy fuzariozy?"), "symptoms")
+        self.assertEqual(question_intent("Skąd to wysokie ryzyko?"), "why")
+
+    def test_engine_threshold_only_for_todays_stage(self):
+        from assistant.orchestrator.context import threshold_for_stage
+        thr = "Krzewienie: 10-15 % roślin z pierwszymi objawami; strzelanie w źdźbło: 5 % liści."
+        self.assertEqual(threshold_for_stage(thr, 71), "")
+        self.assertEqual(threshold_for_stage(thr, 22), "Krzewienie: 10-15 % roślin z pierwszymi objawami; strzelanie w źdźbło: 5 % liści")
+        self.assertEqual(threshold_for_stage(thr, 45), "strzelanie w źdźbło: 5 % liści")
+        self.assertIn("kwitnienia", threshold_for_stage("Infekcja w czasie kwitnienia (BBCH 61-69); zabieg zapobiegawczo", 71))
+
+    def test_garden_advice_removed_from_the_answer(self):
+        from assistant.orchestrator.context import drop_off_field
+        self.assertEqual(drop_off_field("Obejrzyj kłosy [1]. Zapewnij dobrą cyrkulację powietrza. Zadzwoń do doradcy."),
+                         "Obejrzyj kłosy [1]. Zadzwoń do doradcy.")
+        md = "**Obejrzyj kłosy dziś.**\n\n- lustracja kłosów [1]\n- zapewnij cyrkulację powietrza\n- zadzwoń do doradcy"
+        self.assertEqual(drop_off_field(md), "**Obejrzyj kłosy dziś.**\n\n- lustracja kłosów [1]\n- zadzwoń do doradcy")
+
+    def test_markdown_survives_the_sentence_trim(self):
+        from assistant.orchestrator.flows import finish_sentence
+        md = "**Najpierw lustracja.**\n\n- obejrzyj kłosy [1].\n- zadzwoń do doradcy, gdy"
+        self.assertEqual(finish_sentence(md), "**Najpierw lustracja.**\n\n- obejrzyj kłosy [1].")
+
+
+    def test_nested_bold_is_flattened(self):
+        from assistant.orchestrator.flows import fix_bold
+        self.assertEqual(fix_bold("**Lustracja **Za Stodołą** pod kątem fuzariozy dziś**."),
+                         "**Lustracja Za Stodołą pod kątem fuzariozy dziś**.")
+        self.assertEqual(fix_bold("- **Za Stodołą**: wysokie, **Pod Lasem** średnie"),
+                         "- **Za Stodołą**: wysokie, **Pod Lasem** średnie")

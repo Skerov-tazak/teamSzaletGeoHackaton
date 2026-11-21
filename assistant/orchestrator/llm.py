@@ -27,7 +27,7 @@ CHARS_PER_TOKEN = 3.0  # conservative estimate for Polish text with LLM tokenize
 
 
 def max_tokens_out() -> int:
-    return int(os.getenv("LLM_MAX_TOKENS_OUT", "700"))
+    return int(os.getenv("LLM_MAX_TOKENS_OUT", "1500"))
 
 
 def input_budget() -> int:
@@ -54,6 +54,7 @@ class LLMResult:
     duration_ms: int
     tool_calls: list | None = None
     message: Any = None  # raw assistant message (agent mode)
+    truncated: bool = False  # the output limit cut the answer (finish_reason == "length")
 
 
 class LLM(Protocol):
@@ -167,14 +168,16 @@ class OpenAICompatLLM:
             raise
         msg = resp.choices[0].message
         text = msg.content or ""
-        if not text.strip() and not getattr(msg, "tool_calls", None) and max_tokens < 1400 \
+        if not text.strip() and not getattr(msg, "tool_calls", None) and max_tokens < 3000 \
                 and resp.choices[0].finish_reason == "length":
             # the whole output budget went to reasoning: one retry with a larger budget (still < 6k per call)
-            log.warning("%s returned no text (output limit reached while reasoning); retrying with 1400", self.name)
-            return self.complete(messages, json_mode=json_mode, max_tokens=1400, temperature=temperature, tools=tools)
+            retry = min(3000, max(1400, 2 * max_tokens))
+            log.warning("%s returned no text (output limit reached while reasoning); retrying with %s", self.name, retry)
+            return self.complete(messages, json_mode=json_mode, max_tokens=retry, temperature=temperature, tools=tools)
         return LLMResult(text=text, provider=self.name, model=self.model, usage=_usage(resp.usage, msgs, text),
                          duration_ms=int((time.perf_counter() - t0) * 1000),
-                         tool_calls=getattr(msg, "tool_calls", None), message=msg)
+                         tool_calls=getattr(msg, "tool_calls", None), message=msg,
+                         truncated=resp.choices[0].finish_reason == "length")
 
 
 def _with_json_instruction(messages: list[dict]) -> list[dict]:

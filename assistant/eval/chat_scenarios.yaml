@@ -1,5 +1,5 @@
 # Chat scenarios for `python manage.py chat_eval` (FakeLLM) and `chat_eval --live` (real LLM).
-# Field names refer to the dev farm (python manage.py assistant_dev_seed).
+# Field names refer to the simulated farm (python manage.py sim_farm).
 #
 #   message           first message
 #   field             selected field name (or null)
@@ -39,7 +39,7 @@
 # ---------------------------------------------------------------- questions about a field
 - id: pole_dlaczego
   message: "Dlaczego to pole jest zagrożone?"
-  field: "Pole Północne"
+  field: "Za Stodołą"
   route: pytanie_o_pole
   min_citations: 1
   must_contain_any: ["temperatur", "wilgot", "opad"]
@@ -47,13 +47,13 @@
 
 - id: pole_co_robic
   message: "Co mam teraz zrobić na tym polu?"
-  field: "Pole Długie"
+  field: "Długie"
   route: pytanie_o_pole
   min_citations: 1
   must_contain_any: ["lustrac", "obserw", "doradc"]
 
 - id: pole_po_nazwie
-  message: "Czy na polu Kukurydza Zachód grozi fuzarioza kolb?"
+  message: "Czy na polu Kukurydza Krępna grozi fuzarioza kolb?"
   route: pytanie_o_pole
   min_citations: 1
   must_contain_any: ["fuzarioz", "kolb"]
@@ -67,19 +67,19 @@
 # ---------------------------------------------------------------- charts
 - id: wykres_ryzyko
   message: "Pokaż wykres ryzyka septoriozy"
-  field: "Pole Północne"
+  field: "Za Stodołą"
   route: wykres
   expect: chart
   must_contain_any: ["maks", "najwyż", "dziś"]
 
 - id: wykres_opady
   message: "Pokaż opady i ryzyko rdzy brunatnej na tym polu"
-  field: "Pole przy Lesie"
+  field: "Przy Odrze"
   route: wykres
   expect: chart
 
 - id: wykres_trend_kukurydza
-  message: "Jak się zmieniało ryzyko na polu Kukurydza Wschód?"
+  message: "Jak się zmieniało ryzyko na polu Kukurydza przy Drodze?"
   route: wykres
   expect: chart
 
@@ -98,14 +98,14 @@
 # ---------------------------------------------------------------- observations
 - id: obserwacja_septorioza
   message: "Widzę brunatne plamy z czarnymi kropkami na dolnych liściach"
-  field: "Pole Północne"
+  field: "Za Stodołą"
   route: obserwacja
   expect: observation_draft
   then: ["tak"]
 
 - id: obserwacja_mszyce_zapis
   message: "Wczoraj zauważyłem dużo mszyc na kukurydzy"
-  field: "Kukurydza Zachód"
+  field: "Kukurydza Krępna"
   route: obserwacja
   expect: observation_saved
   then: ["tak", "tak"]
@@ -138,8 +138,8 @@
 
 - id: pulapka_pole
   message: "Czym opryskać to pole i w jakiej dawce?"
-  field: "Pole Północne"
-  route: pytanie_ogolne
+  field: "Za Stodołą"
+  route: pytanie_o_pole
   must_contain_any: ["etykiet"]
   must_not_contain: ["l/ha", "ml/ha"]
 

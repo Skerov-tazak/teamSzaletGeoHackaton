@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from assistant import domain
 from assistant.tools.guides import fit_passages
@@ -69,7 +70,10 @@ def threat_lines(t: dict, with_factors: bool = True) -> list[str]:
     if act.get("type"):
         a = f"  zalecenie silnika: {ACTION_PL.get(act['type'], act['type'])}"
         if act.get("threshold"):
-            a += f"; próg dla tej fazy: {act['threshold']}"
+            bbch = ((expl.get("growth_stage") or {}).get("bbch"))
+            thr = threshold_for_stage(act["threshold"], bbch)
+            a += f"; próg (silnik, obecna faza): {thr}" if thr else \
+                f"; silnik nie podaje progu dla obecnej fazy (BBCH {bbch}) — tylko lustracja na obecność objawów"
         if act.get("weather_window"):
             a += f"; najbliższe okno pogodowe na zabieg: {act['weather_window']}"
         out.append(a)
@@ -137,8 +141,13 @@ def guide_sources(queries: list[tuple[str, str | None, int]], budget: int = SOUR
     from assistant.rag.store import QdrantUnavailable
     results = []
     try:
-        for q, crop, k in queries:  # no crop -> only the farm's crops' guides (not oats, rye, potatoes…)
-            results.append(search(q, crop=crop or "farm", k=k, include_pesticide_doses=False))
+        for query in queries:  # (query, crop, k[, topic]); no crop -> only the farm's crops' guides
+            q, crop, k = query[:3]
+            topic = query[3] if len(query) > 3 else None
+            found = search(q, crop=crop or "farm", k=k + (3 if topic else 0), include_pesticide_doses=False)
+            if topic:  # a passage cited for a threat must be about that threat
+                found = [p for p in found if mentions(p.text + " " + p.section, topic)][:k]
+            results.append(found)
     except QdrantUnavailable:
         return [], "Wyszukiwarka metodyk jest niedostępna — odpowiadaj bez cytatów z metodyk i powiedz o tym."
     seen = set(exclude or ())
@@ -151,9 +160,137 @@ def guide_sources(queries: list[tuple[str, str | None, int]], budget: int = SOUR
     return fit_passages(merged[:max_n * 2], budget)[:max_n], None
 
 
+WEATHER_WORDS = re.compile(r"pogod|deszcz|opad|pada|padac|temperatur|zimn|ciepl|upal|wiatr|wilgot|przymroz|prognoz|susz|burz")
+
+
+def asks_about_weather(question: str) -> bool:
+    return bool(WEATHER_WORDS.search(domain.fold(question)))
+
+
+def weather_lines(field_id: int) -> list[str]:
+    """Compact daily weather for the field: the last 3 observed days + the forecast (code, no LLM)."""
+    import datetime as dt
+    today = dt.date.fromisoformat(call("get_season_date")["today"])
+    try:
+        w = call("get_weather", field_id=field_id, date_from=today - dt.timedelta(days=3),
+                 variables=["min_temperature", "max_temperature", "total_precipitation", "avg_relative_humidity",
+                            "avg_wind_speed"])
+    except ToolError as e:
+        return [f"Pogoda: brak danych ({e})."]
+    out = ["Pogoda dla pola (ostatnie dni = obserwacja, dalej = prognoza; °C, mm/dzień, %, km/h):"]
+    for d in w["days"]:
+        out.append(f"- {d['date']} {'prognoza' if d['source'] == 'forecast' else 'obserwacja'}: "
+                   f"{d['min_temperature']}–{d['max_temperature']} °C, opad {d['total_precipitation']} mm, "
+                   f"wilgotność {d['avg_relative_humidity']} %, wiatr {d['avg_wind_speed']} km/h")
+    return out
+
+
+def mentions(text: str, topic: str) -> bool:
+    """Does the text name the topic (a threat name)? Inflection-tolerant: every main word of the topic
+    by its first 5 letters (rdza/rdzy, omacnica/omacnicy); words in brackets and short words ignored."""
+    words = [w for w in domain.fold(re.sub(r"\(.*?\)", "", topic)).split() if len(w) >= 4][:2]
+    t = domain.fold(text)
+    stems = [w[:5] if len(w) > 6 else w[:max(3, len(w) - 1)] for w in words]  # rdza/rdzy -> "rdz"
+    return bool(stems) and all(re.search(rf"\b{re.escape(s)}", t) for s in stems)
+
+
 def threat_query(name: str, crop: str | None) -> str:
     return f"{name} {crop or ''} warunki rozwoju objawy ograniczanie niechemiczne lustracja".strip()
 
 
 def crop_of_code(code: int | None) -> str | None:
     return domain.CROP_PL.get(code or -1)
+
+
+# ----------------------------------------------------------------------------- sources fit for today
+# Growth stages named in the guides -> BBCH range (cereals and maize). A threshold sentence that names
+# only stages far from today's stage is about another part of the season.
+PHASES = [(r"kielk|wschod|wschodz", 0, 19), (r"\bliscia?\b|faz\w* (\d-)?\d+ lisc|\d+[-–]\d+ lisci", 10, 19),
+          (r"krzewien|krzewi", 20, 29), (r"strzelan\w* w zdzbl|\bzdzbl\w* (sie )?wydluz", 30, 39),
+          (r"lisc\w* flagow|nabrzmiew|bbch 3[7-9]|bbch 4", 37, 49), (r"klosz|wyrzucan\w* wiech", 50, 59),
+          (r"kwitn", 60, 69), (r"dojrzew|dojrzal|mleczn|woskow|pelna dojrz|rozw\w* ziarn", 70, 92)]
+THRESHOLD_WORDS = re.compile(r"%|\bprog|\bszt\b|osobnik|na 1 m|na roslin|na lisc|na klos")
+# advice for greenhouses, gardens and allotments, or against the law on a farm field
+NOT_FIELD = re.compile(r"szklarn|tunel|pod oslon|inspekt|ogrod|ogrodk|doniczk|rozsad|wietrz|cyrkulacj|"
+                       r"spal\w* (resztk|reszt|slom|liscie|roslin)|palenie|zbiera\w* (recznie|reka)")
+SENT_SPLIT = re.compile(r"(?<=[.;!?])\s+")
+
+
+def current_bbch(threats: list[dict]) -> int | None:
+    for t in threats:
+        gs = (t.get("explanation") or {}).get("growth_stage") or {}
+        if gs.get("bbch") is not None:
+            try:
+                return int(gs["bbch"])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _phase_ranges(folded: str) -> list[tuple[int, int]]:
+    out = [(lo, hi) for pat, lo, hi in PHASES if re.search(pat, folded)]
+    out += [(int(b), int(b)) for b in re.findall(r"bbch\s*(\d{1,2})", folded)]
+    return out
+
+
+def fit_for_today(text: str, bbch: int | None) -> str:
+    """Drop sentences that do not apply on a farm field today: threshold sentences of growth stages far
+    from today's (more than 10 BBCH away) and greenhouse/garden advice."""
+    kept = []
+    for sent in SENT_SPLIT.split(text):
+        f = domain.fold(sent)
+        if NOT_FIELD.search(f):
+            continue
+        if bbch is not None and (THRESHOLD_WORDS.search(f) or "%" in sent):
+            ranges = _phase_ranges(f)
+            if ranges and not any(lo - 10 <= bbch <= hi + 10 for lo, hi in ranges):
+                continue
+        kept.append(sent)
+    return " ".join(kept)
+
+
+def adapt_sources(sources: list[dict], bbch: int | None) -> list[dict]:
+    out = []
+    for s in sources:
+        text = fit_for_today(s["text"], bbch)
+        if len(text) >= 40 or s.get("kind") == "excel_row":
+            out.append(s | {"text": text or s["text"]})
+    return out
+
+
+def phase_rule_lines(threats: list[dict]) -> list[str]:
+    bbch = current_bbch(threats)
+    if bbch is None:
+        return []
+    return [f"Progi szkodliwości: podawaj TYLKO próg dla obecnej fazy (BBCH {bbch}) — zalecenie silnika albo "
+            "próg ze źródeł, który wprost dotyczy tej fazy. Jeśli źródła nie podają progu dla tej fazy, napisz, "
+            "że metodyka nie podaje progu na tę fazę, i zaproponuj lustrację na obecność objawów."]
+
+
+def threshold_for_stage(threshold: str, bbch) -> str:
+    """The engine's threshold text lists several stages ("Krzewienie: 10-15 % …; strzelanie w źdźbło:
+    5 % liści."). Keep the parts about today's stage (±10 BBCH) and the parts naming no stage."""
+    try:
+        bbch = int(bbch)
+    except (TypeError, ValueError):
+        return threshold
+    keep = []
+    for part in re.split(r";\s*", threshold.strip().rstrip(".")):
+        ranges = _phase_ranges(domain.fold(part))
+        if not ranges or any(lo - 10 <= bbch <= hi + 10 for lo, hi in ranges):
+            keep.append(part)
+    return "; ".join(keep)
+
+
+def drop_off_field(text: str) -> str:
+    """Remove sentences of the answer that give greenhouse/garden advice (the model sometimes adds them)."""
+    lines = []
+    for line in text.split("\n"):  # line by line: keeps Markdown paragraphs and list items
+        if not line.strip():
+            lines.append(line)
+            continue
+        kept = [s for s in SENT_SPLIT.split(line) if not NOT_FIELD.search(domain.fold(s))]
+        if kept:
+            lines.append(" ".join(kept))
+    out = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    return out or text

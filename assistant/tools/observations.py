@@ -93,15 +93,6 @@ def resolve_draft(field_id, date, category, threat, severity, note) -> dict:
             "threat_unrecognized": bool(threat and not t), "severity": severity, "note": note}
 
 
-def _predict_end(field) -> dt.date | None:
-    """Recompute up to the last precomputed day of the field, not only today + 7 (known predict() gap,
-    docs/interfaces.md: otherwise later precomputed days miss the report's effect)."""
-    from django.db.models import Max
-
-    from core.models import Risk
-    return Risk.objects.filter(field=field).aggregate(m=Max("date"))["m"]
-
-
 @register("record_observation", """
 Zapisuje zgłoszenie rolnika (objawy, „sprawdziłem — czysto”, sąsiad ma, wykonany zabieg, fakt o polu,
 grad/wyleganie/zalanie) i uruchamia ponowną ocenę ryzyka pola przez silnik. ZAPIS: wolno wywołać tylko
@@ -148,15 +139,16 @@ def record_observation(field_id, date, category, threat, severity, note, idempot
 
             from core.models import Risk
             t0 = timezone.now()
-            end = _predict_end(f)
-            rows = predict(field_ids=[f.id], start=draft["date"], **({"end": end} if end and end > today else {}))
+            # default end = the later of today + 7 and the last stored day (engine contract), so the
+            # precomputed rest of the season gets the report too
+            rows = predict(field_ids=[f.id], start=draft["date"])
             after = field_levels(f, today)
             changed = {c: {"before": before.get(c), "after": a} for c, a in after.items()
                        if before.get(c, {}).get("score") != a["score"]}
-            # predict() returns only a count; nearby fields it recomputed (spread of symptoms) are found
-            # by their new rows (known gap in docs/interfaces.md)
-            recomputed = sorted(set(Risk.objects.filter(computed_at__gte=t0).values_list("field_id", flat=True))) or [f.id]
-            reassessment = {"status": "ok", "rows_written": rows, "before": before, "after": after, "changed": changed,
+            # PredictResult.field_ids: every field rewritten, incl. nearby fields a symptoms report spread to
+            recomputed = sorted(getattr(rows, "field_ids", None) or
+                                set(Risk.objects.filter(computed_at__gte=t0).values_list("field_id", flat=True))) or [f.id]
+            reassessment = {"status": "ok", "rows_written": int(rows), "before": before, "after": after, "changed": changed,
                             "recomputed_field_ids": recomputed}
         except Exception as e:  # noqa: BLE001 - the report stays saved
             log.exception("engine.predict failed after observation %s", obs.id)
