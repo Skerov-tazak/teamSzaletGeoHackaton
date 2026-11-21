@@ -368,14 +368,27 @@ components:
           type: array
           items:
             type: integer
+        chart:
+          type: object
+          additionalProperties: {}
+          nullable: true
+          description: Vega-Lite v5 spec, data inline; null when none
+        pending_action:
+          type: object
+          additionalProperties: {}
+          nullable: true
+          description: 'e.g. {"type": "confirm_observation", "draft": {"draft_id",
+            "field_id", …}}; null when none'
         created_at:
           type: string
           format: date-time
       required:
+      - chart
       - citations
       - created_at
       - focus_field_id
       - id
+      - pending_action
       - role
       - text
       - updated_field_ids

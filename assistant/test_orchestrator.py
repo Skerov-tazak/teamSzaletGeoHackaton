@@ -334,12 +334,45 @@ class ChatEndpointTests(WorldTestCase):
         body = resp.json()
         self.assertEqual(set(body), {"conversation_id", "message"})
         self.assertEqual(set(body["message"]), {"id", "role", "text", "citations", "focus_field_id",
-                                                "updated_field_ids", "created_at"})
+                                                "updated_field_ids", "chart", "pending_action", "created_at"})
         self.assertEqual(body["message"]["role"], "assistant")
+        self.assertEqual((body["message"]["chart"], body["message"]["pending_action"]), (None, None))
         conv = self.client.get(f"/api/chat/conversations/{body['conversation_id']}/").json()
         self.assertEqual([m["role"] for m in conv["messages"]], ["user", "assistant"])
         self.assertEqual(conv["messages"][0]["citations"], [])
         self.assertEqual(self.client.get("/api/chat/conversations/").json()[0]["id"], body["conversation_id"])
+
+    def test_chart_is_sent_and_kept_in_history(self):
+        with mock.patch("assistant.answer.default_llm", return_value=FakeLLM("Ryzyko rośnie.")):
+            body = self.client.post("/api/chat/", {"message": "Pokaż wykres ryzyka septoriozy", "field_id": self.wheat.id},
+                                    content_type="application/json").json()
+        chart = body["message"]["chart"]
+        self.assertEqual(chart["$schema"], "https://vega.github.io/schema/vega-lite/v5.json")
+        self.assertIsNone(body["message"]["pending_action"])
+        conv = self.client.get(f"/api/chat/conversations/{body['conversation_id']}/").json()
+        user, reply = conv["messages"]
+        self.assertEqual((user["chart"], user["pending_action"]), (None, None))
+        self.assertEqual(reply["chart"], chart)
+
+    def test_observation_draft_sends_pending_action(self):
+        draft = {"field_id": None, "date": None, "category": "choroba", "threat": None, "severity": None,
+                 "note": "brunatne plamy z czarnymi kropkami", "missing": []}
+        with mock.patch("assistant.answer.default_llm", return_value=FakeLLM(json.dumps(draft, ensure_ascii=False))):
+            body = self.client.post("/api/chat/", {"message": "Widzę brunatne plamy z czarnymi kropkami na liściach",
+                                                   "field_id": self.wheat.id}, content_type="application/json").json()
+        action = body["message"]["pending_action"]
+        self.assertEqual(action["type"], "confirm_observation")
+        self.assertEqual(action["draft"]["field_id"], self.wheat.id)
+        self.assertTrue(action["draft"]["draft_id"])
+        self.assertIsNone(body["message"]["chart"])
+        # the chat window's "Zapisz" button sends exactly this message
+        with mock.patch("assistant.tools.observations.engine_predict", return_value=lambda **kw: 3):
+            saved = self.client.post("/api/chat/", {"conversation_id": body["conversation_id"], "message": "Zapisz",
+                                                    "field_id": action["draft"]["field_id"]},
+                                     content_type="application/json").json()
+        self.assertIn("Zapisałem obserwację", saved["message"]["text"])
+        self.assertIsNone(saved["message"]["pending_action"])
+        self.assertEqual(Observation.objects.count(), 1)
 
     def test_bad_input(self):
         self.assertEqual(self.client.post("/api/chat/", {"message": "x", "field_id": 999999},

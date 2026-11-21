@@ -14,8 +14,8 @@ How the components talk to each other: the frontend modules, the events between 
 | [Platform API](#platform-api) | Built, except the weather endpoint (shape not defined) | Jan + Szymek |
 | [Demo date control](#clock) (`PUT /api/clock/` + header control) | Built | Jan + Szymek |
 | [Chat tables](#chat-tables) (`Conversation`, `Message`) | Exists | Jan + Szymek (first version), then Ola |
-| [Chat endpoints](#chat) | Built (Ola, `assistant/views.py`). Not yet sending the agreed `chart` and `pending_action` keys | Ola |
-| [Chat window](#chat) (`frontend/src/chat/`) | Built, including charts and the observation buttons (shown once the endpoint sends the keys) | Jan + Szymek |
+| [Chat endpoints](#chat) | Built (Ola, `assistant/views.py`), including the `chart` and `pending_action` keys | Ola |
+| [Chat window](#chat) (`frontend/src/chat/`) | Built, including charts and the observation buttons | Jan + Szymek |
 | [`answer()`](#the-answer-function), MCP tools, RAG | Built | Ola |
 | [Read-only database user](#free-form-lookups-read-only-sql) | To build | Jan + Szymek |
 | [Observation table](#writing-observations) (`core.Observation`) | Exists; the assistant writes it (its migration 0003 moved the interim rows) | Jan + Szymek (schema), Ola (writes), Bartek (reads) |
@@ -295,7 +295,7 @@ Chats are stored like in any chat app. The endpoints and [`answer()`](#the-answe
 | `GET /api/chat/conversations/` | `[{id, title, updated_at}]`, newest first. The title is the start of the first message |
 | `GET /api/chat/conversations/{id}/` | `{id, title, messages: [...]}`, each message in the shape above (user messages have empty `citations` and `null` `chart` / `pending_action`) |
 
-`chart` and `pending_action` (Ola's proposals 6 and 7, accepted on 21 Nov) are always present, each `null` when unused, also in the conversation history (they are stored in `Message.meta`). **To do (Ola):** `message_json` in `assistant/views.py` does not send them yet; until it does, the chat window treats the missing keys as `null`.
+`chart` and `pending_action` (Ola's proposals 6 and 7, accepted on 21 Nov) are always present, each `null` when unused, also in the conversation history (they are stored in `Message.meta`). The chat window also treats a missing key as `null`.
 
 **Not in this version:** streaming. The answer appears all at once after a "thinking…" indicator.
 

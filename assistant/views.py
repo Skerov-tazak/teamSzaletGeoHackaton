@@ -18,13 +18,18 @@ from .models import Conversation, Message
 
 
 def message_json(m: Message) -> dict:
+    meta = m.meta or {}
+    assistant = m.role == Message.Role.ASSISTANT
     return {
         "id": m.id,
         "role": m.role,
         "text": m.text,
-        "citations": m.citations if m.role == Message.Role.ASSISTANT else [],
+        "citations": m.citations if assistant else [],
         "focus_field_id": m.focus_field_id,
-        "updated_field_ids": (m.meta or {}).get("updated_field_ids", []),
+        "updated_field_ids": meta.get("updated_field_ids", []),
+        # proposals 6 and 7 (docs/interfaces.md -> Chat): always present, null when unused, kept in meta
+        "chart": meta.get("chart") if assistant else None,
+        "pending_action": meta.get("pending_action") if assistant else None,
         "created_at": m.created_at.isoformat().replace("+00:00", "Z"),
     }
 
@@ -40,6 +45,9 @@ MessageOut = inline_serializer("ChatMessage", fields={
     "citations": serializers.ListField(child=serializers.DictField()),
     "focus_field_id": serializers.IntegerField(allow_null=True),
     "updated_field_ids": serializers.ListField(child=serializers.IntegerField()),
+    "chart": serializers.DictField(allow_null=True, help_text="Vega-Lite v5 spec, data inline; null when none"),
+    "pending_action": serializers.DictField(
+        allow_null=True, help_text='e.g. {"type": "confirm_observation", "draft": {"draft_id", "field_id", …}}; null when none'),
     "created_at": serializers.DateTimeField()})
 
 

@@ -1,6 +1,6 @@
 // Names for the generated API types (schema.d.ts, from openapi.yml: never edit by hand), plus the few
-// shapes the schema leaves open: chat citations, the explanation (version 1), and the chat's agreed
-// `chart` / `pending_action` keys (docs/interfaces.md -> Chat), which the assistant may not send yet.
+// shapes the schema leaves open: chat citations, the explanation (version 1), and the shapes inside the
+// chat's `chart` / `pending_action` keys (docs/interfaces.md -> Chat).
 
 import type { components } from "./schema";
 
@@ -87,9 +87,9 @@ export interface ConfirmObservationAction {
 
 export type PendingAction = ConfirmObservationAction | { type: string; [key: string]: unknown };
 
-export interface ChatMessage extends Omit<Schemas["ChatMessage"], "citations"> {
+export interface ChatMessage extends Omit<Schemas["ChatMessage"], "citations" | "chart" | "pending_action"> {
   citations: Record<string, unknown>[]; // parse with toCitation(); unknown kinds are ignored
-  chart?: ChartSpec | null;
+  chart?: ChartSpec | null; // always sent (null when none); optional so a missing key also reads as none
   pending_action?: PendingAction | null;
 }
 
