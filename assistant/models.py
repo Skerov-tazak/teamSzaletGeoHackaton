@@ -13,6 +13,11 @@ class Conversation(models.Model):
     TITLE_LENGTH = 80
 
     title = models.CharField(max_length=TITLE_LENGTH, blank=True, help_text="The start of the first message.")
+    state = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Assistant-internal state: pending observation draft, chunk ids shown in this conversation.",
+    )
     created_at = models.DateTimeField(auto_now_add=True, help_text="[UTC]")
     updated_at = models.DateTimeField(auto_now=True, help_text="[UTC] Moves forward with every new message.")
 
@@ -60,6 +65,11 @@ class Message(models.Model):
         related_name="+",
         help_text="The field the answer points the map at (assistant messages).",
     )
+    meta = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Assistant-internal metadata: route, LLM usage, chart spec, observation draft (assistant messages).",
+    )
     created_at = models.DateTimeField(auto_now_add=True, help_text="[UTC]")
 
     class Meta:
@@ -72,3 +82,49 @@ class Message(models.Model):
 
     def __str__(self) -> str:
         return f"{self.role}: {self.text[:60]}"
+
+
+class Observation(models.Model):
+    """
+    A farmer's field observation, recorded by the assistant after the farmer confirmed a draft.
+
+    INTERIM: the agreed home is an `Observation` table in `core` (docs/database.md, open
+    questions). Until Jan + Szymek add it, the assistant keeps observations here; the proposed
+    columns are in assistant/INTERFACE_PROPOSALS.md, so moving the rows later is a plain copy.
+    """
+
+    class Category(models.TextChoices):
+        DISEASE = "choroba"
+        PEST = "szkodnik"
+        WEEDS = "chwasty"
+        DAMAGE = "uszkodzenie"
+        OTHER = "inne"
+
+    class Severity(models.TextChoices):
+        LOW = "niskie"
+        MEDIUM = "srednie"
+        HIGH = "wysokie"
+
+    field = models.ForeignKey("core.Field", on_delete=models.CASCADE, related_name="assistant_observations")
+    date = models.DateField(help_text="The day the farmer saw it (local, demo calendar).")
+    category = models.CharField(max_length=16, choices=Category.choices)
+    threat = models.ForeignKey(
+        "core.Threat", on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+        help_text="The threat, if the farmer named one that matches the crop's threats.",
+    )
+    severity = models.CharField(max_length=8, choices=Severity.choices, blank=True)
+    note = models.TextField(help_text="The farmer's description, in their words.")
+    details = models.JSONField(default=dict, blank=True, help_text="Anything else (e.g. the draft as extracted).")
+    conversation = models.ForeignKey(
+        Conversation, on_delete=models.SET_NULL, null=True, blank=True, related_name="observations"
+    )
+    idempotency_key = models.CharField(
+        max_length=64, unique=True, help_text="Same key = same observation; prevents duplicates on a repeated 'yes'."
+    )
+    created_at = models.DateTimeField(auto_now_add=True, help_text="[UTC]")
+
+    class Meta:
+        ordering = ["-date", "-id"]
+
+    def __str__(self) -> str:
+        return f"{self.field} {self.date}: {self.category} {self.note[:40]}"

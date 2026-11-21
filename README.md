@@ -19,6 +19,7 @@ Hackathon: [Field Under Pressure](https://geo-hackathon.g.location360.ag/), 20�
 | Document | What's in it |
 |----------|--------------|
 | [architecture_overview.md](architecture_overview.md) | The product, the five components and how they work together |
+| [AGENTS.md](AGENTS.md) | Rules for coding agents: owners, hard rules, frontend stack and commands, definition of done |
 | [docs/database.md](docs/database.md) | Every table, column and unit; rules for every component; query helpers |
 | [docs/interfaces.md](docs/interfaces.md) | How the components talk: frontend modules, map–chat events, platform API, chat, assistant data access, `predict()` |
 | [engine/README.md](engine/README.md) | Decision engine: what it must provide and how it reads and writes data |
@@ -39,26 +40,29 @@ frontend/           dashboard page (Django template) + TypeScript
   src/map/          map module
 docs/               shared documentation (database.md, interfaces.md)
 field-under-pressure-materials/   organiser materials (git submodule): guide PDFs, risk spreadsheet, dataset docs
-docker-compose.yml  local Postgres
+docker-compose.yml  local Postgres + Qdrant (the assistant's vector store)
 ```
 
 ## First-time setup
 
-You need Python 3.10+, Node.js 18+ and Docker (Docker Desktop on Mac/Windows).
+You need Python 3.11+ (the assistant's PDF library needs it; `.python-version` says 3.12), Node.js 18+ and Docker (Docker Desktop on Mac/Windows).
 
 1. **Clone with the submodule** (it holds the organiser materials):
    ```bash
    git clone --recursive <this repo's URL>
    ```
    Already cloned without it? Run `git submodule update --init`.
-2. **Python environment:**
+2. **Python environment** (Python 3.11+; `.python-version` pins 3.12):
    ```bash
-   python3 -m venv .venv
+   uv venv --seed                     # with uv: Python 3.12, pip included
+   # or without uv: python3.12 -m venv .venv   (plain `python3` may be an older version)
    source .venv/bin/activate          # Windows: .venv\Scripts\activate
-   pip install -r requirements.txt
+   python --version                   # must say 3.11 or newer
+   pip install -r requirements.txt    # or: uv pip install -r requirements.txt
    ```
+   If `pip install` complains about `pymupdf==2.1` and the error mentions `Python.framework/Versions/3.10` (or any path outside `.venv`), you are using the system `pip`, not the venv's: the venv was created without pip (`uv venv` without `--seed`). Fix: `uv pip install pip`, then `hash -r`.
 3. **Settings:** `cp .env.example .env` (the defaults work as-is for local development).
-4. **Database:** `docker compose up -d`, then `python manage.py migrate`.
+4. **Database:** `docker compose up -d` (starts Postgres and Qdrant, the assistant's vector store), then `python manage.py migrate`.
 5. **Admin user** (to browse data at `/admin/`): `python manage.py createsuperuser`.
    Then set the demo date: run the server (step 7), open <http://localhost:8000/admin/> → Platform → Clocks → Add. Until a seed does this for you, anything that needs "today" raises `ClockNotSetError`.
 6. **Frontend build:**
@@ -66,17 +70,46 @@ You need Python 3.10+, Node.js 18+ and Docker (Docker Desktop on Mac/Windows).
    cd frontend && npm install && npm run build && cd ..
    ```
 7. **Run:** `python manage.py runserver`, then open <http://localhost:8000>. The page should say "Platform OK".
+8. **Assistant's guide index** (only if you work on or demo the chat): `python manage.py rag_ingest`. Takes ~4 min the first time (downloads the embedding model), then ~1 min. Details: [assistant/README_RAG.md](assistant/README_RAG.md).
 
 ## Day to day
 
 | What | Command |
 |------|---------|
 | Start / stop the database | `docker compose up -d` / `docker compose stop` |
-| Wipe the database completely | `docker compose down -v` |
+| Wipe the database completely | `docker compose down -v` (also wipes the assistant's index: rerun `python manage.py rag_ingest`) |
+| Rebuild the assistant's guide index | `python manage.py rag_ingest` |
 | Run the backend | `python manage.py runserver` |
 | Rebuild TypeScript on every save | `cd frontend && npm run watch` |
 | Type-check TypeScript | `cd frontend && npm run typecheck` |
 | Run tests | `python manage.py test` |
+
+**Environment on Windows (what this branch was set up with):** `.venv` created with `python -m venv .venv`, then `.venv\Scripts\python.exe -m pip install -r requirements.txt`, `.env` copied from `.env.example`. Without Docker Desktop the page still renders, but `/api/health/` reports the database unreachable. Node is needed only for the frontend build (18+, or 22 via `fnm use 22`); if `node` is not on `PATH`, install Node.js first.
+
+## Frontend
+
+The page is one Django template ([`frontend/templates/frontend/index.html`](frontend/templates/frontend/index.html)) plus plain TypeScript in [`frontend/src/`](frontend/src/), bundled by esbuild into `frontend/static/frontend/dist/` (`main.js` + `main.css`). Built:
+
+- **top menu**: centred navigation (Map, My crops *Moje uprawy*, Own data), brand on the left, account and assistant on the right;
+- **map** (Leaflet): base maps (OSM, OpenTopoMap, orthophoto), the farm's fields, risk colouring for the demo's date, own parcels, a field card with the day's risks and the season chart;
+- **layers sidebar**: slides in from the left over the map — base map, overlays, risk legend, demo date from `/api/clock/`; the *Warstwy* button (or the ‹ in its header) opens and closes it;
+- **assistant**: a drawer on the right, opened with the *Asystent* button (conversations from `/api/chat/conversations/`, answers from `POST /api/chat/`, sanitised markdown, risk citations focus the field);
+- **Own data**: upload tab for `.shp`/`.zip`/`.gpkg`/`.geojson` — for now the file is queued locally (parsing and the backend upload come next);
+- **account**: local only (`localStorage`), available from the *Konto* button — just two fields (*E-mail lub nazwa użytkownika*, *Hasło*); *Załóż konto* registers the account and it does not block any section. Backend accounts are a later iteration.
+
+The page reads only through the platform API. Until an endpoint exists (`/api/clock/`, `/api/fields/`, `/api/risks/`, `/api/chat/`), the matching panel shows an empty state instead of failing; the map itself keeps working.
+
+### Building the frontend
+
+```bash
+cd frontend
+npm install
+npm run build        # typecheck + esbuild -> static/frontend/dist/
+# or, while developing:
+npm run watch
+```
+
+Setup details and the map's contract: [`frontend/src/map/README.md`](frontend/src/map/README.md), [docs/interfaces.md](docs/interfaces.md).
 
 Useful pages while the server runs:
 

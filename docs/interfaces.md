@@ -9,8 +9,8 @@ How the components talk to each other: the frontend modules, the events between 
 | Piece | Status | Built by |
 |-------|--------|----------|
 | [Event bus](#events-between-map-and-chat) (`frontend/src/events.ts`) | To build | Jan + Szymek |
-| [Page and app context](#frontend-modules) (`main.ts`, `api/`) | To build | Jan + Szymek |
-| [Map module](#the-map-module) (`initMap`) | To build | Kuba |
+| [Page and app context](#frontend-modules) (`main.ts`, `api/`, shell views) | Built (header, layers sidebar, chat drawer, Own data, crops) | Jan + Szymek |
+| [Map module](#the-map-module) (`initMap`) | Built (Leaflet) | Kuba |
 | [Platform API](#platform-api) | `GET /api/health/` exists; the rest to build | Jan + Szymek |
 | [Demo date control](#clock) (`PUT /api/clock/` + header control) | To build | Jan + Szymek |
 | [Chat tables](#chat-tables) (`Conversation`, `Message`) | Exists | Jan + Szymek (first version), then Ola |
@@ -58,11 +58,19 @@ The frontend can rely on this and doesn't need its own checks: a chart or date s
 
 ```text
 frontend/src/
-  main.ts      starts the page: creates the context, mounts chat + map, demo date control
-  api/         typed API client + generated types
-  events.ts    typed event bus
-  chat/        chat window
-  map/         map (Kuba)
+  main.ts        starts the page: creates the context, mounts chat + map, shell views
+  app-context.ts the AppContext / MapHandle types
+  events.ts      typed event buses (EventBus for map↔chat, ShellBus for the shell)
+  layer-state.ts the sidebar's layer switches
+  risk.ts        the 0–1 → colour scale shared by the map and the legend
+  clock.ts       loads the demo date from /api/clock/ (never new Date())
+  account.ts     the local account (localStorage) — no backend yet
+  api/           typed API client + shapes
+  chat/          chat window
+  crops/         "Moje uprawy" list
+  own-data/      upload tab + stored parcels (localStorage)
+  map/           map (Kuba)
+  ui/            header, layers sidebar, account dialog, DOM helpers
 ```
 
 Every module gets the same context and talks to the rest of the page only through it:
@@ -71,9 +79,12 @@ Every module gets the same context and talks to the rest of the page only throug
 interface AppContext {
   api: Api;                                         // typed calls to the platform API
   events: EventBus;                                 // see below
+  shell: ShellBus;                                  // views, sidebar layers, chat drawer
   clock: { today: string; forecastDays: number };   // updated by main.ts on "date:changed"
 }
 ```
+
+`Api` and the response shapes are in `frontend/src/api/client.ts` and `frontend/src/types.ts` (they follow this document until the generated `openapi-typescript` types exist). `EventBus` carries the map↔chat events below; `ShellBus` the app events (`layers:changed`, `chat:toggle`, `view:changed`, `user:changed`).
 
 ### The map module
 
@@ -85,6 +96,8 @@ export function initMap(container: HTMLElement, ctx: AppContext): void;
 ```
 
 The map draws itself inside `container`, loads its data through `ctx.api`, and sends and receives events through `ctx.events`. It never reads the date from `new Date()`: the demo's date is `ctx.clock.today`.
+
+**Status:** built (Kuba). The map exports `async initMap(container, ctx): Promise<MapHandle>` instead of `void`, so `main.ts` can reload it when the demo date changes, focus a field or re-measure the container after the map view was hidden. Details: [frontend/src/map/README.md](../frontend/src/map/README.md).
 
 ## Events between map and chat
 
