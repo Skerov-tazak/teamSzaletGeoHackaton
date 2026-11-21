@@ -6,7 +6,7 @@ reports a stage_confidence below 1. Each estimate says how it was made, for the 
 
 - Winter wheat: sown ~1 October. Autumn development from GDD base 0 °C since sowing (to BBCH 25,
   tillering, by winter). From 1 January the spring development follows GDD base 0 °C since 1 January.
-- Maize: sown ~25 April. GDD base 6 °C since sowing (guide range for maize: 6-10 °C).
+- Maize: sown ~25 April. GDD base 6 °C since sowing.
 
 The GDD -> BBCH tables are calibrated to typical dates in Opolskie (heading end of May, wheat
 harvest mid-July; maize tasseling mid/late July, maturity end of September).

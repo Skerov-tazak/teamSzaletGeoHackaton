@@ -1,14 +1,14 @@
 """
-Harvest and storage outlook, from the guides (not a Risk row: there is no threat category for it).
+Harvest and storage outlook (not a Risk row: there is no threat category for it).
 
 - Wheat: harvest when fully ripe (BBCH >= 89, grain < 15 % moisture). After that, 2-3 days of rain can
-  start sprouting in the ear, which disqualifies the grain for bread (metodyka PSZENICA p. 176).
-  Safe storage moisture < 15 % (p. 185).
-- Maize: safe storage time of grain by moisture and temperature (metodyka kukurydzy Tab. 37, p. 202);
-  storage moisture < 14.5 % (ryzyka_zebrane.xlsx), dry to 16 % and cool to lose 2-3 % more (p. 199).
+  start sprouting in the ear, which disqualifies the grain for bread.
+  Safe storage moisture < 15 %.
+- Maize: safe storage time of grain by moisture and temperature table below);
+  storage moisture < 14.5 %, dry to 16 % and cool to lose 2-3 % more.
 
     harvest_outlook(stage_bbch, crop, weather_last_days, forecast)  -> dict for the field summary
-    safe_storage_days(moisture_pct, grain_temp_c)                   -> days (maize, Tab. 37)
+    safe_storage_days(moisture_pct, grain_temp_c)                   -> days (maize)
 """
 
 from __future__ import annotations
@@ -18,10 +18,7 @@ import pandas as pd
 
 from engine.catalog import MAIZE, WHEAT
 
-W_DOC = "metodyka_-_PSZENICA_-_www.pdf"
-M_DOC = "Metodyka_integrowanej_ochrony_kukurydzy_dla_doradcow_2019.pdf"
-
-# Tab. 37: rows grain temperature (°C), columns grain moisture (%), values safe storage days
+# Safe storage table: rows grain temperature (°C), columns grain moisture (%), values safe storage days
 _T37_TEMPS = [-1.1, 1.7, 4.4, 7.2, 10.0, 12.8, 15.6, 18.3, 21.1, 23.9, 26.7]
 _T37_MOIST = [18, 20, 22, 24, 26, 28, 30]
 _T37 = np.array([
@@ -32,7 +29,7 @@ _T37 = np.array([
 
 
 def safe_storage_days(moisture_pct: float, grain_temp_c: float) -> float:
-    """Maize grain: days of safe storage (Tab. 37), interpolated on log(days); outside the table it is clamped."""
+    """Maize grain: days of safe storage, interpolated on log(days); outside the table it is clamped."""
     t = float(np.clip(grain_temp_c, _T37_TEMPS[0], _T37_TEMPS[-1]))
     m = float(np.clip(moisture_pct, _T37_MOIST[0], _T37_MOIST[-1]))
     logd = np.log(_T37)
@@ -48,7 +45,7 @@ def harvest_outlook(crop: int, bbch: float, recent: pd.DataFrame, forecast: pd.D
     """
     if crop not in (WHEAT, MAIZE) or bbch < 83:
         return None
-    out: dict = {"stage_bbch": int(round(bbch)), "sources": []}
+    out: dict = {"stage_bbch": int(round(bbch))}
     rain = recent["precip"].fillna(0) if "precip" in recent else pd.Series(dtype=float)
     wet = (rain >= 1.0).astype(int)
     run = 0
@@ -72,8 +69,6 @@ def harvest_outlook(crop: int, bbch: float, recent: pd.DataFrame, forecast: pd.D
         out["text"] = (("Fully ripe: harvest on the next dry day" + (f" ({dry_days[0]})" if dry_days else "")
                         + (". Rain for 2+ days in a row now: sprouting in the ear can disqualify bread wheat." if sprouting == "high" else "."))
                        if ripe else "Ripening: plan the harvest; grain should be below 15 % moisture.")
-        out["sources"] = [{"document": W_DOC, "page": 176, "note": "dojrzałość pełna, < 15 %, porastanie po 2-3 dniach opadów"},
-                          {"document": W_DOC, "page": 185, "note": "bezpieczna wilgotność przechowywania < 15 %"}]
     else:
         out["ready"] = bbch >= 87
         temp = float(recent["avg_temperature"].tail(7).mean()) if "avg_temperature" in recent and len(recent) else 10.0
@@ -85,6 +80,4 @@ def harvest_outlook(crop: int, bbch: float, recent: pd.DataFrame, forecast: pd.D
         out["text"] = (f"Grain at ~{moist:.0f} % moisture and ~{temp:.0f} °C keeps safely for about {days:.0f} days undried; "
                        "dry to 16 % and cool it (another 2-3 % is lost while cooling), store below 14.5 %."
                        + (f" Next dry day: {dry_days[0]}." if dry_days else ""))
-        out["sources"] = [{"document": M_DOC, "page": 202, "note": "Tab. 37: okres bezpiecznego przechowywania"},
-                          {"document": M_DOC, "page": 199, "note": "suszenie do 16 %, schładzanie"}]
     return out

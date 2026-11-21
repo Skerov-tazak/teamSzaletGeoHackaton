@@ -23,10 +23,8 @@ MODEL_VERSION = "0.1.0"
 LEVELS = ((0.6, "high"), (0.3, "medium"), (0.0, "low"))  # team assumption, to agree with the map
 NO_IN_SEASON_TREATMENT = {"wheat.take_all", "wheat.snow_mould", "maize.seedling_blight", "maize.crazy_top",
                           "maize.fusarium_stalk_rot", "maize.fusarium_ear_rot"}
-# Spraying conditions, Metodyka kukurydzy Tabela 40 (p. 216): 1-25 °C, no rain, wind <= 4 m/s.
+# Spraying conditions: 1-25 °C, no rain, wind <= 4 m/s.
 SPRAY = {"max_temperature": 25.0, "min_temperature": 1.0, "total_precipitation": 1.0, "avg_wind_speed": 14.4}
-SPRAY_SOURCE = {"document": "Metodyka_integrowanej_ochrony_kukurydzy_dla_doradcow_2019.pdf", "page": 216,
-                "note": "Tabela 40: warunki wykonywania zabiegów"}
 
 
 def level_of(score: float) -> str:
@@ -280,7 +278,6 @@ def _explain(rule, ctx, day, final, base, sw, bbch, m_total, mults, main, i, sta
         "severity": rule.severity,
         "expected_loss": round(final * rule.severity, 4),
         "confidence": round(confidence, 2),
-        "sources": list(rule.sources),
         "notes": list(rule.notes),
         "assumptions": rule.assumptions,
         "model": "rules", "model_version": MODEL_VERSION,
@@ -298,7 +295,7 @@ _EXTRA_UNITS = {"rain_days": "days", "mean_temperature_7d": "°C", "water_balanc
 def stage_threshold(rule: Rule, bbch: float) -> str | None:
     for lo, hi, text in rule.stage_thresholds:
         if lo <= bbch <= hi:
-            return text + " (guide's threshold for this stage)"
+            return text + " (threshold for this stage)"
     return rule.action_threshold or None
 
 
@@ -327,8 +324,8 @@ def _action_base(rule: Rule, level: str, sw: float, treated=()) -> dict:
 
 def spray_window(forecast: pd.DataFrame) -> dict | None:
     """
-    First forecast day suitable for spraying, from the daily forecast (Tabela 40 kukurydza p. 216 /
-    Tabela 42 pszenica p. 197): 1-25 °C, the following night >= 1 °C, RH 50-95 %, no rain, wind <= 4 m/s.
+    First forecast day suitable for spraying, from the daily forecast:
+    1-25 °C, the following night >= 1 °C, RH 50-95 %, no rain, wind <= 4 m/s.
     "optimal" when 12-20 °C, RH 75-95 % and wind 0.5-1.5 m/s as well. Daily values approximate the hours.
     """
     if forecast is None or forecast.empty:
@@ -362,6 +359,5 @@ def spray_window(forecast: pd.DataFrame) -> dict | None:
                                "avg_relative_humidity": None if rh is None else round(rh), "precipitation_mm": rain,
                                "avg_wind_kmh": round(wind, 1)},
                 "rule": "1-25 °C, next night >= 1 °C, RH 50-95 %, no rain, wind <= 14.4 km/h (4 m/s); optimal 12-20 °C, RH 75-95 %, wind 1.8-5.4 km/h",
-                "note": " ".join(notes) or None,
-                "source": SPRAY_SOURCE}
+                "note": " ".join(notes) or None}
     return None

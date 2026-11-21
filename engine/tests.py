@@ -93,7 +93,7 @@ class PredictTests(EngineTestBase):
         for r in Risk.objects.all()[:200]:
             self.assertTrue(0 <= r.score <= 1)
             e = r.explanation
-            for key in ("summary", "level", "drivers", "action", "sources", "growth_stage", "confidence", "model_version"):
+            for key in ("summary", "level", "drivers", "action", "growth_stage", "confidence", "model_version"):
                 self.assertIn(key, e)
             self.assertEqual(e["threat"]["code"], r.threat.code)
 

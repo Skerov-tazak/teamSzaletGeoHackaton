@@ -2,6 +2,12 @@
 
 History of the engine's versions and the findings behind them. The reference documentation is [README.md](README.md).
 
+## v0.6: no document citations
+
+- Rules stay in `catalog.py`; removed every reference to the guide files (`Rule.sources`, `explanation.sources`,
+  `spray_window.source`, harvest `sources`, page numbers in notes and thresholds). Nothing reads documents at run time.
+- `Threat.source` is now `"engine rules"`.
+
 ## v0.1: rules from the guides
 
 ```bash

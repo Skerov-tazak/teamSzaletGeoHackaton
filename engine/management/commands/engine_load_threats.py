@@ -10,7 +10,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 
 from core.models import CropClass, Threat
-from engine.catalog import RULES, XLSX
+from engine.catalog import RULES
 
 
 class Command(BaseCommand):
@@ -28,7 +28,7 @@ class Command(BaseCommand):
                 "temperature_text": temp_text, "temp_min_c": rule.temp_min, "temp_max_c": rule.temp_max,
                 "humidity_text": "", "other_factors": " ".join(rule.notes),
                 "growth_stage_text": f"BBCH {rule.stage_min}-{rule.stage_max}",
-                "source": f"{XLSX} / {'pszenica' if rule.crop == 1110 else 'kukurydza'} + metodyki (engine/catalog.py)",
+                "source": "engine rules",
             })
             n += 1
         self.stdout.write(self.style.SUCCESS(f"{n} threats upserted."))

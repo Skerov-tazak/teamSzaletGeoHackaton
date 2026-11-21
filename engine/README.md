@@ -4,7 +4,7 @@
 
 The engine turns each field's data into a **risk per threat and day, each with an explanation of why**, and writes them to the `Risk` table. The map and the assistant only read those rows; they never compute risk themselves.
 
-It is a **rule-based (expert) system** built from the official guides (metodyki integrowanej ochrony, `ryzyka_zebrane.xlsx`, the GIORiN guide): there are no observations of diseases in the data to train a model on. Two parts use data-driven models: the **crop** of a field (Sentinel-2 + LightGBM, trained on the crop maps) and the **growth stage** (degree days, calibrated to the field's satellite curve). Farmer reports from the chat adjust the risks.
+It is a **rule-based (expert) system** whose rules are stored in [`catalog.py`](catalog.py) (no document is read at run time): there are no observations of diseases in the data to train a model on. Two parts use data-driven models: the **crop** of a field (Sentinel-2 + LightGBM, trained on the crop maps) and the **growth stage** (degree days, calibrated to the field's satellite curve). Farmer reports from the chat adjust the risks.
 
 ## Contents
 
@@ -84,7 +84,7 @@ farm_ranking(day)          # list of field_day dicts, most urgent first, with "r
 | `max_score`, `level` | Highest threat score of the day and its level. |
 | `expected_loss`, `expected_loss_pct` | Share of the yield at risk: `1 - Π(1 - score × severity)` over all threats. Used to rank fields. |
 | `top_threats` | Top 3 threats by expected loss, each with score, level, summary, action. |
-| `actions` | `treat` / `monitor` actions, with the guide's threshold and the spraying window. |
+| `actions` | `treat` / `monitor` actions, with the threshold and the spraying window. |
 | `why` | One line for lists ("Fusarium head blight high (0.75); Grain aphids medium (0.53)"). |
 | `growth_stage` | BBCH, name, method, confidence. |
 | `harvest` | From BBCH 83: wheat — ready / next dry day / sprouting risk; maize — safe storage days of undried grain. |
@@ -105,7 +105,7 @@ Report(observed_on: date, kind: str, threat_code: str | None = None, severity: f
 | Function | Use |
 |---|---|
 | `engine.cropmodel.predict_field(field, season, today)` | Crop model for one field as of a day: `{"crop", "label", "confidence", "probabilities", ...}`. |
-| `engine.harvest.safe_storage_days(moisture_pct, grain_temp_c)` | Maize grain storage table (Tab. 37). |
+| `engine.harvest.safe_storage_days(moisture_pct, grain_temp_c)` | Maize grain storage table. |
 | `engine.compute.adjust_for_lead(explanation, days_ahead)` | Recompute the forecast confidence of a stored row after the clock moved. |
 
 ### Management commands
@@ -188,28 +188,56 @@ The engine reads only through the Django ORM and the platform helpers (`.observe
 | `WeatherHourly` | recommended | per cell × hour | `utc_time` (aware, UTC), `date` (local Europe/Warsaw date), `temperature` (°C), `relative_humidity` (%), **`precipitation` or `imerg_precipitation`** (mm/h) | `weather_data/hourly/<year>/weather_hourly_<year>_<Region>.zip` (`utc_time` is naive UTC → make aware; drop `local_time`; year files **overlap by one hour** at New Year → ignore duplicates) + `imerg_precipitation_hourly.zip` → `hourly/<year>/precip_hourly_<year>_<Region>.zip` → `precipitation` stored as `imerg_precipitation`, joined on `grid_id` + `utc_time`. Without it infection hours are estimated from daily values (confidence × 0.7) |
 | `WeatherForecastDaily` | **yes** (without it: no spraying window, no harvest dry days) | per cell × issue day × 7 | `max_temperature`, `min_temperature`, `avg_wind_speed`, `avg_relative_humidity`, `total_precipitation` | demo: for every day D copy `WeatherDaily` of D+1 … D+7 with `issued_on = D` (all daily columns except IMERG). Live: a real forecast |
 | `SoilCell` | optional | the fields' H3 cells | `clay`, `sand` (fraction 0–1 **or** %; both accepted), `ph` | `soil_isric_250_v2/soil_<Region>_isric_250_v2.zip` → parquet keyed by `h3_index_10`; rename `soilTexture` → `soil_texture`; `BAND_om`/`BAND_pH`/`BAND_cec` are **text** (`low`/`moderate`/`high`) while the model columns are floats — leave them empty or change the model. Used only for the heavy-soil multiplier |
-| `Observation` | optional (planned) | farmer reports | see [below](#observation-rows) | written by the assistant's tool |
+| `Observation` | optional | farmer reports | see [below](#observation-rows) | written by the chat (`assistant.Observation` now, `core.Observation` later) |
 | `Risk` | — | written by `predict()` | — | last season's rows are read back for carry-over, so compute the previous season first |
 
 `<Region>` in file names is the voivodeship without Polish letters (`Opolskie`, `Dolnoslaskie`, `Slaskie`; some packages spell `Łódzkie` as `odzkie` and `Małopolskie` as `Maopolskie`).
 
 ### Observation rows
 
-Proposed table (Jan + Szymek: schema; Ola: writes). The engine reads it only through `engine/observations.py`, so a renamed column is a one-line change there.
+Farmer reports **are stored in the database**: the engine recomputes each day "as of" that day, so it must
+see every report made up to then, and the map and the chat show them in the explanation ("the farmer saw
+rust on 12 June"). After storing a row the writer calls `predict(field_ids=[field.id], start=<date seen>)`.
 
-| Column | Type | Content |
-|---|---|---|
-| `field` | FK Field, null | the field; null = the whole farm / "nearby" |
-| `observed_on` | date | the day the farmer saw it (not the day they wrote) |
-| `recorded_at` | datetime | when it was stored |
-| `kind` | text | `symptoms`, `absence`, `neighbour`, `treatment`, `field_fact`, `event` |
-| `threat_code` | text, null | e.g. `wheat.brown_rust`; null = all threats (`absence`) / all fungal (`treatment`) |
-| `severity` | float 0–1, null | `symptoms`: how bad (the chat may map low/medium/high → 0.3/0.6/0.9) |
-| `distance_m` | float, null | `neighbour`: distance to the reported case |
-| `details` | JSON | `field_fact`: `{"sowing_date": "2024-09-25"}`, `{"tillage": "reduced"}` or `"plough"`, `{"resistant_to": ["wheat.brown_rust"]}`; `event`: `{"type": "hail" \| "lodging" \| "flood"}` |
-| `text` | text | the farmer's own words (shown in the explanation) |
+**Status**
 
-After storing a row: `predict(field_ids=[field.id], start=observed_on)`.
+| Table | Owner | State | Engine reads it |
+|---|---|---|---|
+| `core.Observation` | Jan + Szymek (schema) | **not created yet** (agreed home, `docs/database.md` open questions) | yes (`observations.load_all()`) |
+| `assistant.Observation` | Ola | **exists in `main`** (interim), written by the chat tool `record_observation`, which already calls `predict()` | **not yet**: reports from the chat change no risk until the engine reads this table too (adapter in `engine/observations.py`, engine side) |
+
+**What the engine needs per row** (`assistant.Observation` today → what to add)
+
+| Engine needs | Meaning | In `assistant.Observation` | To do |
+|---|---|---|---|
+| field | which field; none = the whole farm / "nearby" | `field` (FK, required) | – (farm-wide reports: pick any field, set `details.scope = "farm"`) |
+| date seen | the day the farmer **saw** it, not the day they wrote | `date` | – |
+| **kind** | `symptoms`, `absence`, `neighbour`, `treatment`, `field_fact`, `event` | only `category` (choroba / szkodnik / chwasty / uszkodzenie / inne) | **Ola: write `details.kind`** for anything that is not "I see it on my field". Without it: choroba / szkodnik → `symptoms`, uszkodzenie → `event`, chwasty / inne → ignored |
+| threat | threat code, e.g. `wheat.brown_rust`; empty = all threats of the category (`symptoms`, `absence`) / all fungal (`treatment`) | `threat` (FK Threat, optional) | – (the code is read through the FK) |
+| severity | how bad, 0–1 | `severity` niskie / srednie / wysokie | – (mapped to 0.3 / 0.6 / 0.9; empty = 0.5) |
+| distance | `neighbour` only: metres to the reported case | – | **Ola: `details.distance_m`** (number; "next door" ≈ 300, "in the village" ≈ 1500; empty = 1000) |
+| fact | `field_fact` only | – | **Ola: `details`** = `{"sowing_date": "2024-09-25"}`, `{"tillage": "reduced"}` or `"plough"`, `{"resistant_to": ["wheat.brown_rust"]}` |
+| event type | `event` only | – | **Ola: `details.event`** = `hail`, `lodging` or `flood` |
+| text | the farmer's own words (quoted in the explanation) | `note` | – |
+| id | stable id for drivers and logs | `id` | – |
+
+**Examples of `details` the chat should write**
+
+| The farmer says | `category` | `threat` | `severity` | `details` |
+|---|---|---|---|---|
+| "I see brown rust on the north field" | choroba | wheat.brown_rust | srednie | `{}` (or `{"kind": "symptoms"}`) |
+| "I walked the field, it's clean" | choroba | (empty = all) | – | `{"kind": "absence"}` |
+| "My neighbour has head blight, next field over" | choroba | wheat.fusarium_head_blight | – | `{"kind": "neighbour", "distance_m": 300}` |
+| "I sprayed against septoria on 10 May" (date = 10 May) | choroba | wheat.septoria_leaf_blotch (empty = all fungal) | – | `{"kind": "treatment"}` |
+| "I sowed on 25 September" | inne | – | – | `{"kind": "field_fact", "sowing_date": "2024-09-25"}` |
+| "I don't plough, I leave the stubble" | inne | – | – | `{"kind": "field_fact", "tillage": "reduced"}` |
+| "Hail yesterday" | uszkodzenie | – | – | `{"kind": "event", "event": "hail"}` |
+
+**Later `core.Observation`** (Jan + Szymek): the same information as plain columns: `field` (FK, null =
+farm), `observed_on` (date), `recorded_at` (datetime), `kind` (text, values above), `threat_code` (text,
+null), `severity` (float 0–1, null), `distance_m` (float, null), `details` (JSON: facts and event type),
+`text` (the farmer's words). Moving the interim rows is a plain copy with the mapping above; the engine
+reads both, so nothing breaks in between.
 
 ### Files in `DATA_DIR` (optional, not in git)
 
@@ -224,7 +252,7 @@ Without them the engine still runs: stages from degree days only, no crop check.
 
 **The dev seed** (`engine_dev_seed`, development only) reads: `DATA_DIR/cropland/cropland_<year>.tif` (from `clip_cropland.py`), `DATA_DIR/weather/weather_grids.parquet`, `DATA_DIR/raw/weather_data/{daily,hourly}/<year>/*.zip`, `DATA_DIR/raw/weather_data/imerg_precipitation_{daily,hourly}.zip`, `DATA_DIR/soil/<Region>_isric_250_v2.parquet`.
 
-Units stay the dataset's (wind km/h, RH %, radiation MJ/m²); the engine converts where a guide uses another unit (wind 4 m/s = 14.4 km/h).
+Units stay the dataset's (wind km/h, RH %, radiation MJ/m²); the engine converts where a rule uses another unit (wind 4 m/s = 14.4 km/h).
 
 ## What it writes: Risk and the explanation
 
@@ -257,23 +285,22 @@ One `Risk` row per **field × threat × day**: `score` (0–1), `explanation` (J
   "action": {
     "type": "treat",                                        // wait / monitor / treat
     "text": "High risk: inspect the field now; if the threshold is exceeded, a treatment is justified.",
-    "threshold": "Heading: ... (guide's threshold for this stage)",
+    "threshold": "Heading: ... (threshold for this stage)",
     "spray_window": {"date": "2025-06-08", "quality": "optimal", "conditions": {...}, "rule": "1-25 °C, next night >= 1 °C, ...",
-                     "note": null, "source": {"document": "...", "page": 216}}
+                     "note": null}
   },
   "severity": 0.15,                 // potential yield loss if it happens (team assumption)
   "expected_loss": 0.12,            // score x severity
   "confidence": 0.8,                // stage method x data quality x forecast distance; 1.0 when the farmer saw it
   "confidence_observed": 0.8,       // only on days after today: confidence before the forecast discount
   "forecast_lead_days": 3,          // only on days after today
-  "sources": [{"document": "metodyka_-_PSZENICA_-_www.pdf", "page": 74, "note": "Tabela 26 ..."}],   // same shape as chat citations
   "notes": ["Each 1 % of infected ears can add about 0.3 mg/kg DON ..."],
   "assumptions": {"hours_low": 4, "hours_high": 16, ...},   // the team's own numbers in this rule
   "model": "rules", "model_version": "0.1.0"
 }
 ```
 
-- `effect` = how much the score would drop without that factor; `null` = context only. The map can show `summary` and the drivers; the assistant can cite `sources` directly.
+- `effect` = how much the score would drop without that factor; `null` = context only. The map can show `summary` and the drivers; the assistant explains from the same fields.
 - No product names or doses anywhere (shared principle).
 
 ## How it works
@@ -290,7 +317,7 @@ for each field, for each season in [start, end]:
     for each threat rule of the crop                             (catalog.py)
         base    = weather / activity term per day, trailing windows only     (scoring.py)
         score   = base × stage weight × multipliers, then report effects, capped at 1
-        explanation: summary, drivers with effects, action + spraying window, sources
+        explanation: summary, drivers with effects, action + spraying window
 write all rows (replace the range)                               (compute.py)
 ```
 
@@ -310,7 +337,7 @@ Every feature for day D is a **trailing** value over days ≤ D (sums or means o
 
 | Kind | Weather / activity term | Example |
 |---|---|---|
-| `infection_hours` | Hours in the last N days with temperature in the guide's range **and** wet leaves (RH ≥ 95 % or rain) / humid air (RH ≥ 85 % or rain) / humid but dry (RH 50–95 %, no rain); ramp from `hours_low` to `hours_high`. Rain-splash diseases also need rain days. Wheat leaf diseases switch off in cold weather (7-day mean < 3–8 °C). Maize fusarioses also rise with drought (30-day rain − evapotranspiration). | head blight, septoria, rusts |
+| `infection_hours` | Hours in the last N days with temperature in the rule's range **and** wet leaves (RH ≥ 95 % or rain) / humid air (RH ≥ 85 % or rain) / humid but dry (RH 50–95 %, no rain); ramp from `hours_low` to `hours_high`. Rain-splash diseases also need rain days. Wheat leaf diseases switch off in cold weather (7-day mean < 3–8 °C). Maize fusarioses also rise with drought (30-day rain − evapotranspiration). | head blight, septoria, rusts |
 | `soil_days` | Days with cold (< 12 °C) and wet (≥ 0.30 m³/m³) topsoil | maize seedling blight |
 | `snow_days` | Days at ~0–5 °C, wet or under snow, soil not frozen | snow mould |
 | `flood` | Days with saturated topsoil or ≥ 30 mm rain | crazy top |
@@ -336,9 +363,9 @@ Every applied report is a driver with its `effect`, and its label is added to th
 
 ### Actions and spraying window
 
-- `wait` (low, outside the susceptible stage, or protected by a recent treatment), `monitor` (medium; or high but no in-season treatment exists), `treat` (high: inspect now and treat if the guide's threshold is exceeded).
-- The threshold shown is the guide's **for the current stage** (Tabela 30 wheat, Tab. 31 maize).
-- Spraying window (Tabela 40 kukurydza / 42 pszenica): first forecast day with 1–25 °C, next night ≥ 1 °C, RH 50–95 %, no rain, wind ≤ 4 m/s; "optimal" at 12–20 °C, RH 75–95 %, wind 0.5–1.5 m/s.
+- `wait` (low, outside the susceptible stage, or protected by a recent treatment), `monitor` (medium; or high but no in-season treatment exists), `treat` (high: inspect now and treat if the threshold is exceeded).
+- The threshold shown is the one **for the current stage**.
+- Spraying window: first forecast day with 1–25 °C, next night ≥ 1 °C, RH 50–95 %, no rain, wind ≤ 4 m/s; "optimal" at 12–20 °C, RH 75–95 %, wind 0.5–1.5 m/s.
 
 ### Confidence
 
@@ -350,7 +377,7 @@ The engine uses `Field.crop`. The crop model ([`cropmodel.py`](cropmodel.py)) ch
 
 ## Threats
 
-25 rules in [`catalog.py`](catalog.py), each with the guide's numbers, page-level sources and the team's assumptions marked.
+25 rules in [`catalog.py`](catalog.py), each with its numbers and the team's assumptions marked.
 
 | Crop | Category | Threats (`code`) |
 |---|---|---|
@@ -360,11 +387,9 @@ The engine uses `Field.crop`. The crop model ([`cropmodel.py`](cropmodel.py)) ch
 | Maize | fungal | `maize.seedling_blight`, `maize.fusarium_ear_rot`, `maize.fusarium_stalk_rot`, `maize.northern_leaf_blight`, `maize.eyespot`, `maize.common_rust`, `maize.crazy_top` |
 | Maize | pest | `maize.european_corn_borer`, `maize.western_corn_rootworm`, `maize.aphids`, `maize.frit_fly` |
 
-Main sources: metodyka PSZENICA (Tabela 25–33, 42, rozdz. 13), Metodyka kukurydzy 2019 (pp. 81–140, Tab. 31, 37, 40), `ryzyka_zebrane.xlsx`, GIORiN (Fusarium species, DON).
-
 ## Assumptions, limits, validation
 
-- **Not validated against real outbreaks**: the data has none. Ranges and stages come from the guides; *how many hours make a risk high* is the team's choice, calibrated on 2025 near Krapkowice (a dry April, a wet June). Each explanation lists these numbers under `assumptions`.
+- **Not validated against real outbreaks**: the data has none. Ranges and stages follow integrated pest management practice; *how many hours make a risk high* is the team's choice, calibrated on 2025 near Krapkowice (a dry April, a wet June). Each explanation lists these numbers under `assumptions`.
 - Severities (yield loss if a threat materialises) are team assumptions; they only rank fields.
 - **The forecast has no precipitation** (the weather data has none; IMERG is not forecast), so the spraying window cannot check rain — the window says so.
 - In the historical demo the forecast is the observed weather (a perfect forecast); live forecasts are less certain, hence the lower confidence of coming days.
@@ -377,7 +402,7 @@ Main sources: metodyka PSZENICA (Tabela 25–33, 42, rozdz. 13), Metodyka kukury
 | Item | Who | Engine side |
 |---|---|---|
 | **API endpoints for risks** (`/api/risks/?date=`, `/api/fields/{id}/risks/`, `/api/fields/{id}/risks/{date}/`), optionally `field_day` / `farm_ranking` | Jan + Szymek | ready: `Risk` rows, `engine.summary` |
-| **`Observation` table** — columns and values in [Observation rows](#observation-rows) | Jan + Szymek (schema), Ola (writes) | ready: read only through `observations.load_all()` |
+| **Farmer reports** — `details.kind` / `distance_m` / facts in `assistant.Observation` ([Observation rows](#observation-rows)); later `core.Observation` | Ola (writes), Jan + Szymek (`core` schema) | reads `core.Observation`; adapter for `assistant.Observation` to do |
 | Assistant tools: record a report → `predict(field_ids=[...], start=observed_on)`; "what if" → `what_if()`; "which field first" → `farm_ranking()` | Ola | ready |
 | Map: colour by `level` (cut-offs 0.3 / 0.6), "why" panel from `summary` + `drivers`, crop check from `field_day()["crop_check"]` | Kuba | ready |
 | Threat codes: use `engine_load_threats`, or a fixture with the same codes | Jan + Szymek | ready |
