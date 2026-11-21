@@ -1,20 +1,139 @@
 {% load static %}
 <!doctype html>
-<html lang="en">
+<html lang="pl">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Field Under Pressure</title>
+  <title>Field Under Pressure — mapa</title>
+  <link rel="stylesheet" href="{% static 'frontend/dist/main.css' %}">
   <link rel="stylesheet" href="{% static 'frontend/style.css' %}">
   <script type="module" src="{% static 'frontend/dist/main.js' %}"></script>
 </head>
 <body>
-  <header>
-    <h1>Field Under Pressure</h1>
-    <p id="platform-status">Checking platform…</p>
-  </header>
-  <main>
-    <p>Skeleton is running. The chat and map windows come in the frontend step.</p>
-  </main>
+  <div id="app">
+    <header id="app-header">
+      <button id="brand-button" class="brand" type="button" title="Wróć do mapy">
+        <span class="brand-mark" aria-hidden="true">▲</span>
+        <span class="brand-text">Field Under Pressure</span>
+      </button>
+
+      <nav id="main-nav" aria-label="Główna nawigacja">
+        <button type="button" data-view="map" class="is-active">Mapa</button>
+        <button type="button" data-view="crops">Moje uprawy</button>
+        <button type="button" data-view="own-data">Own data</button>
+      </nav>
+
+      <div class="header-actions">
+        <p id="platform-status" hidden></p>
+        <button id="account-button" class="pill" type="button" aria-haspopup="dialog">
+          <span id="account-label">Konto</span>
+        </button>
+        <button id="chat-toggle" class="pill pill-accent" type="button" aria-expanded="false" aria-controls="chat-drawer">
+          Asystent
+        </button>
+      </div>
+    </header>
+
+    <div id="app-body">
+      <aside id="layers-sidebar" class="is-open" aria-label="Warstwy mapy">
+        <div id="layers-panel"></div>
+      </aside>
+      <button id="layers-toggle" class="layers-toggle" type="button" aria-controls="layers-sidebar" aria-expanded="true">
+        <span class="layers-toggle-icon" aria-hidden="true">☰</span>
+        <span class="layers-toggle-label">Warstwy</span>
+      </button>
+
+      <main id="app-main">
+        <section id="view-map" class="view view-map">
+          <div id="map" role="application" aria-label="Interaktywna mapa działek"></div>
+          <p id="map-status" class="map-banner" hidden></p>
+          <p id="map-selection" class="map-banner map-banner-bottom" hidden></p>
+          <aside id="details-panel" class="details-panel" hidden></aside>
+        </section>
+
+        <section id="view-crops" class="view view-page" hidden>
+          <header class="page-header">
+            <h1>Moje uprawy</h1>
+            <p id="crops-summary" class="muted"></p>
+          </header>
+          <div id="crops-list" class="crop-list"></div>
+        </section>
+
+        <section id="view-own-data" class="view view-page" hidden>
+          <header class="page-header">
+            <h1>Own data</h1>
+            <p class="muted">
+              Wgraj obrys swojej działki w formacie Shapefile (.shp w ZIP lub same pliki .shp/.dbf/.shx)
+              albo GeoPackage (.gpkg). Geometria trafia na mapę jako „moja działka”.
+            </p>
+          </header>
+
+          <form id="upload-form" class="panel">
+            <h2>Prześlij obrys działki</h2>
+            <div id="upload-dropzone" class="dropzone" tabindex="0" role="button"
+                 aria-label="Upuść plik obrysu działki lub kliknij, aby wybrać">
+              <p>Przeciągnij tu plik lub kliknij, aby wybrać</p>
+              <p class="muted">Dozwolone: .shp, .zip (shapefile), .gpkg, .geojson — maks. 50 MB</p>
+              <input id="upload-input" type="file" accept=".shp,.zip,.gpkg,.geojson,.json" multiple hidden>
+            </div>
+            <ul id="upload-queue" class="queue"></ul>
+            <label class="field">
+              <span>Nazwa działki</span>
+              <input id="upload-name" type="text" placeholder="np. Działka północna" maxlength="120">
+            </label>
+            <button type="submit" class="primary">Dodaj działkę</button>
+          </form>
+
+          <section class="panel">
+            <h2>Moje działki</h2>
+            <p id="parcel-summary" class="muted"></p>
+            <ul id="parcel-list" class="parcel-list"></ul>
+          </section>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <aside id="chat-drawer" class="chat-drawer" aria-label="Asystent" hidden>
+    <header class="chat-header">
+      <div>
+        <h2>Asystent</h2>
+        <p id="chat-context" class="chat-context"></p>
+      </div>
+      <div class="chat-actions">
+        <button id="chat-history" type="button" class="icon-button" title="Historia rozmów" aria-expanded="false">☰</button>
+        <button id="chat-new" type="button" class="icon-button" title="Nowa rozmowa">＋</button>
+        <button id="chat-close" type="button" class="icon-button" title="Zamknij">×</button>
+      </div>
+    </header>
+    <ul id="chat-history-list" class="history-list" hidden></ul>
+    <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
+    <form id="chat-form" class="chat-form">
+      <textarea id="chat-input" rows="2" placeholder="Zapytaj o ryzyko, chorobę lub oprysk…" aria-label="Wiadomość"></textarea>
+      <button id="chat-send" type="submit" class="primary">Wyślij</button>
+    </form>
+  </aside>
+
+  <dialog id="account-dialog" class="account-dialog">
+    <header class="dialog-header">
+      <h2>Konto</h2>
+      <button id="account-close" type="button" class="icon-button" title="Zamknij">×</button>
+    </header>
+    <form id="account-form">
+      <label class="field">
+        <span>E-mail lub nazwa użytkownika</span>
+        <input id="account-identifier" type="text" autocomplete="username" required autofocus>
+      </label>
+      <label class="field">
+        <span>Hasło</span>
+        <input id="account-password" type="password" autocomplete="current-password" required minlength="6">
+      </label>
+      <p id="account-message" class="form-message"></p>
+      <button id="account-submit" type="submit" class="primary">Zaloguj się</button>
+      <button id="account-register" type="button" class="secondary">Załóż konto</button>
+    </form>
+    <button id="account-logout" type="button" class="secondary" hidden>Wyloguj się</button>
+  </dialog>
+
 </body>
 </html>
