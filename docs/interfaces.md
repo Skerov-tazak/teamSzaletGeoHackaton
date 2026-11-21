@@ -232,12 +232,36 @@ The decision engine (`feat/decision-engine`) listens for the Clock row being **s
   "field_id": 3, "date": "2024-05-15",
   "risks": [
     {"threat": {"code": "wheat.septoria_leaf_blotch", "name": "septorioza paskowana liści pszenicy", "category": "fungal"},
-     "score": 0.72, "explanation": {}}
+     "score": 0.72,
+     "explanation": {
+       "version": 1,
+       "summary": "Wysokie ryzyko septoriozy paskowanej liści: 14 godzin z mokrymi liśćmi przy 10–20 °C w ostatnich 7 dniach; pszenica w fazie strzelania w źdźbło (BBCH 32).",
+       "level": "high", "score": 0.72,
+       "threat": {"code": "wheat.septoria_leaf_blotch", "name_pl": "septorioza paskowana liści", "name_en": "Septoria leaf blotch", "category": "fungal"},
+       "as_of": "2024-05-15",
+       "growth_stage": {"bbch": 32, "name": "strzelanie w źdźbło", "method": "degree days", "sowing_assumed": "2023-10-01", "confidence": 0.6},
+       "drivers": [
+         {"factor": "condition_hours", "label": "Godziny z mokrymi liśćmi przy 10–20 °C (7 dni)", "value": 14, "unit": "h",
+          "threshold": "od 5 h ryzyko rośnie, 20 h = pełne", "effect": 0.72},
+         {"factor": "rain_days", "label": "Dni z opadem ≥ 1 mm", "value": 3, "unit": "dni", "effect": null}
+       ],
+       "action": {"type": "treat", "text": "Wysokie ryzyko: obejrzyj pole teraz; po przekroczeniu progu zabieg jest uzasadniony.",
+                  "threshold": "…", "spray_window": {"date": "2024-05-17", "quality": "acceptable"}},
+       "confidence": 0.6
+     }}
   ]
 }
 ```
 
-Scores are 0–1. Days up to today are the season so far; today + 1 … today + 7 are the coming days. The `explanation` format is still open ([database.md](database.md#open-questions)). **Update (decision engine):** the engine writes explanation version 1 — `summary`, `level` (low < 0.33 ≤ medium < 0.66 ≤ high, the map's cut-offs), `drivers` with their `effect`, `action` (with the spraying window), `confidence`, `notes`, `assumptions` — documented in [engine/README.md](../engine/README.md#what-it-writes-risk-and-the-explanation).
+Scores are 0–1 (an index, not a probability). Days up to today are the season so far; today + 1 … today + 7 are the coming days.
+
+**`explanation` is version 1**, written by the engine and passed through by the API unchanged. The full key list, who reads what and the open points are in [database.md → Explanation, version 1](database.md#explanation-version-1). The example above is trimmed (no `crop`, `severity`, `expected_loss`, `notes`, `assumptions`, `model`). In short:
+
+- **Colour** from `level`: `low` / `medium` / `high` (cut-offs 0.33 and 0.66). Show it; don't recompute it from the score.
+- **Why** from `summary` and `drivers`: each driver has a `label` and an `effect` (how much the score would drop without it; `null` = context only). Sort by `effect`.
+- **What to do** from `action`: `type` (`wait` / `monitor` / `treat`), `text`, and for `treat` a `spray_window` from the forecast.
+- **How sure** from `confidence` (0–1; lower for coming days).
+- Texts are shown to the farmer as they are, so they are Polish (the engine still writes English today: open point in database.md). Ignore keys you don't know.
 
 ## Chat
 

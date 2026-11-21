@@ -413,7 +413,7 @@ The wheat sheet lists diseases only, no pests. Wheat pests would have to come fr
 
 ### Risk
 
-**Certain, except the format of `explanation`.** Written by the decision engine; read by the map and the assistant.
+**Certain.** Written by the decision engine; read by the map and the assistant.
 
 | Column | Type | Unit | Notes |
 |--------|------|------|-------|
@@ -421,13 +421,71 @@ The wheat sheet lists diseases only, no pests. Wheat pests would have to come fr
 | `field` | `ForeignKey(Field)` | – | |
 | `threat` | `ForeignKey(Threat)` | – | |
 | `date` | `DateField` | local date | The day this risk applies to |
-| `score` | `FloatField` | 0–1, no unit | Database check: 0 ≤ score ≤ 1 |
-| `explanation` | `JSONField` | – | **Open** format, see below. The engine writes version 1: [engine/README.md](../engine/README.md#what-it-writes-risk-and-the-explanation) |
+| `score` | `FloatField` | 0–1, no unit | Database check: 0 ≤ score ≤ 1. An index of how favourable the recent days were for the threat, not a probability |
+| `explanation` | `JSONField` | – | Why the score is what it is: [explanation format, version 1](#explanation-version-1) |
 | `computed_at` | `DateTimeField` | UTC | Set on every write |
 
 - Key: `field` + `threat` + `date`, unique. Index on `field` + `date`.
 - **One row per field, threat and day, overwritten** whenever the engine recomputes it. Earlier calculations are not kept.
 - Readers: the season so far is `Risk.objects.season_so_far()`; the coming days are `Risk.objects.coming_days()`. Rows further ahead may exist (the season can be precomputed) and are ignored until the clock reaches them.
+- **Levels:** low < 0.33 ≤ medium < 0.66 ≤ high. The engine stores the level in `explanation.level`; readers show it rather than recomputing it.
+
+#### Explanation, version 1
+
+The engine writes this JSON in every row; the map's "why" panel and the assistant read it, and the API passes it through unchanged. It is the format the engine documents in [engine/README.md](../engine/README.md) ("What it writes"); this section is the contract. Readers ignore keys they don't know, so the engine can add keys without breaking anyone; renaming or removing a key needs a new `version`.
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `version` | int | `1` |
+| `summary` | text | One or two sentences: the level, the threat and the main reasons. Shown as it is |
+| `level` | text | `low` / `medium` / `high` (cut-offs above) |
+| `score` | float 0–1 | Same as the row's `score` |
+| `threat` | object | `code`, `name_pl`, `name_en`, `category` |
+| `as_of` | date | The day the row was assessed for (`YYYY-MM-DD`) |
+| `crop` | object | `code` (CropClass) and `source`: `field` (this season's `Field.crop`) or `crop map` (a past season) |
+| `growth_stage` | object | `bbch` (int), `name`, `method` (degree days / satellite / farmer's sowing date), `sowing_assumed` (date or null), `confidence` (0–1) |
+| `drivers` | list | **Why**, one entry per factor (below). Not sorted: sort by `effect` to get the most important first |
+| `action` | object | What to do (below) |
+| `severity` | float 0–1 | Share of the yield at risk if the threat materialises (team assumption) |
+| `expected_loss` | float 0–1 | `score × severity`; used to rank fields |
+| `confidence` | float 0–1 | How sure the row is: growth-stage method × weather data quality × distance into the forecast; 1.0 when the farmer saw it |
+| `confidence_observed`, `forecast_lead_days` | float, int | Only on days after today: the confidence before the forecast discount, and how many days ahead |
+| `notes` | list of text | Agronomic notes for this threat |
+| `assumptions` | object | The team's own numbers used by the rule (thresholds, hours) |
+| `model`, `model_version` | text | `rules`, the engine's version |
+
+**A driver** (entry of `drivers`):
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `factor` | text | Stable name, e.g. `condition_hours`, `growth_stage`, `previous_crop`, `farmer_report`, `rain_days` |
+| `label` | text | Human-readable sentence. Shown as it is |
+| `value`, `unit` | number, text | Optional: the measured value and its unit |
+| `threshold` | text | Optional: when it starts to count / counts fully |
+| `multiplier` | float | Optional: the factor's multiplier on the score |
+| `effect` | float or null | How much the score would drop without this factor; `null` = context only |
+| `kind`, `observed_on`, `text` | text, date, text | Farmer reports only: the report's kind, date and the farmer's own words |
+
+**The action:**
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `type` | text | `wait` / `monitor` / `treat` |
+| `text` | text | What to do, one sentence. Shown as it is |
+| `threshold` | text or null | The monitoring / economic threshold for the current growth stage |
+| `spray_window` | object or null | Only for `treat`: `date`, `quality` (`optimal` / `acceptable`), `conditions`, `rule`, `note`. From the forecast issued on `as_of` |
+
+**Text language.** `summary`, `drivers[].label`, `action.text`, `action.threshold` and `notes` reach the farmer as they are, so they must be **Polish** (AGENTS.md: interface text is Polish). The engine writes them in English today (with the Polish threat name in brackets): see [Open questions](#open-questions).
+
+**Who reads what.**
+
+| Reader | Uses |
+|--------|------|
+| Map ("why" panel, colours) | `level` for the colour, `summary`, `drivers` (`label`, `effect`), `action` (`type`, `text`, `spray_window.date`), `growth_stage.name`, `confidence` |
+| Assistant | `summary`, the top `drivers` by `effect`, `action`, `growth_stage`, `confidence` (already on `feat/chat-assistant`) |
+| Engine (`engine.summary`) | `level`, `expected_loss`, `action`, `summary` |
+
+No product names or doses appear anywhere (shared principle).
 
 ## Unit traps
 
@@ -456,8 +514,8 @@ Found by the decision engine in the real files; the import has to handle them:
 
 | Topic | Question | Who |
 |-------|----------|-----|
-| Risk score | What does the score mean (a probability or an index), and what are the cut-offs for the map colours? | Bartek, Kuba |
-| Risk explanation | The format of `Risk.explanation`, shared by the map and the assistant. Starting point: `{"summary": "...", "factors": [{"variable": "avg_relative_humidity", "value": 94, "unit": "%", "threshold": "> 90"}], "source": "ryzyka_zebrane.xlsx / pszenica"}` | Bartek, Kuba, Ola |
+| Explanation texts in Polish | The format is agreed ([version 1](#explanation-version-1)), but its texts (`summary`, driver labels, `action.text`, `notes`) are English today. Switch them to Polish in the engine, or add Polish copies next to them? | Bartek |
+| Level names | The engine writes `medium`; the frontend's `risk.ts` uses `mid`. The frontend switches to `medium` | Jan + Szymek (frontend) |
 | Field state | Farmer reports: done ([Observation](#observation)). Still open: the engine also proposes facts stored on the field itself (`Field.sowing_date`, `Field.tillage`, `Field.resistant_to`, `FieldCropYear.source`); it reads them if they exist. Until then `field_fact` reports do the same job | Bartek, Ola, Jan + Szymek |
 | Hourly forecast | Does the engine need an hourly forecast table as well as the daily one? | Bartek |
 | Satellite | If the engine uses Sentinel-2, add a per-field table (field, date, mean NDVI, cloud share). The organisers don't host this data | Bartek |

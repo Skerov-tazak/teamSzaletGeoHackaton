@@ -54,7 +54,7 @@ Risk scores are 0–1. "Season so far" is up to today; "coming days" are today +
 - **Base maps** (sidebar, radio): OpenStreetMap via CARTO raster tiles (the OSM Foundation tile server answers 403 to app-hosted requests — see its tile usage policy), OpenTopoMap, Esri World Imagery (orthophoto). Attribution is kept on the map; CARTO is the default because it is meant for app use.
 - **Overlays** (sidebar, checkboxes):
   - `fields`: `GET /api/fields/`, click selects a field, tooltip shows the name;
-  - `risks`: colour per field = the highest score across threats on `ctx.clock.today` (green < 0.33, amber < 0.66, red ≥ 0.66 — see [`src/risk.ts`](../risk.ts); the cut-offs are still open with Bartek);
+  - `risks`: colour per field = the highest score across threats on `ctx.clock.today` (green < 0.33, amber < 0.66, red ≥ 0.66 — see [`src/risk.ts`](../risk.ts); the same cut-offs as the engine's `explanation.level`, agreed);
   - `ownParcels`: polygons uploaded in *Own data* (purple dashed outline, kept in `localStorage`).
 - **Field card** (`details-panel`, top right): name, crop, area; the threats on the demo date with their scores, from `GET /api/fields/{id}/risks/{date}/`; the season chart (one line per threat, solid to today, dashed for the forecast) from `GET /api/fields/{id}/risks/?from={1 Jan of the season}&to={today}`.
 - **Empty states**: a missing endpoint (`404`) or a stopped server shows a banner on the map instead of an exception; the map itself still works (base map, own parcels).
@@ -64,4 +64,5 @@ Risk scores are 0–1. "Season so far" is up to today; "coming days" are today +
 - **Plain TypeScript, no framework.**
 - `npm install`, then `npm run build` (typecheck + esbuild) or `npm run watch`. The bundle goes to `frontend/static/frontend/dist/`: `main.js` and `main.css` (Leaflet's stylesheet is bundled too; the template links both). Leaflet's PNG sprites are emitted next to them (`--loader:.png=file`).
 - **API types** are written by hand for now in [`src/types.ts`](../types.ts), following [docs/interfaces.md](../../../docs/interfaces.md). When the backend's schema is ready, generate `frontend/src/api/schema.d.ts` with `openapi-typescript` (see interfaces.md) and point the client at it.
-- *Still open:* the colour cut-offs for risk scores (with Bartek) and the `explanation` format shown in the "why" panel.
+- **"Why" panel:** show `explanation` version 1 ([database.md → Explanation, version 1](../../../docs/database.md#explanation-version-1)): `level` for the colour, `summary`, the `drivers` sorted by `effect` (their `label`), `action.text` and, for `treat`, `action.spray_window.date`, `growth_stage.name` and `confidence`. Ignore keys you don't know.
+- *Still open:* the engine writes `level` as `medium` while `src/risk.ts` uses `mid` (the frontend switches to `medium`), and the explanation texts are still English (the engine switches to Polish).
