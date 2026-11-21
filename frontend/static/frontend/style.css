@@ -7,7 +7,7 @@
   color-scheme: light;
   --ink: #161a15;
   --ink-2: #4c5249;
-  --ink-3: #7c8278;
+  --ink-3: #636960; /* ≥ 4.5:1 on --surface and --surface-2 (small helper texts) */
   --line: rgba(28, 33, 26, 0.1);
   --line-strong: rgba(28, 33, 26, 0.18);
   --bg: #e9ece4;
@@ -94,7 +94,8 @@ body {
 
 :where(.app-header, .chat-area, .page-error) :is(button, select, input, textarea) { font: inherit; color: inherit; }
 :where(.app-header, .chat-area) button { cursor: pointer; }
-:where(.app-header, .chat-area) button:disabled { cursor: default; opacity: 0.5; }
+:where(.app-header, .chat-area) button:disabled,
+:where(.app-header) [aria-disabled] { cursor: default; opacity: 0.5; }
 :where(.app-header, .chat-area) :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* --- header ------------------------------------------------------------------------------------ */
@@ -175,7 +176,7 @@ body {
 }
 .date-control button.step { font-size: 19px; line-height: 1; }
 .date-control button.wide { padding: 0 10px; font-size: 12.5px; font-weight: 600; }
-.date-control button:hover:not(:disabled) { background: var(--surface); color: var(--ink); }
+.date-control button:hover:not(:disabled):not([aria-disabled]) { background: var(--surface); color: var(--ink); }
 .date-box {
   position: relative;
   display: flex;
@@ -223,7 +224,8 @@ body {
   color: var(--ink-2);
   white-space: nowrap;
 }
-.date-status[data-state="error"] { color: var(--error); white-space: normal; }
+.date-status[data-state="error"] { color: var(--error); white-space: normal; cursor: pointer; }
+.date-status[data-state="error"]::after { content: " ×"; color: var(--ink-3); }
 
 /* --- layout: two rounded boxes on the page background ---------------------------------------------- */
 
@@ -244,7 +246,7 @@ body {
   overflow: hidden;
 }
 .chat-area {
-  flex: 0 0 400px;
+  flex: 0 0 clamp(320px, 26vw, 400px); /* 1280 px wide: ~333 px, so the map stays in its desktop layout */
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -268,7 +270,7 @@ body {
 .page-error p { margin: 6px 0; color: var(--ink-2); }
 
 @media (max-width: 1100px) {
-  .chat-area { flex-basis: 340px; }
+  .chat-area { flex-basis: 320px; }
 }
 @media (max-width: 860px) {
   :root { --gap: 8px; }
@@ -571,3 +573,41 @@ body {
 .chat-send .icon { display: grid; place-items: center; }
 .chat-send svg { width: 18px; height: 18px; }
 .chat-send:hover:not(:disabled) { transform: translateY(-1px); }
+
+/* --- chat: starters, assistant off, unsent message (docs/audit-2026-11-21.md) -------------------- */
+.chat-starters { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+.chat-starter {
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink);
+  border-radius: 12px;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-starter:hover { background: var(--surface-3, var(--surface-2)); border-color: var(--ink-3); }
+.chat-off strong { color: var(--ink); }
+.assistant-off .composer { opacity: 0.6; }
+.chat-badge {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.msg-unsent { opacity: 0.6; }
+.msg-unsent::after { content: "nie wysłano"; display: block; margin-top: 4px; font-size: 11px; color: var(--error); text-align: right; }
+.page-error { align-self: flex-start; }
+
+@media (prefers-reduced-motion: reduce) {
+  .app-header *, .chat-area *, .chat-area *::before, .chat-area *::after { animation: none !important; transition: none !important; }
+}
+
+/* the subtitle does not fit next to the conversation picker on laptop widths */
+@media (max-width: 1500px) and (min-width: 861px) { .chat-title > span:not(.chat-badge) { display: none; } }
+/* phones: "Połączono" needs no row of its own; errors still show */
+@media (max-width: 860px) { .platform-status[data-state="ok"] { display: none; } }

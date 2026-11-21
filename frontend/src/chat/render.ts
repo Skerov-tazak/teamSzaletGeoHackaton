@@ -25,15 +25,43 @@ export interface RenderedMessage {
   actionButtons: HTMLButtonElement[];
 }
 
+// The default DOMPurify list keeps <style>, forms, media and style="": a farmer's text quoted in a draft (or a
+// model's answer) could restyle the whole page or load an image from anywhere. Answers need text formatting only.
+const PURIFY = {
+  FORBID_TAGS: ["style", "form", "input", "button", "select", "textarea", "img", "video", "audio", "iframe", "dialog", "svg", "math"],
+  FORBID_ATTR: ["style", "class", "id"],
+};
+DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+  if (node.tagName === "A") {  // links in an answer never replace the app
+    node.setAttribute("target", "_blank");
+    node.setAttribute("rel", "noopener noreferrer");
+  }
+});
+
 /** Markdown -> sanitised HTML. Never inserts the model's output as raw HTML. */
 export function markdownToHtml(text: string): string {
-  return DOMPurify.sanitize(marked.parse(text, { async: false, gfm: true, breaks: true }) as string);
+  return DOMPurify.sanitize(marked.parse(text, { async: false, gfm: true, breaks: true }) as string, PURIFY);
+}
+
+/** Readable titles of the guides (file names in field-under-pressure-materials/metodyki/). */
+const DOCUMENT_TITLES: Record<string, string> = {
+  "metodyka_-_PSZENICA_-_www.pdf": "Metodyka integrowanej ochrony pszenicy",
+  "pszenicy_ozimej_i_jarej__DLA_PRODUCENTOW.pdf": "Ochrona pszenicy ozimej i jarej – poradnik dla producentów",
+  "kukurydzy__DLA_PRODUCENTOW.pdf": "Ochrona kukurydzy – poradnik dla producentów",
+  "Metodyka_integrowanej_ochrony_kukurydzy_dla_doradcow_2019.pdf": "Metodyka integrowanej ochrony kukurydzy dla doradców (2019)",
+  "PORADNIK_METODYCZNY_-_ZBOZA_GIORiN.pdf": "Poradnik metodyczny: zboża (GIORiN)",
+  "ryzyka_zebrane.xlsx": "Zestawienie warunków ryzyka",
+};
+
+function documentTitle(document: string): string {
+  return DOCUMENT_TITLES[document] ?? document.replace(/\.(pdf|xlsx)$/i, "").replace(/_+/g, " ").replace(/\s+-\s+/g, " – ").trim();
 }
 
 function guideLabel(citation: GuideCitation): string {
-  if (citation.sheet) return `${citation.document}, arkusz ${citation.sheet}, wiersz ${citation.row ?? "?"}`;
+  const title = documentTitle(citation.document);
+  if (citation.sheet) return `${title} – ${citation.sheet}, wiersz ${citation.row ?? "?"}`;
   const page = citation.printed_page ?? citation.page;
-  return page !== null && page !== undefined ? `${citation.document}, s. ${page}` : citation.document;
+  return page !== null && page !== undefined ? `${title}, s. ${page}` : title;
 }
 
 /** Replaces [n] in text nodes with links to the source whose `ref` is n (not inside code or links). */
@@ -85,7 +113,7 @@ function sourceItem(citation: Citation, anchor: string, hooks: MessageHooks): HT
     const ref = citation.ref !== null && citation.ref !== undefined ? String(citation.ref) : null;
     return h(
       "li",
-      { id: anchor, class: "source source-guide", title: citation.section ?? undefined },
+      { id: anchor, class: "source source-guide", title: [citation.section, citation.document].filter(Boolean).join(" · ") },
       ref ? h("span", { class: "src-ref" }, ref) : icon(ICONS.doc, "src-icon"),
       h("span", { class: "src-text" }, guideLabel(citation)),
     );

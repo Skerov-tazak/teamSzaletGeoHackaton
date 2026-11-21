@@ -9,7 +9,7 @@
   --fup-line-strong: rgba(28, 33, 26, 0.2);
   --fup-ink: #161a15;
   --fup-ink-2: #474d44;
-  --fup-ink-3: #767c72;
+  --fup-ink-3: #636960; /* ≥ 4.5:1 on the light surfaces (was #767c72, 3.8:1 on surface-2) */
   --fup-accent: #2f5d3a;
   --fup-shadow: 0 1px 2px rgba(16, 20, 14, 0.06), 0 10px 30px rgba(16, 20, 14, 0.16);
   --fup-high: #d03b3b;
@@ -254,7 +254,17 @@
   padding: 2px 8px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.01em; pointer-events: none;
 }
 .fup-map .fup-label::before { display: none; }
-.fup-map.labels-off .fup-label { display: none; }
+.fup-map.labels-off .fup-label:not(.lbl-high) { display: none; }
+.fup-map .fup-label .lb-ic { display: inline-flex; width: 11px; height: 11px; margin-right: 4px; vertical-align: -1px; }
+.fup-map .fup-label .lb-ic svg { width: 11px; height: 11px; }
+.fup-map .fup-label .lb-lv { font-weight: 500; opacity: 0.85; }
+.fup-map .fup-label .lb-ic.lvl-high { color: #ff7a7a; }
+.fup-map .fup-label .lb-ic.lvl-medium { color: #fab219; }
+.fup-map .fup-label .lb-ic.lvl-low { color: #5bd75b; }
+.fup-map .side-empty .retry {
+  margin-left: 6px; border: 1px solid var(--fup-line-strong); background: transparent; border-radius: 999px;
+  padding: 2px 10px; font: inherit; font-weight: 600; cursor: pointer;
+}
 
 /* ---- field panel ------------------------------------------------------------------------------- */
 .fup-map .fup-panel {
@@ -344,6 +354,9 @@
 .fup-map .drivers { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
 .fup-map .drv-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 13px; }
 .fup-map .drv-label { color: var(--fup-ink); min-width: 0; }
+.fup-map .drv-val { margin-left: 6px; font-weight: 600; white-space: nowrap; color: var(--fup-ink-2); }
+.fup-map .action .thr { margin: 6px 0 0; font-size: 12.5px; color: var(--fup-ink-2); }
+.fup-map .action .thr b { color: var(--fup-ink); font-weight: 600; }
 .fup-map .drv-tag { flex: none; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fup-ink-3); }
 .fup-map .drv.up .drv-tag { color: var(--fup-ink-2); }
 .fup-map .drv.down .drv-tag { color: var(--fup-low-ink); }
@@ -423,13 +436,15 @@
 .fup-map .fup-toast[hidden] { display: none; }
 
 /* ---- medium containers: with the panel open, the overview card makes room ----------------------- */
-@container (max-width: 1120px) {
+/* (300 px card + 420 px panel + margins fit from ~940 px: a 1366 px laptop keeps both) */
+@container (max-width: 940px) {
   .fup-map.has-panel .fup-side { display: none; }
   .fup-map.has-panel .fup-days { left: calc((100% - 420px) / 2); max-width: calc(100% - 444px); }
 }
 
 /* ---- narrow containers (phones): summary bar on top, panel as a bottom sheet -------------------- */
-@container (max-width: 860px) {
+/* 720 px, the same number as NARROW_PX in index.ts: a 1280 px projector keeps the desktop layout */
+@container (max-width: 720px) {
   .fup-map .fup-side { top: 10px; left: 10px; right: 10px; width: auto; bottom: auto; max-height: 62%; }
   .fup-map .side-head { padding: 12px 14px 8px; align-items: center; }
   .fup-map .side-title { font-size: 16px; }

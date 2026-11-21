@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "npm run api:check && npm run typecheck && npm run bundle",
-    "bundle": "esbuild src/main.ts --bundle --splitting --format=esm --sourcemap --target=es2020 --loader:.png=file --loader:.svg=file --chunk-names=chunks/[name]-[hash] --asset-names=assets/[name]-[hash] --outdir=static/frontend/dist",
+    "bundle": "esbuild src/main.ts --bundle --minify --splitting --format=esm --sourcemap --target=es2020 --loader:.png=file --loader:.svg=file --chunk-names=chunks/[name]-[hash] --asset-names=assets/[name]-[hash] --outdir=static/frontend/dist",
     "watch": "npm run bundle -- --watch",
     "typecheck": "tsc --noEmit",
     "api:types": "openapi-typescript openapi.yml -o src/api/schema.d.ts",

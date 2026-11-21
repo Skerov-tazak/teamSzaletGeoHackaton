@@ -2,14 +2,22 @@
 // once, then "Myślę…", then the answer. Talks to the map only through events:
 //   sends   field:focus (focus_field_id, a clicked risk citation), risks:updated (updated_field_ids)
 //   handles field:selected ("Pytasz o: …"; the field goes with the next message)
+//           assistant:status (no LLM keys: the chat is greyed out with a short explanation; map and risks work)
 
-import { errorMessage } from "../api/client";
+import { ApiError, errorMessage } from "../api/client";
 import type { ChatMessage } from "../api/types";
 import type { AppContext } from "../context";
 import { h, icon, ICONS } from "../dom";
 import { type MessageHooks, renderMessage } from "./render";
 
 const NEW_CONVERSATION = "";
+
+/** Questions from the demo script, one click away in an empty conversation. */
+const STARTERS = [
+  "Które pole jest dziś najbardziej zagrożone?",
+  "Dlaczego to pole jest na czerwono i co mam zrobić?",
+  "Jakie są objawy septoriozy paskowanej liści?",
+];
 
 export function initChat(container: HTMLElement, ctx: AppContext): void {
   const conversations = h("select", { class: "chat-conversations", "aria-label": "Rozmowy" });
@@ -20,7 +28,7 @@ export function initChat(container: HTMLElement, ctx: AppContext): void {
   const input = h("textarea", {
     class: "chat-input",
     rows: 1,
-    placeholder: "Zapytaj o pole, zagrożenie albo zabieg…",
+    placeholder: "Zapytaj o pole albo zagrożenie…",
     "aria-label": "Wiadomość",
   });
   const sendButton = h("button", { type: "submit", class: "chat-send", title: "Wyślij", "aria-label": "Wyślij" }, icon(ICONS.send));
@@ -29,7 +37,7 @@ export function initChat(container: HTMLElement, ctx: AppContext): void {
     h(
       "div",
       { class: "chat-toolbar" },
-      h("div", { class: "chat-title" }, h("h2", {}, "Asystent"), h("span", {}, "metodyki i ryzyka Twoich pól")),
+      h("div", { class: "chat-title" }, h("h2", {}, "Asystent"), h("span", {}, "ryzyka i metodyki")),
       h("div", { class: "chat-tools" }, conversations, newButton),
     ),
     list,
@@ -48,6 +56,8 @@ export function initChat(container: HTMLElement, ctx: AppContext): void {
   let busy = false;
   let selectedFieldId: number | null = null;
   let loadToken = 0;
+  let available = true; // false: GET /api/health/ says the assistant has no LLM (assistant:status)
+  let offReason = "";
 
   // --- names for risk citations and "Pytasz o"
   const fieldNames = new Map<number, Promise<string>>();
@@ -56,7 +66,10 @@ export function initChat(container: HTMLElement, ctx: AppContext): void {
     if (!name) {
       name = ctx.api.getField(fieldId).then(
         (field) => field.name,
-        () => `pole #${fieldId}`,
+        () => {
+          fieldNames.delete(fieldId); // a passing error: ask again next time
+          return `pole #${fieldId}`;
+        },
       );
       fieldNames.set(fieldId, name);
     }
@@ -84,13 +97,33 @@ export function initChat(container: HTMLElement, ctx: AppContext): void {
   };
 
   const showEmptyHint = () => {
+    if (!available) {
+      list.replaceChildren(
+        h(
+          "div",
+          { class: "chat-empty chat-off" },
+          icon(ICONS.chat, "chat-empty-icon"),
+          h("p", {}, h("strong", {}, "Asystent jest wyłączony.")),
+          h("p", {}, offReason || "Brak kluczy do modelu językowego."),
+          h("p", { class: "muted", title: "Wpisz GEMINI_API_KEY lub GROQ_API_KEY do pliku .env i uruchom serwer ponownie." },
+            "Mapa, ryzyka i wyjaśnienia działają bez niego."),
+        ),
+      );
+      return;
+    }
+    const starters = STARTERS.map((q) => {
+      const chip = h("button", { type: "button", class: "chat-starter" }, q);
+      chip.addEventListener("click", () => void send(q, selectedFieldId));
+      return chip;
+    });
     list.replaceChildren(
       h(
         "div",
         { class: "chat-empty" },
         icon(ICONS.chat, "chat-empty-icon"),
         h("p", {}, "Zapytaj o ryzyka na swoich polach, zalecenia z metodyk albo opisz, co widzisz na polu."),
-        h("p", { class: "muted" }, "Kliknij pole na mapie, żeby pytać właśnie o nie."),
+        h("p", { class: "muted" }, "Kliknij pole na mapie, żeby pytać właśnie o nie. Shift+Enter: nowa linia."),
+        h("div", { class: "chat-starters" }, ...starters),
       ),
     );
   };
@@ -113,12 +146,28 @@ export function initChat(container: HTMLElement, ctx: AppContext): void {
 
   const setBusy = (value: boolean) => {
     busy = value;
-    sendButton.disabled = value;
-    input.disabled = value;
+    sendButton.disabled = value || !available;
+    input.disabled = value || !available;
     newButton.disabled = value;
     conversations.disabled = value;
     refreshActionButtons();
   };
+
+  ctx.events.on("assistant:status", (status) => {
+    const changed = status.available !== available;
+    available = status.available;
+    offReason = status.reason ?? "";
+    container.classList.toggle("assistant-off", !available);
+    input.placeholder = available ? "Zapytaj o pole albo zagrożenie…" : "Asystent wyłączony (brak kluczy LLM)";
+    container.querySelector(".chat-badge")?.remove();
+    if (available && !status.rag) {
+      container.querySelector(".chat-title")?.append(
+        h("span", { class: "chat-badge", title: status.reason ?? "" }, "bez metodyk"),
+      );
+    }
+    setBusy(busy);
+    if (changed && !list.querySelector(".msg")) showEmptyHint();
+  });
 
   // --- conversations
   const fillConversations = async () => {
@@ -168,10 +217,11 @@ export function initChat(container: HTMLElement, ctx: AppContext): void {
   };
 
   // --- sending
-  const send = async (text: string, fieldId: number | null) => {
+  const send = async (text: string, fieldId: number | null, retried = false): Promise<void> => {
     const message = text.trim();
-    if (!message || busy) return;
+    if (!message || (busy && !retried) || !available) return;
     setBusy(true);
+    list.querySelectorAll(".msg-unsent").forEach((element) => element.remove()); // the retry replaces it
     loadToken++; // a conversation still loading must not replace what happens now
     const draftText = input.value;
     input.value = "";
@@ -206,6 +256,25 @@ export function initChat(container: HTMLElement, ctx: AppContext): void {
       });
     } catch (error) {
       lastMessageId = null; // the server may have saved the message (and dropped a pending draft)
+      // the data was reloaded (scenario reset): an old conversation or field id. Start over once, quietly.
+      if (!retried && error instanceof ApiError && (error.status === 404 || /^field \d+ not found$/.test(error.detail))) {
+        thinking.remove();
+        userBubble.remove();
+        if (error.status === 404) {
+          conversationId = null;
+          void fillConversations();
+        } else {
+          selectedFieldId = null;
+          contextLine.hidden = true;
+        }
+        busy = false;
+        return await send(message, error.status === 404 ? fieldId : null, true);
+      }
+      if (error instanceof ApiError && error.status === 503) {
+        ctx.events.emit("assistant:status", { available: false, rag: false, reason: error.detail });
+      }
+      userBubble.classList.add("msg-unsent");
+      userBubble.title = "Nie wysłano";
       thinking.replaceWith(h("div", { class: "chat-error" }, `Nie udało się wysłać: ${errorMessage(error)}`));
       if (!input.value) input.value = draftText || message; // keep what the user typed
       fitInput();

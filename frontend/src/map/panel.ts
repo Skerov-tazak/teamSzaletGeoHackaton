@@ -38,7 +38,8 @@ export interface PanelState {
 
 export const ICON: Record<Level, string> = {
   high: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 15 14H1z" fill="currentColor"/><path d="M8 6v3.6M8 11.4v.1" stroke="var(--fup-on-status)" stroke-width="1.6" stroke-linecap="round"/></svg>',
-  medium: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="currentColor"/><path d="M8 4.6v4M8 10.9v.1" stroke="var(--fup-on-status)" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  // a dark mark on the yellow (white on #fab219 is 1.8:1)
+  medium: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="currentColor"/><path d="M8 4.6v4M8 10.9v.1" stroke="#2b2100" stroke-width="1.6" stroke-linecap="round"/></svg>',
   low: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="currentColor"/><path d="m5 8.2 2 2 4-4.2" fill="none" stroke="var(--fup-on-status)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 };
 
@@ -58,31 +59,64 @@ export function levelPill(level: Level, extra = ""): string {
  * The "why": drivers sorted by `effect` (how much the score would drop without the factor), as the contract
  * asks; `effect: null` = context only, listed after them. Bars show the size of the effect.
  */
+const NO_EFFECT = 0.0005;
+
+/** "25 h", "0,6": the factor's own value, unless the label already says it (growth stage, crop codes). */
+function driverValue(d: Driver): string {
+  if (d.value == null || d.factor === "growth_stage" || d.unit === "kod uprawy") return "";
+  const v = typeof d.value === "number" ? num(d.value) : String(d.value);
+  if (d.label.includes(v)) return "";
+  const unit = d.unit && d.unit !== "0-1" ? ` ${d.unit}` : "";
+  return `<span class="drv-val">${esc(v + unit)}</span>`;
+}
+
+/**
+ * The "why": drivers sorted by `effect` (how much the score would drop without the factor), as the contract
+ * asks. Factors without an effect (null, or ~0: e.g. an old report that no longer changes anything) are
+ * background, listed once each under "Tło". Bars show the size of the effect; the threshold is the tooltip.
+ */
 function driverRows(drivers: Driver[] | undefined): string {
-  const list = drivers ?? [];
-  const ranked = list.filter((d) => d.effect != null).sort((a, b) => (b.effect ?? 0) - (a.effect ?? 0));
-  const context = list.filter((d) => d.effect == null);
+  const seen = new Set<string>();
+  const list = (drivers ?? []).filter((d) => !seen.has(d.label) && seen.add(d.label));
+  const ranked = list.filter((d) => d.effect != null && Math.abs(d.effect) >= NO_EFFECT)
+    .sort((a, b) => (b.effect ?? 0) - (a.effect ?? 0));
+  const context = list.filter((d) => !ranked.includes(d));
   const max = Math.max(0.0001, ...ranked.map((d) => Math.abs(d.effect ?? 0)));
+  const title = (d: Driver) => (d.threshold ? ` title="Próg: ${esc(d.threshold)}"` : "");
   const row = (d: Driver) => {
     const e = d.effect ?? 0;
-    const dir = e > 0.0005 ? "up" : e < -0.0005 ? "down" : "zero";
-    const tag = dir === "up" ? "podnosi" : dir === "down" ? "obniża" : "bez wpływu";
-    return `<li class="drv ${dir}"><div class="drv-head"><span class="drv-label">${esc(d.label)}</span><span class="drv-tag">${tag}</span></div>` +
-      (dir === "zero" ? "" : `<div class="drv-bar"><span style="width:${Math.max(4, (Math.abs(e) / max) * 100)}%"></span></div>`) + "</li>";
+    const dir = e > 0 ? "up" : "down";
+    const tag = dir === "up" ? `podnosi o ${num(e, 2)}` : `obniża o ${num(-e, 2)}`;
+    return `<li class="drv ${dir}"${title(d)}><div class="drv-head"><span class="drv-label">${esc(d.label)}${driverValue(d)}</span>` +
+      `<span class="drv-tag">${tag}</span></div>` +
+      `<div class="drv-bar"><span style="width:${Math.max(4, (Math.abs(e) / max) * 100)}%"></span></div></li>`;
   };
   return (ranked.length ? `<h5>Dlaczego</h5><ul class="drivers">${ranked.map(row).join("")}</ul>` : "") +
-    (context.length ? `<h5>Tło</h5><ul class="context">${context.map((d) => `<li>${esc(d.label)}</li>`).join("")}</ul>` : "");
+    (context.length ? `<h5>Tło</h5><ul class="context">${context.map((d) => `<li${title(d)}>${esc(d.label)}${driverValue(d)}</li>`).join("")}</ul>` : "");
 }
 
 function actionBox(e: Explanation, level: Level): string {
   const a = e.action;
   if (!a) return "";
   const date = a.type === "treat" ? a.spray_window?.date : undefined;
+  const quality = a.spray_window?.quality;
+  const qualityText = quality ? ` <small>(${esc(SPRAY_QUALITY[quality] ?? quality)})</small>` : "";
   const window = a.type !== "treat" ? ""
-    : date ? `<div class="spray"><span class="spray-k">Najbliższe okno zabiegu</span><span class="spray-v">${weekday(date)} ${shortDate(date)}</span></div>`
+    : date ? `<div class="spray"><span class="spray-k">Najbliższe okno zabiegu</span><span class="spray-v">${weekday(date)} ${shortDate(date)}${qualityText}</span></div>`
     : '<div class="spray none">Brak dobrego okna zabiegu w prognozie.</div>';
+  const threshold = a.threshold && a.type !== "wait" ? `<p class="thr"><b>Próg szkodliwości:</b> ${esc(a.threshold)}</p>` : "";
   return `<div class="action act-${esc(a.type)} lvl-${level}"><div class="act-icon">${ACTION_ICON[a.type] ?? ACTION_ICON.wait}</div><div class="act-main">` +
-    `<div class="act-title">${esc(ACTION_LABEL[a.type] ?? a.type)}</div><p>${esc(a.text)}</p>${window}</div></div>`;
+    `<div class="act-title">${esc(ACTION_LABEL[a.type] ?? a.type)}</div><p>${esc(a.text)}</p>${threshold}${window}</div></div>`;
+}
+
+/** One threat's category (the filter chips use the plural). */
+const CATEGORY_ONE: Record<string, string> = {
+  fungal: "choroba grzybowa", bacterial: "choroba bakteryjna", viral: "choroba wirusowa", pest: "szkodnik", weed: "chwast",
+};
+const SPRAY_QUALITY: Record<string, string> = { optimal: "dobre warunki", acceptable: "warunki dopuszczalne" };
+
+function capital(text: string): string {
+  return text ? text[0].toUpperCase() + text.slice(1) : text;
 }
 
 function meta(e: Explanation, lead: number): string {
@@ -106,10 +140,10 @@ function reasonText(summary: string): string {
 function threatRow(r: FieldDayRisks["risks"][number], expanded: boolean, lead: number): string {
   const e = r.explanation;
   const level = e.level;
-  const cat = CATEGORY_LABEL[r.threat.category] ?? r.threat.category;
+  const cat = CATEGORY_ONE[r.threat.category] ?? CATEGORY_LABEL[r.threat.category] ?? r.threat.category;
   return `<li class="threat lvl-${level}${expanded ? " open" : ""}" data-code="${esc(r.threat.code)}">` +
     `<button class="threat-head" aria-expanded="${expanded}">` +
-    `<span class="threat-name">${esc(r.threat.name)}<small>${esc(cat)}</small></span>${levelPill(level, "sm")}${CHEVRON}</button>` +
+    `<span class="threat-name">${esc(capital(r.threat.name))}<small>${esc(cat)}</small></span>${levelPill(level, "sm")}${CHEVRON}</button>` +
     `<div class="threat-body">${actionBox(e, level)}<p class="summary">${esc(reasonText(e.summary))}</p>${driverRows(e.drivers)}${meta(e, lead)}</div></li>`;
 }
 
@@ -160,7 +194,7 @@ export function renderPanel(host: HTMLElement, data: PanelData, state: PanelStat
 
   const overall = worst
     ? `<div class="overall lvl-${worst.explanation.level}"><div class="overall-k">${ICON[worst.explanation.level]}${LEVEL_TITLE[worst.explanation.level]}</div>` +
-      `<div class="overall-v">${worst.explanation.level === "low" ? "Wszystkie zagrożenia niskie" : esc(worst.threat.name)}</div>` +
+      `<div class="overall-v">${worst.explanation.level === "low" ? "Wszystkie zagrożenia niskie" : esc(capital(worst.threat.name))}</div>` +
       `<div class="overall-counts">${(["high", "medium", "low"] as Level[]).map((l) => `<span class="cnt lvl-${l}">${counts[l]} ${LEVEL_LABEL[l]}</span>`).join("")}</div></div>`
     : '<div class="overall empty">Brak ocen ryzyka na ten dzień.</div>';
 
@@ -181,7 +215,7 @@ export function renderPanel(host: HTMLElement, data: PanelData, state: PanelStat
     `<section class="sec"><div class="sec-row"><h4>Ryzyko w sezonie</h4><div class="seg" role="group" aria-label="Zakres wykresu">` +
     `<button data-range="recent" class="${state.range === "recent" ? "on" : ""}">3 miesiące</button>` +
     `<button data-range="season" class="${state.range === "season" ? "on" : ""}">sezon</button></div></div>` +
-    `<div class="chart-host"></div><p class="chart-note">Trzy najwyższe zagrożenia tego dnia. Linia przerywana: najbliższe ${forecastDays} dni z prognozy.</p></section>` +
+    `<div class="chart-host"></div><p class="chart-note">Trzy najwyższe zagrożenia tego dnia. Linia przerywana: ${forecastDays === 1 ? "najbliższy dzień" : `najbliższe ${forecastDays} dni`} z prognozy.</p></section>` +
     `${about(detail)}</div>`;
 
   const chartHost = host.querySelector<HTMLElement>(".chart-host")!;

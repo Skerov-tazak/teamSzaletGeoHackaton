@@ -16,6 +16,8 @@ export const LEVEL_RANK: Record<Level, number> = { low: 0, medium: 1, high: 2 };
 
 export const LEVEL_LABEL: Record<Level, string> = { low: "niskie", medium: "średnie", high: "wysokie" };
 export const LEVEL_TITLE: Record<Level, string> = { low: "Niskie ryzyko", medium: "Średnie ryzyko", high: "Wysokie ryzyko" };
+/** "Pokaż tylko pola z ryzykiem wysokim" */
+export const LEVEL_INSTR: Record<Level, string> = { low: "niskim", medium: "średnim", high: "wysokim" };
 
 /** Short labels for the filter chips. */
 export const CATEGORY_SHORT: Record<string, string> = {
@@ -72,10 +74,11 @@ export function longDate(iso: string): string {
   return `${t.getUTCDate()} ${MONTHS_GEN[t.getUTCMonth()]} ${t.getUTCFullYear()}`;
 }
 
-/** "15 cze" */
+/** "15 cze", "30 maja" (May has no abbreviation, so it takes the genitive like a written date) */
 export function shortDate(iso: string): string {
   const t = toUtc(iso);
-  return `${t.getUTCDate()} ${MONTHS_SHORT[t.getUTCMonth()]}`;
+  const m = t.getUTCMonth();
+  return `${t.getUTCDate()} ${m === 4 ? "maja" : MONTHS_SHORT[m]}`;
 }
 
 export function monthShort(iso: string): string {

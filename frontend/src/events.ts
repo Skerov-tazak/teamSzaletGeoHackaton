@@ -6,6 +6,8 @@ export interface AppEvents {
   "field:focus": { fieldId: number };
   "date:changed": { today: string };
   "risks:updated": { fieldIds: number[] };
+  // from main.ts (GET /api/health/): can the chat answer? (no LLM keys -> the chat is greyed out)
+  "assistant:status": { available: boolean; rag: boolean; reason: string | null };
 }
 
 export class EventBus {

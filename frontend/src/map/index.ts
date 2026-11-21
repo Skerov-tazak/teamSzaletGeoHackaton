@@ -15,10 +15,13 @@ import "leaflet/dist/leaflet.css";
 
 import { readExplanations, type AppContext, type DayRisks, type FieldCollection, type FieldDayRisks, type FieldDetail, type FieldFeature, type FieldRiskSeries, type Level, type Threat } from "./contract";
 import {
-  CATEGORY_LABEL, CATEGORY_SHORT, LEVEL_LABEL, addDays, cropName, daysBetween, esc, ha, levelOf, longDate, shortDate, weekday,
+  CATEGORY_LABEL, CATEGORY_SHORT, LEVEL_INSTR, LEVEL_LABEL, addDays, cropName, daysBetween, esc, ha, levelOf, longDate, shortDate, weekday,
 } from "./format";
 import { ICON, levelPill, renderPanel, type PanelState } from "./panel";
 import "./map.css";
+
+// Below this map width the layout is the phone one (map.css: @container (max-width: 720px), keep both equal).
+const NARROW_PX = 720;
 
 type FieldLevel = { level: Level | null; score: number; top: string | null };
 
@@ -105,7 +108,7 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
   let panelToken = 0;
   let dayToken = 0;
 
-  const narrow = () => container.clientWidth <= 860;
+  const narrow = () => container.clientWidth <= NARROW_PX;
   const horizon = () => addDays(ctx.clock.today, ctx.clock.forecastDays);
   const seriesKey = (id: number) => `${id}@${ctx.clock.today}`;
 
@@ -149,10 +152,19 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
       className: `fup-field ${level ? `lvl-${level}` : "lvl-none"}${isSel ? " is-selected" : ""}${dimmed ? " is-dimmed" : ""}`,
       color: "#ffffff",
       opacity: dimmed ? 0.35 : isSel ? 1 : 0.9,
-      weight: isSel ? 3.5 : 2,
+      weight: isSel ? 3.5 : level === "high" ? 3 : 2,
+      dashArray: level === "high" && !isSel ? "7 4" : undefined, // not by colour alone: high risk has a dashed edge
       fillColor: FILL[level ?? "none"],
       fillOpacity: dimmed ? 0.12 : isSel ? 0.66 : 0.58,
     };
+  }
+
+  /** The permanent label: icon + name + level, so the map never tells the level by colour alone. */
+  function labelHtml(f: FieldFeature): string {
+    const { level } = fieldLevel(f.id);
+    return level
+      ? `<span class="lb-ic lvl-${level}">${ICON[level]}</span>${esc(f.properties.name)}<span class="lb-lv"> · ${LEVEL_LABEL[level]}</span>`
+      : esc(f.properties.name);
   }
 
   function recolour(ids?: number[]): void {
@@ -160,6 +172,13 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
       if (ids && !ids.includes(id)) continue;
       const st = styleFor(id);
       layer.setStyle(st);
+      const f = fields.find((x) => x.id === id);
+      const tip = layer.getTooltip();
+      if (f && tip) {
+        tip.setContent(labelHtml(f));
+        const level = fieldLevel(id).level;
+        tip.getElement()?.classList.toggle("lbl-high", level === "high");
+      }
       // className on an existing path is not updated by setStyle: set it on the element
       layer.eachLayer((l) => {
         const el = (l as L.Path & { _path?: SVGElement })._path;
@@ -180,12 +199,12 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
     const counts: Record<Level, number> = { high: 0, medium: 0, low: 0 };
     rows.forEach((r) => r.lv.level && counts[r.lv.level]++);
     side.counts.innerHTML = LEVELS.map((l) =>
-      `<button class="count lvl-${l}${levelFilter === l ? " on" : ""}" data-level="${l}" aria-pressed="${levelFilter === l}" title="Pokaż tylko pola: ${LEVEL_LABEL[l]}">` +
+      `<button class="count lvl-${l}${levelFilter === l ? " on" : ""}" data-level="${l}" aria-pressed="${levelFilter === l}" title="Pokaż tylko pola z ryzykiem ${LEVEL_INSTR[l]}">` +
       `<span class="count-n">${counts[l]}</span><span class="count-k">${ICON[l]}${LEVEL_LABEL[l]}</span></button>`).join("");
     const shown = levelFilter ? rows.filter((r) => r.lv.level === levelFilter) : rows;
     side.list.innerHTML = shown.map(({ f, lv }) => {
-      const top = lv.top ? threats.get(lv.top)?.name ?? lv.top : "brak zagrożeń w tej kategorii";
-      return `<li><button class="field-row${f.id === selected ? " on" : ""}" data-id="${f.id}">` +
+      const top = lv.top ? threats.get(lv.top)?.name ?? lv.top : category === "all" ? "brak oceny" : "brak oceny w tej kategorii";
+      return `<li><button class="field-row${f.id === selected ? " on" : ""}" data-id="${f.id}"${f.id === selected ? ' aria-current="true"' : ""} title="${esc(top)}">` +
         `<span class="fr-icon ${lv.level ? `lvl-${lv.level}` : "lvl-none"}">${silhouette(f)}</span>` +
         `<span class="fr-main"><span class="fr-name">${esc(f.properties.name)}</span>` +
         `<span class="fr-sub">${esc(cropName(f.properties.crop))} · ${ha(f.properties.area_ha)}</span>` +
@@ -195,9 +214,11 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
   }
 
   function renderFilter(): void {
-    const cats = [...new Set([...threats.values()].map((t) => t.category))].sort();
+    // only the categories of the farm's crops (no "bakterie" chip when no field grows a crop with bacterial threats)
+    const crops = new Set(fields.map((f) => f.properties.crop?.code));
+    const cats = [...new Set([...threats.values()].filter((t) => crops.has(t.crop.code)).map((t) => t.category))].sort();
     side.filter.innerHTML = ["all", ...cats].map((c) =>
-      `<button data-cat="${esc(c)}" class="${c === category ? "on" : ""}" title="${c === "all" ? "wszystkie zagrożenia" : esc(CATEGORY_LABEL[c] ?? c)}">` +
+      `<button data-cat="${esc(c)}" class="${c === category ? "on" : ""}" aria-pressed="${c === category}" title="${c === "all" ? "wszystkie zagrożenia" : esc(CATEGORY_LABEL[c] ?? c)}">` +
       `${c === "all" ? "wszystkie" : esc(CATEGORY_SHORT[c] ?? CATEGORY_LABEL[c] ?? c)}</button>`).join("");
   }
 
@@ -218,12 +239,22 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
   side.list.addEventListener("click", (ev) => {
     const b = (ev.target as HTMLElement).closest<HTMLButtonElement>("button[data-id]");
     if (!b) return;
-    sideCard.classList.remove("side-open");
+    setSideOpen(false);
     focusField(Number(b.dataset.id));
   });
-  $(".side-toggle").addEventListener("click", () => {
-    const open = sideCard.classList.toggle("side-open");
-    $(".side-toggle").setAttribute("aria-expanded", String(open));
+  function setSideOpen(open: boolean): void {
+    sideCard.classList.toggle("side-open", open);
+    const toggle = $(".side-toggle");
+    toggle.setAttribute("aria-expanded", String(open));
+    toggle.setAttribute("aria-label", open ? "Ukryj listę pól" : "Pokaż listę pól");
+  }
+  $(".side-toggle").addEventListener("click", () => setSideOpen(!sideCard.classList.contains("side-open")));
+  // Esc closes the field panel (keyboard users have no map to click)
+  container.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && selected != null) {
+      select(null, { emit: true });
+      fitAll(true);
+    }
   });
 
   // --- day strip: today + the coming days ----------------------------------------------------------
@@ -293,11 +324,12 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
       layer.on("click", () => focusField(f.id, { zoom: false }));
       layer.on("mouseover", () => container.querySelector(`.field-row[data-id="${f.id}"]`)?.classList.add("hover"));
       layer.on("mouseout", () => container.querySelector(`.field-row[data-id="${f.id}"]`)?.classList.remove("hover"));
-      layer.bindTooltip(L.tooltip({ permanent: true, direction: "center", className: "fup-label", opacity: 1 }).setContent(esc(f.properties.name)));
+      layer.bindTooltip(L.tooltip({ permanent: true, direction: "center", className: "fup-label", opacity: 1 }).setContent(labelHtml(f)));
       layer.addTo(map);
       layers.set(f.id, layer);
     }
     fitAll(false);
+    // zoomed out, only the high-risk fields keep their label (map.css: .labels-off .fup-label:not(.lbl-high))
     const toggleLabels = () => container.classList.toggle("labels-off", map.getZoom() < 13);
     map.on("zoomend", toggleLabels);
     toggleLabels();
@@ -314,7 +346,14 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
       recolour();
       if (selected != null) void loadPanel(selected);
     } catch (e) {
-      if (token === dayToken) fail("Nie udało się wczytać ryzyk")(e);
+      if (token === dayToken) {
+        fail("Nie udało się wczytać ryzyk")(e);
+        if (dayRisks && dayRisks.date !== viewDate) {  // the strip goes back to the day the colours show
+          viewDate = dayRisks.date;
+          renderDays();
+          renderSide();
+        }
+      }
     } finally {
       if (token === dayToken) container.classList.remove("is-loading");
     }
@@ -379,7 +418,13 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
       const key = seriesKey(id);
       draw(seriesCache.get(key) ?? null);
       if (!seriesCache.get(key)) {
-        const series = await api.getFieldRisks(id, { to: horizon() });
+        let series: FieldRiskSeries;
+        try {
+          series = await api.getFieldRisks(id, { to: horizon() });
+        } catch (e) {                                           // the panel stays; only the chart is missing
+          if (!stale()) fail("Nie udało się wczytać wykresu sezonu")(e);
+          return;
+        }
         if (stale()) return;                                    // never cache a series asked for another today
         seriesCache.set(key, series);
         draw(series);
@@ -463,19 +508,24 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
         if (selected != null && fieldIds.includes(selected)) void loadPanel(selected);
       } catch (e) {
         if (token === dayToken) fail("Nie udało się odświeżyć ryzyk")(e);
+      } finally {
+        if (token === dayToken) container.classList.remove("is-loading"); // a day load this one replaced set it
       }
     })();
   });
 
   // --- start ---------------------------------------------------------------------------------------
   renderDays();
-  void (async () => {
+  side.list.addEventListener("click", (ev) => {
+    if ((ev.target as HTMLElement).closest(".retry")) void boot();
+  });
+  async function boot(): Promise<void> {
     container.classList.add("is-loading");
     try {
       const [fc, th] = await Promise.all([api.getFields(), api.getThreats()]);
       th.forEach((t) => threats.set(t.code, t));
-      renderFilter();
       drawFields(fc);
+      renderFilter();
       await loadDay();
       if (pendingFocus != null) {
         const id = pendingFocus;
@@ -484,8 +534,11 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
       }
     } catch (e) {
       fail("Nie udało się wczytać mapy")(e);
+      // stays until it works (the toast goes after a few seconds)
+      side.list.innerHTML = '<li class="side-empty">Nie udało się wczytać pól. <button type="button" class="retry">Spróbuj ponownie</button></li>';
     } finally {
       container.classList.remove("is-loading");
     }
-  })();
+  }
+  void boot();
 }

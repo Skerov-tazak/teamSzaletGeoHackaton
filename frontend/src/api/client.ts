@@ -27,9 +27,28 @@ export class ApiError extends Error {
   }
 }
 
-/** A message for the user, whatever was thrown. */
+// The API's error details are English (a contract shared with scripts and tests); the farmer reads Polish.
+const POLISH_DETAILS: [RegExp, (m: RegExpMatchArray) => string][] = [
+  [/^(\w+) must be YYYY-MM-DD$/, () => "Niepoprawna data (oczekiwany format RRRR-MM-DD)."],
+  [/^(\w+) is after today \+ (\d+)$/, (m) => `Ta data jest za daleko: dane sięgają ${m[2]} dni po dacie demo.`],
+  [/^from is after to$/, () => "Początek zakresu jest po jego końcu."],
+  [/^to is before the default from \((.+)\)$/, (m) => `Koniec zakresu jest przed początkiem sezonu (${m[1]}).`],
+  [/^today must be between (\S+) and (\S+)/, (m) => `Datę demo można ustawić od ${m[1]} do ${m[2]} (dni z danymi pogodowymi).`],
+  [/^field (\d+) not found$/, () => "Nie ma już tego pola (dane zostały przeładowane). Odśwież stronę."],
+  [/^conversation (\d+) not found$/, () => "Ta rozmowa już nie istnieje."],
+  [/^The demo date is not set/, () => "Data demo nie jest ustawiona."],
+  [/^Not found\.?$/, () => "Nie znaleziono."],
+];
+
+/** A message for the user, whatever was thrown (API details translated to Polish when known). */
 export function errorMessage(error: unknown): string {
-  if (error instanceof ApiError) return error.detail;
+  if (error instanceof ApiError) {
+    for (const [pattern, polish] of POLISH_DETAILS) {
+      const match = error.detail.match(pattern);
+      if (match) return polish(match);
+    }
+    return error.detail;
+  }
   if (error instanceof Error) return error.message;
   return String(error);
 }
@@ -58,7 +77,7 @@ async function request<T>(method: Method, path: string, body?: unknown, okStatus
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
-    throw new ApiError(0, "Serwer nie odpowiada. Czy działa python manage.py runserver?");
+    throw new ApiError(0, "Serwer nie odpowiada. Spróbuj ponownie za chwilę.");
   }
   let data: unknown = undefined;
   if ((response.headers.get("Content-Type") ?? "").includes("application/json")) {
@@ -72,11 +91,11 @@ async function request<T>(method: Method, path: string, body?: unknown, okStatus
     const detail =
       detailOf(data) ??
       (response.status === 404
-        ? `Brak endpointu ${method} ${path} (404). Czy backend jest aktualny?`
-        : `Błąd serwera (HTTP ${response.status}) przy ${method} ${path}.`);
+        ? "Nie znaleziono (HTTP 404)."
+        : `Błąd serwera (HTTP ${response.status}). Spróbuj ponownie za chwilę.`);
     throw new ApiError(response.status, detail);
   }
-  if (data === undefined) throw new ApiError(response.status, `Niepoprawna odpowiedź serwera przy ${method} ${path}.`);
+  if (data === undefined) throw new ApiError(response.status, "Niepoprawna odpowiedź serwera.");
   return data as T;
 }
 

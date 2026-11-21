@@ -57,6 +57,11 @@ def pl_date(d) -> str:
     return f"{dd}.{m}.{y}"
 
 
+def _pl_num(x: float) -> str:
+    """0.66 -> "0,66" (texts for the farmer use a decimal comma)."""
+    return f"{x:.2f}".replace(".", ",")
+
+
 def level_of(score: float) -> str:
     for cut, name in LEVELS:
         if score >= cut:
@@ -116,7 +121,7 @@ def multipliers(rule: Rule, ctx: FieldContext) -> list[dict]:
                     "value": round(ph, 1), "unit": "pH", "multiplier": rule.acid_soil})
     carry = ctx.last_season.get(rule.code)
     if carry and carry["peak"] >= HIGH:
-        out.append({"factor": "last_season", "label": f"Wysoka presja ({carry['threat']}) na tym polu w poprzednim sezonie (szczyt {carry['peak']:.2f} dnia {pl_date(carry['date']) if carry['date'] else '?'}): porażone resztki",
+        out.append({"factor": "last_season", "label": f"Wysoka presja ({carry['threat']}) na tym polu w poprzednim sezonie (szczyt {_pl_num(carry['peak'])} dnia {pl_date(carry['date']) if carry['date'] else '?'}): porażone resztki",
                     "value": round(carry["peak"], 2), "unit": "0-1", "multiplier": 1.2})
     clay = ctx.soil.get("clay")
     if rule.heavy_soil != 1.0 and clay is not None and clay >= 30:
