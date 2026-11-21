@@ -22,6 +22,7 @@ Hackathon: [Field Under Pressure](https://geo-hackathon.g.location360.ag/), 20â€
 | [AGENTS.md](AGENTS.md) | Rules for coding agents: owners, hard rules, frontend stack and commands, definition of done |
 | [docs/database.md](docs/database.md) | Every table, column and unit; rules for every component; query helpers |
 | [docs/interfaces.md](docs/interfaces.md) | How the components talk: frontend modules, mapâ€“chat events, platform API, chat, assistant data access, `predict()` |
+| [docs/engine-predict-review.md](docs/engine-predict-review.md) | `predict()`: how it should work vs how it works today, with failing contract tests (for Bartek) |
 | [engine/README.md](engine/README.md) | Decision engine: what it must provide and how it reads and writes data |
 | [assistant/README.md](assistant/README.md) | AI assistant: the `answer()` function, chat tables, MCP rules |
 | [frontend/src/map/README.md](frontend/src/map/README.md) | Map: `initMap()`, events, data endpoints |

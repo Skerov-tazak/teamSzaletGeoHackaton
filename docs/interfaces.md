@@ -17,7 +17,7 @@ How the components talk to each other: the frontend modules, the events between 
 | [Chat endpoints, placeholder answer](#chat) | To build | Jan + Szymek |
 | [`answer()`](#the-answer-function), MCP tools, RAG | To build | Ola |
 | [Read-only database user](#free-form-lookups-read-only-sql) | To build | Jan + Szymek |
-| [Observation table](#writing-observations) | Open: columns wait for the engine's needs | Jan + Szymek (schema), Ola (writes), Bartek (reads) |
+| [Observation table](#writing-observations) (`core.Observation`) | Exists. The assistant still writes its interim `assistant.Observation`: it switches over and moves those rows in one change | Jan + Szymek (schema), Ola (writes), Bartek (reads) |
 | [`as_of` on the query helpers](#as_of-on-the-helpers) | Exists | Jan + Szymek |
 | [`predict()`](#decision-engine) | To build | Bartek |
 | [API without authentication](#general-rules) | To build (settings change) | Jan + Szymek |
@@ -163,6 +163,8 @@ Built by Jan + Szymek with Django REST Framework. Once an endpoint exists, its e
 ```
 
 The demo date control in the page header sends the `PUT`; on success `main.ts` updates `ctx.clock` and sends `date:changed`. Risks for the whole season are precomputed by the seed (see [Decision engine](#decision-engine)), so moving the date is instant.
+
+The decision engine (`feat/decision-engine`) listens for the Clock row being **saved**, to update the "days ahead" stored in coming-day risks. So the endpoint (and any script) changes the date with `clock.save()`, never `Clock.objects.update(...)`, which skips that. The review proposes replacing this signal with an explicit `clock_moved(old, new)` call that recomputes only the changed window ([engine-predict-review.md](engine-predict-review.md#4-moving-the-demo-date-rewrites-the-rest-of-the-season)).
 
 ### Threats
 
@@ -340,7 +342,18 @@ The platform adds the user and a second database connection, `readonly`, in the 
 
 ### Writing observations
 
-The assistant changes data only through narrow tools, for example "record an observation". Observations go into an `Observation` table in `core` (farm data that the engine reads); its columns wait for the engine's needs. After recording one, the tool calls `engine.predict(field_ids=[field.id], start=observation_date)` and the answer returns that field in `updated_field_ids`, so the map reloads it.
+The assistant changes data only through narrow tools, for example "record an observation". Reports go into `core.Observation`: farm data that the engine reads. Columns, the six `kind` values and examples are in [database.md → Observation](database.md#observation). In short:
+
+- `kind` says what the report is (`symptoms`, `absence`, `neighbour`, `treatment`, `field_fact`, `event`); the engine skips a row without a known kind.
+- `threat` if the farmer named one; otherwise `category` (`disease` / `pest`) so the engine knows which threats to raise.
+- `severity` is a number 0–1, `distance_m` is for neighbour reports, facts and event types go in `details`.
+- `field` empty = the whole farm.
+
+After recording one, the tool calls `engine.predict(field_ids=[field.id], start=observation_date)` and the answer returns that field in `updated_field_ids`, so the map reloads it.
+
+**Moving from the interim table:** the engine reads both `core.Observation` and the assistant's interim `assistant.Observation`. If rows exist in both, every report counts twice. So the assistant switches its tool to `core.Observation` and moves (copies, then deletes) its interim rows in the same change.
+
+**Known gaps** (not fixed yet, details in [engine-predict-review.md](engine-predict-review.md)): `predict()` with the default `end` (today + 7) leaves precomputed days after today + 7 without the report's effect; and when a symptoms report spreads to nearby fields, `predict()` recomputes them but returns only a count, so they are missing from `updated_field_ids`.
 
 ## Decision engine
 
@@ -356,7 +369,7 @@ def predict(field_ids: list[int] | None = None, start: date | None = None, end: 
     """
 ```
 
-It works through the days in order, each one **as of that day**: only the weather observed up to that day, plus the forecast issued that day. It can be called from anywhere:
+It works through the days in order, each one **as of that day**: only the weather observed up to that day, plus the forecast issued that day. The current implementation differs in several places, and some of this wording needs tightening: see [engine-predict-review.md](engine-predict-review.md). It can be called from anywhere:
 
 | When | Call |
 |------|------|
