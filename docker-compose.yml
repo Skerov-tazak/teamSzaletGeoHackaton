@@ -1,10 +1,13 @@
-# Local development database. Only Postgres runs in Docker; Django runs in your venv.
+# Local development services. Django runs in your venv; only the databases run in Docker:
+#   db      Postgres 16 (+ pgvector): all platform data
+#   qdrant  vector store for the assistant's guide search (RAG index, see assistant/README_RAG.md)
 # Values come from .env (copy .env.example), with the defaults below as fallback.
 #
-#   docker compose up -d      start in the background
-#   docker compose ps         check it is running
-#   docker compose stop       stop (data is kept)
-#   docker compose down -v    stop and wipe all data
+#   docker compose up -d          start everything in the background
+#   docker compose up -d db       only Postgres (if you don't work on the assistant)
+#   docker compose ps             check it is running
+#   docker compose stop           stop (data is kept)
+#   docker compose down -v        stop and wipe all data (the RAG index too: rebuild with `python manage.py rag_ingest`)
 
 services:
   db:
@@ -26,5 +29,16 @@ services:
       timeout: 3s
       retries: 10
 
+  qdrant:
+    # Vector store for the assistant (Ola). Pinned to match qdrant-client in requirements.txt.
+    # Dashboard: http://localhost:6333/dashboard
+    image: qdrant/qdrant:v1.20.2
+    ports:
+      # REST API only, bound to 127.0.0.1 like the database.
+      - "127.0.0.1:${QDRANT_PORT:-6333}:6333"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
 volumes:
   pgdata:
+  qdrant_storage:

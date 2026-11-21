@@ -40,41 +40,46 @@ frontend/           dashboard page (Django template) + TypeScript
   src/map/          map module
 docs/               shared documentation (database.md, interfaces.md)
 field-under-pressure-materials/   organiser materials (git submodule): guide PDFs, risk spreadsheet, dataset docs
-docker-compose.yml  local Postgres
+docker-compose.yml  local Postgres + Qdrant (the assistant's vector store)
 ```
 
 ## First-time setup
 
-You need Python 3.10+, Node.js 18+ and Docker (Docker Desktop on Mac/Windows).
+You need Python 3.11+ (the assistant's PDF library needs it; `.python-version` says 3.12), Node.js 18+ and Docker (Docker Desktop on Mac/Windows).
 
 1. **Clone with the submodule** (it holds the organiser materials):
    ```bash
    git clone --recursive <this repo's URL>
    ```
    Already cloned without it? Run `git submodule update --init`.
-2. **Python environment:**
+2. **Python environment** (Python 3.11+; `.python-version` pins 3.12):
    ```bash
-   python3 -m venv .venv
+   uv venv --seed                     # with uv: Python 3.12, pip included
+   # or without uv: python3.12 -m venv .venv   (plain `python3` may be an older version)
    source .venv/bin/activate          # Windows: .venv\Scripts\activate
-   pip install -r requirements.txt
+   python --version                   # must say 3.11 or newer
+   pip install -r requirements.txt    # or: uv pip install -r requirements.txt
    ```
+   If `pip install` complains about `pymupdf==2.1` and the error mentions `Python.framework/Versions/3.10` (or any path outside `.venv`), you are using the system `pip`, not the venv's: the venv was created without pip (`uv venv` without `--seed`). Fix: `uv pip install pip`, then `hash -r`.
 3. **Settings:** `cp .env.example .env` (the defaults work as-is for local development).
-4. **Database:** `docker compose up -d`, then `python manage.py migrate`.
+4. **Database:** `docker compose up -d` (starts Postgres and Qdrant, the assistant's vector store), then `python manage.py migrate`.
 5. **Admin user** (to browse data at `/admin/`): `python manage.py createsuperuser`.
    Then set the demo date: run the server (step 7), open <http://localhost:8000/admin/> → Platform → Clocks → Add. Until a seed does this for you, anything that needs "today" raises `ClockNotSetError`.
 6. **Frontend build:**
    ```bash
    cd frontend && npm install && npm run build && cd ..
    ```
-7. **Run:** `python manage.py runserver`, then open <http://localhost:8000>. With the database up, the header shows "Platforma OK".
+7. **Run:** `python manage.py runserver`, then open <http://localhost:8000>. The page should say "Platform OK".
+8. **Assistant's guide index** (only if you work on or demo the chat): `python manage.py rag_ingest`. Takes ~4 min the first time (downloads the embedding model), then ~1 min. Details: [assistant/README_RAG.md](assistant/README_RAG.md).
 
 ## Day to day
 
 | What | Command |
 |------|---------|
 | Start / stop the database | `docker compose up -d` / `docker compose stop` |
-| Wipe the database completely | `docker compose down -v` |
-| Run the backend | `python manage.py runserver` (Windows: `.venv\Scripts\python.exe manage.py runserver`) |
+| Wipe the database completely | `docker compose down -v` (also wipes the assistant's index: rerun `python manage.py rag_ingest`) |
+| Rebuild the assistant's guide index | `python manage.py rag_ingest` |
+| Run the backend | `python manage.py runserver` |
 | Rebuild TypeScript on every save | `cd frontend && npm run watch` |
 | Type-check TypeScript | `cd frontend && npm run typecheck` |
 | Run tests | `python manage.py test` |

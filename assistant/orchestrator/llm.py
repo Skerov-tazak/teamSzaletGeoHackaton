@@ -1,0 +1,268 @@
+"""
+LLM adapter: one OpenAI-compatible client for Gemini and Groq, fallback between providers,
+usage logging, and a FakeLLM for tests (tests never call a real API).
+
+Config (.env, "Assistant" section): LLM_PROVIDERS=gemini,groq, {P}_BASE_URL, {P}_API_KEY, {P}_MODEL,
+LLM_MAX_TOKENS_OUT, LLM_INPUT_BUDGET.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Protocol
+
+from pydantic import BaseModel, ValidationError
+
+log = logging.getLogger("assistant.llm")
+
+REPO_DIR = Path(__file__).resolve().parents[2]
+USAGE_LOG = Path(os.getenv("ASSISTANT_LOG_DIR", REPO_DIR / "logs")) / "llm_usage.jsonl"
+CHARS_PER_TOKEN = 3.0  # conservative estimate for Polish text with LLM tokenizers
+
+
+def max_tokens_out() -> int:
+    return int(os.getenv("LLM_MAX_TOKENS_OUT", "700"))
+
+
+def input_budget() -> int:
+    return int(os.getenv("LLM_INPUT_BUDGET", "5000"))
+
+
+def estimate_tokens(text_or_messages) -> int:
+    if isinstance(text_or_messages, list):
+        text = "\n".join(str(m.get("content") or "") for m in text_or_messages)
+        return int(len(text) / CHARS_PER_TOKEN) + 4 * len(text_or_messages)
+    return int(len(str(text_or_messages)) / CHARS_PER_TOKEN)
+
+
+class LLMError(Exception):
+    """No answer from any provider (message in Polish, safe to show)."""
+
+
+@dataclass
+class LLMResult:
+    text: str
+    provider: str
+    model: str
+    usage: dict
+    duration_ms: int
+    tool_calls: list | None = None
+    message: Any = None  # raw assistant message (agent mode)
+
+
+class LLM(Protocol):
+    def complete(self, messages: list[dict], json_mode: bool = False, **opts) -> LLMResult: ...
+
+
+# ----------------------------------------------------------------------------- usage log
+def log_usage(result: LLMResult, kind: str = "", extra: dict | None = None) -> dict:
+    rec = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "provider": result.provider,
+           "model": result.model, "kind": kind, "duration_ms": result.duration_ms, **result.usage, **(extra or {})}
+    try:
+        USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(USAGE_LOG, "a") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError as e:  # logging must never break an answer
+        log.warning("cannot write %s: %s", USAGE_LOG, e)
+    return rec
+
+
+def _usage(resp_usage, messages, text: str) -> dict:
+    if resp_usage is not None and getattr(resp_usage, "prompt_tokens", None) is not None:
+        return {"prompt_tokens": resp_usage.prompt_tokens, "completion_tokens": resp_usage.completion_tokens or 0,
+                "total_tokens": resp_usage.total_tokens or 0, "estimated": False}
+    p, c = estimate_tokens(messages), estimate_tokens(text)
+    return {"prompt_tokens": p, "completion_tokens": c, "total_tokens": p + c, "estimated": True}
+
+
+# ----------------------------------------------------------------------------- JSON helpers
+JSON_INSTRUCTION = "\n\nOdpowiedz WYŁĄCZNIE jednym obiektem JSON, bez komentarzy i bez bloku ```."
+
+
+def extract_json(text: str) -> dict:
+    """First balanced {...} object in text (handles ``` fences and prose around it)."""
+    start = text.find("{")
+    while start != -1:
+        depth, in_str, esc = 0, False, False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_str:
+                esc = (ch == "\\") and not esc
+                if ch == '"' and not esc:
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start:i + 1])
+                    except json.JSONDecodeError:
+                        break
+        start = text.find("{", start + 1)
+    raise ValueError("no JSON object in the model output")
+
+
+def complete_json(llm: LLM, messages: list[dict], model_cls: type[BaseModel], **opts) -> tuple[BaseModel, LLMResult]:
+    """json_mode call + extraction + Pydantic validation (raises LLMError on invalid output)."""
+    res = llm.complete(messages, json_mode=True, **opts)
+    try:
+        return model_cls.model_validate(extract_json(res.text)), res
+    except (ValueError, ValidationError) as e:
+        raise LLMError(f"Model zwrócił niepoprawny JSON: {e}") from None
+
+
+# ----------------------------------------------------------------------------- real providers
+RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
+
+
+class OpenAICompatLLM:
+    """One OpenAI-compatible endpoint (Gemini's /v1beta/openai/, Groq's /openai/v1)."""
+
+    def __init__(self, name: str, base_url: str, api_key: str, model: str, timeout: float = 45.0):
+        from openai import OpenAI
+        self.name, self.model = name, model
+        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=0)
+        self._json_mode_supported = True
+
+    def complete(self, messages: list[dict], json_mode: bool = False, max_tokens: int | None = None,
+                 temperature: float = 0.2, tools: list | None = None, **_) -> LLMResult:
+        import openai
+        kwargs: dict = {"model": self.model, "messages": messages, "max_tokens": max_tokens or max_tokens_out(),
+                        "temperature": temperature}
+        if tools:
+            kwargs["tools"] = tools
+        msgs = messages
+        if json_mode:
+            if self._json_mode_supported:
+                kwargs["response_format"] = {"type": "json_object"}
+            else:
+                msgs = _with_json_instruction(messages)
+                kwargs["messages"] = msgs
+        t0 = time.perf_counter()
+        try:
+            resp = self.client.chat.completions.create(**kwargs)
+        except openai.BadRequestError as e:
+            if json_mode and "response_format" in kwargs:  # provider rejected JSON mode: instruct instead
+                log.info("%s rejected response_format (%s); falling back to instruction", self.name, e)
+                self._json_mode_supported = False
+                return self.complete(messages, json_mode=True, max_tokens=max_tokens, temperature=temperature, tools=tools)
+            raise
+        msg = resp.choices[0].message
+        text = msg.content or ""
+        return LLMResult(text=text, provider=self.name, model=self.model, usage=_usage(resp.usage, msgs, text),
+                         duration_ms=int((time.perf_counter() - t0) * 1000),
+                         tool_calls=getattr(msg, "tool_calls", None), message=msg)
+
+
+def _with_json_instruction(messages: list[dict]) -> list[dict]:
+    out = [dict(m) for m in messages]
+    for m in reversed(out):
+        if m["role"] == "user":
+            m["content"] = (m["content"] or "") + JSON_INSTRUCTION
+            break
+    return out
+
+
+def _retry_after(e) -> float:
+    try:
+        v = e.response.headers.get("retry-after")
+        return min(float(v), 20.0) if v else 2.0
+    except Exception:  # noqa: BLE001
+        return 2.0
+
+
+class FallbackLLM:
+    """Try providers in order: retryable error -> one retry after waiting -> next provider."""
+
+    def __init__(self, providers: list[OpenAICompatLLM], sleep: Callable[[float], None] = time.sleep):
+        if not providers:
+            raise LLMError("Brak skonfigurowanego dostawcy LLM (ustaw klucze w .env: GEMINI_API_KEY / GROQ_API_KEY).")
+        self.providers, self.sleep = providers, sleep
+
+    @property
+    def name(self) -> str:
+        return ",".join(p.name for p in self.providers)
+
+    def complete(self, messages: list[dict], json_mode: bool = False, **opts) -> LLMResult:
+        import openai
+        errors = []
+        for p in self.providers:
+            for attempt in (1, 2):
+                try:
+                    return p.complete(messages, json_mode=json_mode, **opts)
+                except (openai.APITimeoutError, openai.APIConnectionError) as e:
+                    errors.append(f"{p.name}: {type(e).__name__}")
+                    wait = 2.0
+                except openai.APIStatusError as e:
+                    errors.append(f"{p.name}: HTTP {e.status_code}")
+                    if e.status_code not in RETRYABLE_STATUS:
+                        break  # e.g. 401/400: next provider, no retry
+                    wait = _retry_after(e)
+                if attempt == 1:
+                    log.warning("LLM %s failed (%s); retrying in %.1fs", p.name, errors[-1], wait)
+                    self.sleep(wait)
+            log.warning("LLM %s gave up, trying next provider", p.name)
+        raise LLMError("Model językowy jest chwilowo niedostępny (" + "; ".join(errors) + ").")
+
+
+# ----------------------------------------------------------------------------- fake (tests)
+@dataclass
+class FakeLLM:
+    """Scripted answers. `responses`: list of strings (consumed in order, last one repeats) or a
+    callable(messages, json_mode) -> str. Records every call in `calls`."""
+
+    responses: Any = "To jest odpowiedź testowa."
+    name: str = "fake"
+    model: str = "fake-1"
+    calls: list = field(default_factory=list)
+
+    def complete(self, messages: list[dict], json_mode: bool = False, **opts) -> LLMResult:
+        self.calls.append({"messages": messages, "json_mode": json_mode, **opts})
+        if callable(self.responses):
+            text = self.responses(messages, json_mode)
+        elif isinstance(self.responses, list):
+            text = self.responses[min(len(self.calls), len(self.responses)) - 1]
+        else:
+            text = self.responses
+        return LLMResult(text=text, provider=self.name, model=self.model, usage=_usage(None, messages, text),
+                         duration_ms=0)
+
+
+# ----------------------------------------------------------------------------- factory
+def provider_configs() -> list[dict]:
+    out = []
+    for name in [p.strip().lower() for p in os.getenv("LLM_PROVIDERS", "gemini,groq").split(",") if p.strip()]:
+        up = name.upper()
+        cfg = {"name": name, "base_url": os.getenv(f"{up}_BASE_URL", ""), "api_key": os.getenv(f"{up}_API_KEY", ""),
+               "model": os.getenv(f"{up}_MODEL", "")}
+        cfg["configured"] = bool(cfg["base_url"] and cfg["api_key"])
+        out.append(cfg)
+    return out
+
+
+def get_llm(sleep: Callable[[float], None] = time.sleep) -> FallbackLLM:
+    """Real LLM from .env (providers with a key and a model). Raises LLMError if none."""
+    from assistant.rag import config  # noqa: F401 - loads the repo .env
+    providers = []
+    for c in provider_configs():
+        if c["configured"] and c["model"]:
+            providers.append(OpenAICompatLLM(c["name"], c["base_url"], c["api_key"], c["model"]))
+        elif c["configured"]:
+            log.warning("LLM provider %s has a key but no %s_MODEL; skipped (see: manage.py llm_models)",
+                        c["name"], c["name"].upper())
+    return FallbackLLM(providers, sleep=sleep)
+
+
+def strip_think(text: str) -> str:
+    """Remove <think>…</think> blocks some open models emit."""
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
