@@ -1,180 +1,330 @@
 # Decision engine
 
-**Owner:** Bartek
+**Owner:** Bartek · version 0.5 · history and findings: [CHANGELOG.md](CHANGELOG.md)
 
-Turns each field's data into risk assessments per threat and day, each with an explanation of why. It may combine rules from the guides, ML models and agents.
+The engine turns each field's data into a **risk per threat and day, each with an explanation of why**, and writes them to the `Risk` table. The map and the assistant only read those rows; they never compute risk themselves.
 
-## What the rest of the system expects
+It is a **rule-based (expert) system** built from the official guides (metodyki integrowanej ochrony, `ryzyka_zebrane.xlsx`, the GIORiN guide): there are no observations of diseases in the data to train a model on. Two parts use data-driven models: the **crop** of a field (Sentinel-2 + LightGBM, trained on the crop maps) and the **growth stage** (degree days, calibrated to the field's satellite curve). Farmer reports from the chat adjust the risks.
 
-**One function, `predict()`,** that computes risks and writes them all at once, overwriting earlier ones. Details: [docs/interfaces.md → Decision engine](../docs/interfaces.md#decision-engine).
+## Contents
 
-```python
-def predict(field_ids: list[int] | None = None, start: date | None = None, end: date | None = None) -> int:
-    """Compute risks (default: all fields, whole season up to today + 7), bulk-overwrite them in Risk, return rows written."""
-```
+1. [Quick start](#quick-start)
+2. [Interface](#interface)
+3. [When and how to run it](#when-and-how-to-run-it)
+4. [What data it needs](#what-data-it-needs)
+5. [What it writes: Risk and the explanation](#what-it-writes-risk-and-the-explanation)
+6. [How it works](#how-it-works)
+7. [Threats](#threats)
+8. [Assumptions, limits, validation](#assumptions-limits-validation)
+9. [Open items for other components](#open-items-for-other-components)
 
-- **Work through the days in order, each one as of that day:** only the weather observed up to that day, plus the forecast issued that day. The query helpers take an `as_of` date for this: `WeatherDaily.objects.observed(as_of=day)`, `WeatherForecastDaily.objects.current(as_of=day)`.
-- **It's called** after the seed (whole season, so moving the demo date is instant), after the assistant records an observation (that field, from the observation's date), and by hand. A management command such as `python manage.py predict` would be handy.
-
-## Talking to the rest of the system
-
-- **Database only through the Django ORM,** using the models in [`core/models.py`](../core/models.py). Every table, column and unit is described in [docs/database.md](../docs/database.md); start with its [rules](../docs/database.md#rules-for-every-component) and [helper methods](../docs/database.md#using-the-models). This app has no models or migrations of its own; ask Jan or Szymek for schema changes.
-- **The date is `core.clock.today()`,** never `date.today()`.
-- **Inputs, all through helpers:**
-  - observed weather: `WeatherDaily.objects.observed()`, `WeatherHourly.objects.observed()` (never past the day you're assessing);
-  - forecast: `WeatherForecastDaily.objects.current()` (the next 7 days);
-  - soil: `field.soil_cells()` (average them);
-  - crop history: `field.crop_years`;
-  - threats: `Threat.objects.filter(crop=field.crop)`. Refer to threats by `code`, never by `id`;
-  - farmer reports: the planned `Observation` table (tell us which columns you need).
-- **Units are the dataset's** (wind in km/h, radiation in MJ/m², humidity in %). Convert in your code when a rule from the guides uses another unit.
-- **Output: the `Risk` table, which only the engine writes.** One row per field, threat and day, with a score from 0 to 1 and an explanation. Write in bulk with `bulk_create(..., update_conflicts=True, ...)` (example in the database doc). The database rejects scores outside 0–1.
-- *Still open, and yours to propose* (see the [database doc's open questions](../docs/database.md#open-questions)): what the score means, the explanation format (the map and the assistant both show it), and which extra field data you need (sowing date, growth stage, the columns of `Observation`).
-
-## What is built (v0.1, rules from the guides)
+## Quick start
 
 ```bash
-python manage.py engine_load_threats   # Threat rows for every rule in engine/catalog.py (upsert by code)
-python manage.py predict               # all fields, 1 September .. today + 7
-python manage.py predict --fields 3 --start 2025-05-01 --end 2025-06-30
-python manage.py test engine           # synthetic weather, no data needed
+# prerequisites: database migrated, Clock set, fields + weather + forecast + soil + crop history imported
+python manage.py engine_load_threats                 # Threat rows for every rule (upsert by code)
+python manage.py engine_fetch_ndvi --season 2025     # optional: satellite curves per field (needs network)
+python manage.py predict                             # all fields, 1 September .. today + 7
+python manage.py engine_summary --date 2025-06-05    # fields ranked by urgency, with reasons
+python manage.py test engine                         # synthetic data, no downloads needed
 ```
 
-From Python (the assistant after recording an observation): `from engine import predict; predict(field_ids=[3], start=day)`.
+No platform import yet? `python manage.py engine_dev_seed` builds a **development-only** farm (5 fields near Krapkowice, Opolskie, season 2025) with weather, soil, crop history and the clock.
 
-| File | What |
-|------|------|
-| [`catalog.py`](catalog.py) | Every threat rule: temperature / humidity ranges, susceptible growth stages, multipliers, the guide's thresholds, **sources with page numbers**. Numbers the guides don't give are marked as team assumptions. |
-| [`phenology.py`](phenology.py) | Growth stage (BBCH) per day from degree days and a typical sowing date (wheat 1 Oct, maize 25 Apr). |
-| [`features.py`](features.py) | Weather features per day, all trailing windows (a day never sees later weather). |
-| [`scoring.py`](scoring.py) | Score + explanation per field, threat and day; spraying window from the forecast. |
-| [`compute.py`](compute.py) | `predict()`: loads, scores, bulk-overwrites `Risk`. |
-| [`satellite/`](satellite/) | Sentinel-2 NDVI from Earth Search (only the needed window), season calendar grid. For the crop model. |
-| [`management/commands/engine_dev_seed.py`](management/commands/engine_dev_seed.py) | **Dev only:** a 6-field farm near Krapkowice (Opolskie) with weather, soil and crop history, until the platform import exists. |
+## Interface
 
-Threats (25): **wheat** — fusarium head blight, septoria leaf blotch, glume blotch, brown rust, yellow rust, powdery mildew, tan spot, eyespot, fusarium foot rot, take-all, snow mould (fungal); grain aphids, cereal leaf beetle (pests); barley yellow dwarf virus carried by aphids in warm autumns (viral). **Maize** — seedling blight, fusarium ear rot, fusarium stalk rot, northern leaf blight, eyespot (Kabatiella), common rust, crazy top (fungal); European corn borer, western corn rootworm, aphids, frit fly (pests). Codes like `wheat.fusarium_head_blight`.
+Everything other components call. All functions use `core.clock.today()`, never the real date.
 
-### What the score means (proposal)
+### `predict()` — compute and write risks
 
-`score` (0–1) = how favourable the last days were for this threat on this field: **weather (or pest activity) × growth-stage weight × field multipliers** (previous crop, monoculture, heavy soil), capped at 1. It is an index, not a probability. Levels (proposal, to agree with Kuba): **low < 0.3 ≤ medium < 0.6 ≤ high**.
+```python
+from engine import predict
 
-### `Risk.explanation` format (proposal, version 1)
+n = predict(field_ids=None, start=None, end=None, observations=None)  # -> number of Risk rows written
+```
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `field_ids` | all fields | Fields to recompute. Fields of the same crop within 3 km are added when a symptoms report on one of them spreads ([below](#farmer-reports)). |
+| `start` | 1 September of the current season | First day to compute. |
+| `end` | today + 7 | Last day to compute. |
+| `observations` | the `Observation` table | Farmer reports to use instead of the table (tests, scripted demos). |
+
+- Writes in **one transaction**: deletes this range's rows for these fields, then bulk-inserts the new ones. Re-running is safe and gives the same result.
+- **Each day is computed as of that day:** only weather up to that day, reports dated up to that day, satellite stages confirmed up to that day. Later data never changes an earlier day ([details](#as-of-every-day)).
+- Days after `today` get lower confidence (forecast, [details](#confidence)).
+- Speed: a full season for 5 fields takes a few seconds.
+
+### `what_if()` — dry run for the assistant
+
+```python
+from engine import what_if
+from engine.observations import Report
+
+what_if(field_id=15, day=date(2025, 6, 8), hypothetical=[
+    Report(observed_on=date(2025, 6, 6), kind="treatment", threat_code="wheat.fusarium_head_blight", field_id=15)])
+# -> [{"threat_code", "score_now", "score_if", "change", "level_if", "summary_if"}, ...]  (highest first)
+```
+
+Answers "what if I spray on Friday / sowed later / the neighbour has it". **Writes nothing.**
+
+### `engine.summary` — one answer per field and day
+
+```python
+from engine.summary import field_day, farm_ranking
+
+field_day(field_id, day)   # dict below
+farm_ranking(day)          # list of field_day dicts, most urgent first, with "rank"
+```
+
+`field_day` is a pure read of `Risk` and the satellite cache; nothing is stored:
+
+| Key | Content |
+|---|---|
+| `max_score`, `level` | Highest threat score of the day and its level. |
+| `expected_loss`, `expected_loss_pct` | Share of the yield at risk: `1 - Π(1 - score × severity)` over all threats. Used to rank fields. |
+| `top_threats` | Top 3 threats by expected loss, each with score, level, summary, action. |
+| `actions` | `treat` / `monitor` actions, with the guide's threshold and the spraying window. |
+| `why` | One line for lists ("Fusarium head blight high (0.75); Grain aphids medium (0.53)"). |
+| `growth_stage` | BBCH, name, method, confidence. |
+| `harvest` | From BBCH 83: wheat — ready / next dry day / sprouting risk; maize — safe storage days of undried grain. |
+| `crop_check` | Does the satellite curve fit the field's crop, plus the crop model's answer and probabilities. |
+| `field_id`, `name`, `date`, `crop`, `confidence` | Identification; lowest confidence of the day's threats. |
+
+### `engine.observations.Report` — farmer reports
+
+```python
+Report(observed_on: date, kind: str, threat_code: str | None = None, severity: float | None = None,
+       distance_m: float | None = None, details: dict = {}, text: str = "", field_id: int | None = None)
+```
+
+`kind` is one of `symptoms`, `absence`, `neighbour`, `treatment`, `field_fact`, `event`; effects are in [Farmer reports](#farmer-reports). `field_id=None` means the whole farm.
+
+### Other functions
+
+| Function | Use |
+|---|---|
+| `engine.cropmodel.predict_field(field, season, today)` | Crop model for one field as of a day: `{"crop", "label", "confidence", "probabilities", ...}`. |
+| `engine.harvest.safe_storage_days(moisture_pct, grain_temp_c)` | Maize grain storage table (Tab. 37). |
+| `engine.compute.adjust_for_lead(explanation, days_ahead)` | Recompute the forecast confidence of a stored row after the clock moved. |
+
+### Management commands
+
+| Command | What |
+|---|---|
+| `predict [--fields 1 2] [--start D] [--end D]` | `predict()` from the shell. |
+| `engine_load_threats` | Create / update the `Threat` rows of all 25 rules (by `code`; other rows untouched). |
+| `engine_fetch_ndvi [--season Y] [--fields ...]` | Download and cache each field's Sentinel-2 NDVI series (network). |
+| `engine_summary [--date D] [--json]` | Print the field ranking. |
+| `engine_dev_seed` | **Development only**: demo farm + data. The platform's import replaces it. |
+
+## When and how to run it
+
+`predict()` is the only thing that writes. It must run whenever an input of a field changes:
+
+| When | Call | Who |
+|---|---|---|
+| **After the seed / import** (historical demo) | `predict()` for the **previous season first**, then the current one (whole season, including the maize harvest): `predict(start=date(2024, 1, 15), end=date(2024, 8, 31))`, then `predict(start=date(2024, 9, 1), end=date(2025, 10, 31))` | platform seed |
+| **Daily, in live mode** (after the new forecast is stored) | `predict(start=today - 30 days)` | daily job |
+| **After the assistant records a report** | `predict(field_ids=[field.id], start=report.observed_on)`; return that field (and nearby fields it spread to) in `updated_field_ids` | assistant tool |
+| **After the farmer changes a field's crop** (`Field.crop`) | `predict(field_ids=[field.id], start=season start)` | platform (API) |
+| **After `engine_fetch_ndvi`** (new satellite scenes) | `predict(field_ids=..., start=season start)` | daily job / by hand |
+| **After threats, rules or imported data change** | `predict()` | by hand |
+
+**Moving the demo date does not need a recompute:** the season is precomputed and the API hides days after today + 7. Only the forecast confidence of coming days refers to the clock at compute time (`forecast_lead_days`); `adjust_for_lead()` can refresh it when serving.
+
+**Order of a fresh setup:**
+
+```bash
+python manage.py migrate
+# platform import: CropClass, WeatherGrid, Field (+ weather_grid, h3_cells, crop), FieldCropYear, SoilCell,
+#                  WeatherDaily, WeatherHourly, WeatherForecastDaily, Clock
+python manage.py engine_load_threats            # or the platform's Threat fixture with the same codes
+python manage.py engine_fetch_ndvi --season 2024
+python manage.py engine_fetch_ndvi --season 2025   # both optional (network)
+python manage.py predict --start 2024-01-15 --end 2024-08-31   # last season first (carry-over)
+python manage.py predict --start 2024-09-01 --end 2025-10-31   # this season, including the maize harvest
+```
+
+Last season goes first because this season reads last season's risks: a pathogen that peaked on the field carries over in the residue.
+
+## What data it needs
+
+Read through the Django ORM and the platform helpers only (`.observed(as_of=...)`, `.current(as_of=...)`, `field.soil_cells()`, `field.crop_years`).
+
+| Data | Table / source | Columns used | Needed for |
+|---|---|---|---|
+| Today | `Clock` | `today` | default range, forecast confidence |
+| Fields | `Field` | `crop`, `weather_grid`, `h3_cells`, `geometry`, `centroid_lat/lon` | everything; geometry for the satellite and spread between fields |
+| Crop history | `FieldCropYear` | `year`, `crop_class`, `share` | previous crop, maize years in a row, last season's crop |
+| Daily weather | `WeatherDaily` | `avg/min/max_temperature`, `avg_relative_humidity`, `total_precipitation` **or** `imerg_total_precipitation`, `eto`, `avg_wind_speed`, `avg/min_soil_temperature_level_1`, `avg_soil_moisture_level_1`, `avg_snow_depth` | growth stage, soil / snow / flood rules, drought, pests |
+| Hourly weather | `WeatherHourly` | `temperature`, `relative_humidity`, `precipitation` **or** `imerg_precipitation` | infection hours (fallback: estimated from daily values, lower confidence) |
+| Forecast | `WeatherForecastDaily` (`.current(as_of=day)`) | `max/min_temperature`, `total_precipitation`, `avg_wind_speed`, `avg_relative_humidity` | spraying window, harvest dry days |
+| Soil | `SoilCell` via `field.soil_cells()` | `clay`, `sand`, `ph` (fractions or %, both accepted) | heavy soil → waterlogging |
+| Threats | `Threat` | `code` (must match `engine/catalog.py`) | which rules run for which crop |
+| Farmer reports | `Observation` (**planned**, columns [proposed below](#open-items-for-other-components)) | read only through `engine/observations.py` | report effects |
+| Earlier risks | `Risk` (last season) | `score` | carry-over |
+| Satellite (optional) | `DATA_DIR/satellite/fields/field<id>_<polygon hash>_s<season>.parquet` | NDVI per scene | stage calibration, crop check |
+| Crop model (optional) | `DATA_DIR/models/crop_lgbm.txt` | — | crop check |
+
+Everything optional degrades gracefully: without the satellite cache the stage comes from degree days only; without hourly weather infection hours are estimated from daily values; without reports nothing changes. **No network is needed at run time.**
+
+Units are the dataset's (wind km/h, RH %, radiation MJ/m²); the engine converts where a guide uses another unit (wind 4 m/s = 14.4 km/h).
+
+## What it writes: Risk and the explanation
+
+One `Risk` row per **field × threat × day**: `score` (0–1), `explanation` (JSON below), `computed_at`.
+
+**Score** = how favourable the recent days were for this threat on this field: **weather or pest activity × growth-stage weight × field multipliers**, adjusted by farmer reports, capped at 1. An index, not a probability. **Levels:** low < 0.3 ≤ medium < 0.6 ≤ high (to agree with the map).
+
+**`explanation` (version 1):**
 
 ```jsonc
 {
   "version": 1,
-  "summary": "High risk of Fusarium head blight (fuzarioza kłosów): hours at 15-25 °C with wet leaves (RH >= 95 % or rain) in the last 5 days: 16 h; crop at flowering, BBCH 63.",
-  "level": "high",                     // low / medium / high
-  "score": 1.0,
+  "summary": "High risk of Fusarium head blight (fuzarioza kłosów): hours at 15-25 °C with wet leaves (RH >= 95 % or rain) in the last 5 days: 16 h; crop at flowering, BBCH 63; previous crop was maize (residue carries the fungus).",
+  "level": "high",
+  "score": 0.83,
   "threat": {"code": "wheat.fusarium_head_blight", "name_pl": "fuzarioza kłosów", "name_en": "Fusarium head blight", "category": "fungal"},
-  "as_of": "2025-06-07",               // assessed with weather up to this day
-  "crop": {"code": 1110, "source": "field"},
-  "growth_stage": {"bbch": 63, "name": "flowering", "method": "degree days, typical sowing date", "sowing_assumed": "2024-10-01", "confidence": 0.6},
-  "drivers": [                         // why: one entry per factor, biggest first
+  "as_of": "2025-06-07",
+  "crop": {"code": 1110, "source": "field"},              // "crop map" for past seasons
+  "growth_stage": {"bbch": 63, "name": "flowering", "method": "degree days calibrated to the satellite: NDVI peak 0.91 on 2025-05-24 (heading)",
+                   "sowing_assumed": "2024-10-01", "confidence": 0.8},
+  "drivers": [                                              // WHY: one entry per factor
     {"factor": "condition_hours", "label": "Hours at 15-25 °C with wet leaves ...", "value": 16, "unit": "h",
      "threshold": "4 h starts the risk, 16 h = full risk", "effect": 1.0},
     {"factor": "growth_stage", "label": "Growth stage BBCH 63 (flowering); susceptible BBCH 61-69", "value": 63, "unit": "BBCH", "effect": 0.0},
-    {"factor": "previous_crop", "label": "Previous crop was maize (residue carries the fungus)", "multiplier": 1.5, "effect": 0.33},
-    {"factor": "rain_days", "label": "Days with >= 1 mm rain in the window", "value": 2, "unit": "days", "effect": null}
+    {"factor": "previous_crop", "label": "Previous crop was maize (residue carries the fungus)", "multiplier": 1.5, "effect": 0.21},
+    {"factor": "farmer_report", "kind": "neighbour", "label": "Reported Fusarium head blight about 400 m away on 2025-06-03 ...",
+     "observed_on": "2025-06-03", "text": "Sąsiad ma fuzariozę...", "effect": 0.28},
+    {"factor": "rain_days", "label": "Days with >= 1 mm rain in the window ...", "value": 2, "unit": "days", "effect": null}
   ],
-  "action": {"type": "treat",          // wait / monitor / treat
-             "text": "High risk: inspect the field now; if the threshold is exceeded, a treatment is justified.",
-             "threshold": "Infection happens at flowering (BBCH 61-69) ...",   // quoted from the guide
-             "spray_window": {"date": "2025-06-08", "rule": "1-25 °C, no rain, wind <= 14.4 km/h (4 m/s)", "conditions": {...}, "source": {...}}},
-  "severity": 0.15,                    // potential yield loss if it happens (assumption)
-  "expected_loss": 0.15,               // score x severity, for ranking fields
-  "confidence": 0.6,                   // lower when the stage is estimated or hourly data is missing
-  "sources": [{"document": "metodyka_-_PSZENICA_-_www.pdf", "page": 74, "note": "Tabela 26: ..."}],  // same shape as the chat's guide citations
-  "notes": ["Maize residue ... raises the risk"],
-  "assumptions": {"hours_low": 4, "hours_high": 16, ...},
+  "action": {
+    "type": "treat",                                        // wait / monitor / treat
+    "text": "High risk: inspect the field now; if the threshold is exceeded, a treatment is justified.",
+    "threshold": "Heading: ... (guide's threshold for this stage)",
+    "spray_window": {"date": "2025-06-08", "quality": "optimal", "conditions": {...}, "rule": "1-25 °C, next night >= 1 °C, ...",
+                     "note": null, "source": {"document": "...", "page": 216}}
+  },
+  "severity": 0.15,                 // potential yield loss if it happens (team assumption)
+  "expected_loss": 0.12,            // score x severity
+  "confidence": 0.8,                // stage method x data quality x forecast distance; 1.0 when the farmer saw it
+  "confidence_observed": 0.8,       // only on days after today: confidence before the forecast discount
+  "forecast_lead_days": 3,          // only on days after today
+  "sources": [{"document": "metodyka_-_PSZENICA_-_www.pdf", "page": 74, "note": "Tabela 26 ..."}],   // same shape as chat citations
+  "notes": ["Each 1 % of infected ears can add about 0.3 mg/kg DON ..."],
+  "assumptions": {"hours_low": 4, "hours_high": 16, ...},   // the team's own numbers in this rule
   "model": "rules", "model_version": "0.1.0"
 }
 ```
 
-`effect` = how much the score would drop without that factor (`null` for context-only values). The map can show `summary` + the drivers; the assistant can cite `sources` directly. No product or dose advice anywhere.
+- `effect` = how much the score would drop without that factor; `null` = context only. The map can show `summary` and the drivers; the assistant can cite `sources` directly.
+- No product names or doses anywhere (shared principle).
 
-### Data findings (for Jan + Szymek)
+## How it works
 
-- **The weather packages contain no precipitation** (daily or hourly): `total_precipitation` / `precipitation` stay empty. Rain only comes from IMERG. The engine uses the weather value if present, else IMERG. The forecast (seeded from daily weather) therefore has no rain either.
-- **Soil `clay`, `sand` are fractions (0.18), not % as in the doc;** `om` is 2.5–12 (looks like %). `BAND_om` / `BAND_pH` / `BAND_cec` are text (`"low"`, `"moderate"`, `"high"`), but the model columns are floats; the source names are upper-case (`BAND_*`, `soilTexture`).
-- **Grid `lat` / `lon` are decimals** in `weather_grids.parquet` (cast to float).
-- **Hourly year files overlap** by one UTC hour at New Year (unique constraint).
-- Weather 2025 is complete (1 Jan – 31 Dec) for daily and hourly; IMERG covers 2020–2025.
+```text
+for each field, for each season in [start, end]:
+    crop        = Field.crop (current season) | crop map (past seasons)
+    weather     = daily + hourly for the field's grid cell (observed)
+    stage       = BBCH from degree days                         (phenology.py)
+                  → shifted through satellite anchors            (satellite/fieldndvi.py, from the day they are confirmed)
+                  → farmer's sowing date if reported             (from the day it was reported)
+    context     = previous crop, maize years in a row, soil, last season's peaks
+    reports     = farmer reports + symptoms spread from nearby fields
+    for each threat rule of the crop                             (catalog.py)
+        base    = weather / activity term per day, trailing windows only     (scoring.py)
+        score   = base × stage weight × multipliers, then report effects, capped at 1
+        explanation: summary, drivers with effects, action + spraying window, sources
+write all rows (replace the range)                               (compute.py)
+```
 
-### Crop model (satellite) — first results
+### As of every day
 
-[`cropmodel.py`](cropmodel.py): LightGBM on the half-month NDVI curve of the season known so far (one model for every day; slots after today are empty). Trained on 30 random 3×3 km windows across Opolskie, seasons 2020, 2022, 2023 (pixels, crop-map labels); tested on 2024 in 6 windows never seen in training.
+Every feature for day D is a **trailing** value over days ≤ D (sums or means over the last N days), so a whole season is computed in one pass without look-ahead. Reports affect days ≥ their `observed_on`; satellite stage anchors apply from the scene that confirmed them; the spraying window uses the forecast issued on D. A test changes the weather after D and checks that D's risks stay the same.
 
-| As of (2024) | wheat / maize / other: accuracy | "wheat" correct (precision) | "maize" correct | wheat vs maize, when it says one of them |
-|---|---|---|---|---|
-| 31 Mar | 0.72 | 0.44 | 0.21 | 0.82 |
-| 30 Apr | 0.72 | 0.52 | 0.26 | 0.93 |
-| 31 May | 0.75 | 0.51 | 0.46 | 0.98 |
-| 30 Jun | 0.78 | 0.56 | 0.54 | 0.98 |
-| 31 Aug | 0.82 | 0.60 | 0.73 | 0.99 |
+### Growth stage
 
-Reading: **wheat vs maize is reliable from late May; wheat vs other winter cereals (barley, triticale, rye) and maize vs other summer crops (sugar beet, potato) are not** from NDVI alone. So the satellite *proposes* the crop and the farmer confirms it. Next steps for accuracy: red-edge / SWIR bands, timing normalised by degree days, field-level averaging (pixel numbers above are a lower bound).
+- **Degree days** (base 0 °C for wheat, 6 °C for maize) from a typical sowing date (wheat 1 Oct, maize 25 Apr). Confidence 0.6.
+- **Satellite anchors** from the field's NDVI curve: wheat — spring peak (May–June, ≥ 0.7) = heading BBCH 55, NDVI < 0.5 afterwards = ripening BBCH 83; maize — rise from bare soil after sowing = BBCH 13, summer peak = flowering BBCH 65. The degree-day curve is shifted through the anchor from the day it is confirmed. Confidence 0.8.
+- **Farmer's sowing date** replaces the typical one. Confidence 0.85.
+- The wheat table was calibrated to the satellite: heading ~1060, ripening ~2135 degree days since 1 January.
+- Maize seasons run to 31 December (harvest Sep–Nov); wheat seasons 1 Sep – 31 Aug. Seasons after the current one are not computed (crop unknown).
 
-**Data problem:** the organisers' 2021 crop map is pixel-identical to the 2022 map (the 2021 package holds the 2022 data; its labels fit the 2022 imagery). Season 2021 is excluded from training; `FieldCropYear` rows for 2021 are wrong too.
+### Rule kinds
 
-### Farmer reports and field history (v0.2)
+| Kind | Weather / activity term | Example |
+|---|---|---|
+| `infection_hours` | Hours in the last N days with temperature in the guide's range **and** wet leaves (RH ≥ 95 % or rain) / humid air (RH ≥ 85 % or rain) / humid but dry (RH 50–95 %, no rain); ramp from `hours_low` to `hours_high`. Rain-splash diseases also need rain days. Wheat leaf diseases switch off in cold weather (7-day mean < 3–8 °C). Maize fusarioses also rise with drought (30-day rain − evapotranspiration). | head blight, septoria, rusts |
+| `soil_days` | Days with cold (< 12 °C) and wet (≥ 0.30 m³/m³) topsoil | maize seedling blight |
+| `snow_days` | Days at ~0–5 °C, wet or under snow, soil not frozen | snow mould |
+| `flood` | Days with saturated topsoil or ≥ 30 mm rain | crazy top |
+| `vector_days` | Autumn days warm enough for aphids to fly (max ≥ 12 °C) since emergence | barley yellow dwarf virus |
+| `pest_activity` | Activity window from degree days (base 10 °C) or the crop stage, × warmth, × local pressure from the field's history | corn borer, rootworm, aphids |
 
-[`observations.py`](observations.py). Reports from the chat change risks **from the day they were observed on** (never earlier days) and each one is a driver in the explanation, with its effect:
+**Growth-stage weight:** 1 inside the threat's susceptible BBCH range, ramping to 0 outside it; 0 before sowing.
 
-| `kind` | Example | Effect | For how long |
+**Multipliers (from the field):** previous crop maize (head blight ×1.5, foot rot ×1.3), cereal after cereal (take-all ×1.5, eyespot ×1.5, tan spot ×1.3), maize monoculture (fusarioses ×1.3, corn borer ×1.4; rootworm only from the 2nd maize year), heavy soil (crazy top ×1.3), **last season's peak of the same pathogen ≥ 0.6** (×1.2; Fusarium is shared by maize and wheat).
+
+### Farmer reports
+
+| `kind` | Example from the chat | Effect | Duration |
 |---|---|---|---|
-| `symptoms` | "I see brown rust on the north field" | score at least 0.6 + 0.3 × severity; confidence 1 | full 10 days, gone by day 21 |
+| `symptoms` | "I see brown rust on the north field" | score at least 0.6 + 0.3 × severity; confidence 1; spreads to same-crop fields within 3 km as `neighbour` | full 10 days, gone by day 21 |
 | `absence` | "Inspected, clean" (`threat_code` empty = all) | × 0.5 | back to normal by day 10 |
 | `neighbour` | "My neighbour has head blight" | × (1 + 0.5 × closeness), closeness 1 up to 500 m, 0 at 3 km | full 7 days, gone by day 21 |
-| `treatment` | "Sprayed against septoria on 10 May" (empty = all fungal) | × 0.3, action becomes "wait" | full 14 days, gone by day 21 |
-| `field_fact` | `{"sowing_date": "2024-09-25"}`, `{"tillage": "reduced"}`, `{"resistant_to": [codes]}` | real sowing date replaces the assumed one (stage confidence 0.85); reduced tillage × 1.3 for residue diseases; resistant variety × 0.6 | rest of the season |
-| `event` | `{"type": "hail" / "lodging" / "flood"}` | hail: fungal × 1.3; lodging: fungal × 1.2; flood: crazy top at least 0.7 | 14-28 days |
+| `treatment` | "Sprayed against septoria on 10 May" (empty = all fungal) | × 0.3; action becomes "wait" | full 14 days, gone by day 21 |
+| `field_fact` | `{"sowing_date": "2024-09-25"}`, `{"tillage": "reduced"}`, `{"resistant_to": [codes]}` | real sowing date; reduced tillage × 1.3 for residue diseases; resistant variety × 0.6 | rest of the season |
+| `event` | `{"type": "hail" / "lodging" / "flood"}` | hail: fungal × 1.3; lodging: fungal × 1.2; flood: crazy top at least 0.7 | 14–28 days |
 
-Until the `Observation` table exists, `observations.load()` returns nothing; `predict(..., observations=[Report(...)])` takes reports directly (tests, scripted demo). **Proposed `Observation` columns** (Jan, Szymek, Ola): `field` (FK, null = whole farm), `observed_on` (date), `recorded_at`, `kind` (one of the above), `threat_code` (null), `severity` (0-1, null), `distance_m` (null), `details` (JSON), `text` (the farmer's words). The engine reads them through `observations.load()`, so column names can still change in one place.
+Every applied report is a driver with its `effect`, and its label is added to the summary. The numbers are team assumptions.
 
-**Field history:**
-- Previous crop and maize monoculture (crop maps) - multipliers per threat.
-- **Carry-over from last season:** if the same pathogen peaked >= 0.6 on this field last season, × 1.2 (infected residue). Fusarium is shared by maize and wheat, so a bad maize year raises next year's head blight. Last season is scored with last season's crop from the crop map, not with `Field.crop`.
+### Actions and spraying window
 
+- `wait` (low, outside the susceptible stage, or protected by a recent treatment), `monitor` (medium; or high but no in-season treatment exists), `treat` (high: inspect now and treat if the guide's threshold is exceeded).
+- The threshold shown is the guide's **for the current stage** (Tabela 30 wheat, Tab. 31 maize).
+- Spraying window (Tabela 40 kukurydza / 42 pszenica): first forecast day with 1–25 °C, next night ≥ 1 °C, RH 50–95 %, no rain, wind ≤ 4 m/s; "optimal" at 12–20 °C, RH 75–95 %, wind 0.5–1.5 m/s.
 
-### v0.3: more from the guides, field ranking, what-if, harvest
+### Confidence
 
-From a second read of the metodyki and the GIORiN guide:
-- **9 more threats** (above): Tabela 25 lists eyespot and fusarium foot rot as "+++" for winter wheat; Tabela 31/33 the wheat pests and their thresholds; p. 100 "a long, warm autumn favours aphids and the spread of viruses"; maize leaf diseases from p. 86.
-- **Thresholds per growth stage** (Tabela 30, p. 94-95): the action shows the guide's threshold for the field's current stage (tillering / stem elongation / heading).
-- **Spraying window = Tabela 40/42 in full:** 1-25 °C, the following night >= 1 °C, RH 50-95 %, no rain, wind <= 4 m/s; "optimal" at 12-20 °C, RH 75-95 %, wind 0.5-1.5 m/s.
-- **Head blight:** Fusarium species conditions and "+1 % infected ears = about +0.3 mg/kg DON" (GIORiN p. 4) in the notes.
-- **Harvest outlook** ([`harvest.py`](harvest.py)): wheat - fully ripe, next dry day, sprouting risk after 2+ rainy days in a row (p. 176); maize - safe storage days of undried grain by moisture and temperature (Tab. 37, p. 202).
-- European corn borer calendar from p. 118.
+`confidence` = stage confidence (0.6 degree days / 0.8 satellite / 0.85 farmer's sowing date) × 0.7 if hourly weather was missing × (1 − 0.06 × days ahead, at least 0.4) for coming days; 1.0 when the farmer reported symptoms.
 
-Engine features:
-- **Field ranking** ([`summary.py`](summary.py), `python manage.py engine_summary --date ...`): per field and day the highest score, the share of yield at risk (1 - prod(1 - score x severity)), top 3 threats, actions with spraying windows, the harvest outlook, and the fields ordered by urgency with the reason. Pure read of `Risk`, nothing stored - the API or the assistant can call `field_day(field_id, day)` / `farm_ranking(day)`.
-- **What-if for the assistant**: `from engine import what_if; what_if(field_id, day, [Report(...)])` -> per threat the score now and with the hypothetical reports ("if I spray on Friday", "if I sowed on 10 October"). Writes nothing.
-- **Spread within the farm**: symptoms reported on one field raise the risk on fields of the same crop within 3 km (as a "neighbour" report with the distance); those fields are recomputed too.
-- **Coming days are less certain**: days after today get `forecast_lead_days` and confidence x (1 - 0.06 x days ahead); `adjust_for_lead()` can redo it when the clock moves.
-- **Maize season runs to 31 December** (sown in April, harvested in autumn); seasons after the current one are not computed (crop unknown). `predict()` replaces the whole range for the fields it computes, so rows of threats that no longer apply disappear.
+### Crop
 
+The engine uses `Field.crop`. The crop model ([`cropmodel.py`](cropmodel.py)) checks it: LightGBM on the half-month NDVI curve of the season known so far (slots after today empty), the previous crop, and NDVI at fixed degree-day points; trained on 30 windows × seasons 2020, 2022, 2023 of the crop maps across Opolskie. Its answer is in `field_day()["crop_check"]`, so the farmer can confirm or correct the crop; a corrected crop needs a `predict()` for that field.
 
-### v0.4: growth stage from the satellite, crop check
+## Threats
 
-- [`satellite/fieldndvi.py`](satellite/fieldndvi.py) + `python manage.py engine_fetch_ndvi --season 2025`: each field's NDVI per Sentinel-2 scene (mean of clear pixels in the polygon), cached in `DATA_DIR/satellite/fields/` - `predict()` never needs the network.
-- **Stage anchors from the curve:** wheat - spring NDVI peak in May-June (>= 0.7) = heading (BBCH 55), NDVI below 0.5 afterwards = ripening (BBCH 83); maize - the rise from bare soil after sowing = young plants (BBCH 13), summer peak = flowering (BBCH 65). From the day an anchor is confirmed the degree-day curve is shifted through it (confidence 0.6 -> 0.8); earlier days keep the old estimate (no look-ahead).
-- **Finding:** on 7 wheat field-seasons near Krapkowice the degree-day model matched heading well (BBCH 53-60 vs 55 in 5 of 7) but ran **1-2 weeks early at ripening** (BBCH 92 where the satellite shows ~83). The wheat table was re-calibrated: heading ~1060, ripening ~2135 degree days since 1 January.
-- **Crop check** (`summary.field_day(...)["crop_check"]`): explainable mismatches between the curve and the crop ("bare in spring: winter wheat is green then") so the farmer is asked to confirm.
+25 rules in [`catalog.py`](catalog.py), each with the guide's numbers, page-level sources and the team's assumptions marked.
 
+| Crop | Category | Threats (`code`) |
+|---|---|---|
+| Wheat | fungal | `wheat.fusarium_head_blight`, `wheat.septoria_leaf_blotch`, `wheat.glume_blotch`, `wheat.brown_rust`, `wheat.yellow_rust`, `wheat.powdery_mildew`, `wheat.tan_spot`, `wheat.eyespot`, `wheat.fusarium_foot_rot`, `wheat.take_all`, `wheat.snow_mould` |
+| Wheat | pest | `wheat.aphids`, `wheat.cereal_leaf_beetle` |
+| Wheat | viral | `wheat.barley_yellow_dwarf` |
+| Maize | fungal | `maize.seedling_blight`, `maize.fusarium_ear_rot`, `maize.fusarium_stalk_rot`, `maize.northern_leaf_blight`, `maize.eyespot`, `maize.common_rust`, `maize.crazy_top` |
+| Maize | pest | `maize.european_corn_borer`, `maize.western_corn_rootworm`, `maize.aphids`, `maize.frit_fly` |
 
-### v0.5: crop model with crop history and degree-day timing; realistic dev farm
+Main sources: metodyka PSZENICA (Tabela 25–33, 42, rozdz. 13), Metodyka kukurydzy 2019 (pp. 81–140, Tab. 31, 37, 40), `ryzyka_zebrane.xlsx`, GIORiN (Fusarium species, DON).
 
-- Crop model features: **last season's crop** (crop map at the pixel; not for 2021/2022 because of the broken 2021 map) and **NDVI read at fixed degree-day points** (300 ... 2100 since 1 January) so early and late years line up. Pixel-level gain is modest (wheat precision 0.60 -> 0.64 at season end, 0.51 -> 0.58 at end of May).
-- **Field-level evaluation** (`engine/scripts/eval_crop_fields.py`, 534 fields of >= 1 ha in 6 windows never seen in training, season 2024):
+## Assumptions, limits, validation
 
-| As of | wheat / maize / other | "wheat" correct | "maize" correct | wheat vs maize |
-|---|---|---|---|---|
-| 30 Apr | 0.68 | 0.68 | 0.69 | 0.92 |
-| 31 May | 0.74 | 0.71 | 0.86 | 0.99 |
-| 30 Jun | 0.74 | 0.78 | 0.84 | 1.00 |
-| 31 Aug | 0.77 | 0.80 | 0.97 | 1.00 |
+- **Not validated against real outbreaks**: the data has none. Ranges and stages come from the guides; *how many hours make a risk high* is the team's choice, calibrated on 2025 near Krapkowice (a dry April, a wet June). Each explanation lists these numbers under `assumptions`.
+- Severities (yield loss if a threat materialises) are team assumptions; they only rank fields.
+- **The forecast has no precipitation** (the weather data has none; IMERG is not forecast), so the spraying window cannot check rain — the window says so.
+- In the historical demo the forecast is the observed weather (a perfect forecast); live forecasts are less certain, hence the lower confidence of coming days.
+- Weather is one 4 km cell: fields of one farm share it; they differ by crop, stage, history, soil and reports.
+- **Crop model on 534 fields never seen in training (2024):** wheat / maize / other right 74 % by end of May, 77 % by end of August; "wheat" correct 71–80 %, "maize" 86–97 %; wheat vs maize 99–100 % from end of May. Wheat vs other winter cereals is the weak spot, hence the farmer's confirmation.
+- Weather risks without a disease (frost, drought, heat) are not threats yet: `Threat.Category` has no such category.
 
-  When the model is confident (>= 0.7, about half of the fields) wheat / maize / other is right 82-84 %.
-- `summary.field_day(...)["crop_check"]["model"]`: the model's crop and probabilities for the field as of the day, from the cached NDVI.
-- **Dev farm fixed:** fields were whole patches of one crop on the 2024 map (up to 233 ha, several farmers' parcels with different 2025 crops). Now: 5-40 ha, one class in both 2023 and 2024, 2025 crop from the crop model (>= 60 %). Result near Krapkowice: 3 wheat (one after maize -> head blight), 2 maize (one in its 5th year of maize -> rootworm).
+## Open items for other components
+
+| Item | Who | Engine side |
+|---|---|---|
+| **API endpoints for risks** (`/api/risks/?date=`, `/api/fields/{id}/risks/`, `/api/fields/{id}/risks/{date}/`), optionally `field_day` / `farm_ranking` | Jan + Szymek | ready: `Risk` rows, `engine.summary` |
+| **`Observation` table** — proposed columns: `field` (FK, null = whole farm), `observed_on` (date), `recorded_at`, `kind`, `threat_code` (null), `severity` (0–1, null), `distance_m` (null), `details` (JSON), `text` | Jan + Szymek (schema), Ola (writes) | ready: read only through `observations.load_all()` |
+| Assistant tools: record a report → `predict(field_ids=[...], start=observed_on)`; "what if" → `what_if()`; "which field first" → `farm_ranking()` | Ola | ready |
+| Map: colour by `level` (cut-offs 0.3 / 0.6), "why" panel from `summary` + `drivers`, crop check from `field_day()["crop_check"]` | Kuba | ready |
+| Threat codes: use `engine_load_threats`, or a fixture with the same codes | Jan + Szymek | ready |
+| New categories `weather` / `soil` / `harvest` for frost, drought, harvest risks | Jan + Szymek | rules would follow |
+| **Data issues found:** the weather packages have **no precipitation** (only IMERG); soil `clay`/`sand` are fractions, `BAND_*` are text; grid lat/lon are decimals; hourly year files overlap by one hour; **the 2021 crop map is identical to 2022** (`FieldCropYear` 2021 is wrong) | Jan + Szymek, organisers | handled in the engine |
