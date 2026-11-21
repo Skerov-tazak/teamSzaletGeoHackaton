@@ -280,7 +280,8 @@ class ScenarioManager:
 
         prev_start = self._previous_season_start(definition)
         effective_start = prev_start if definition.window.include_previous_season else definition.window.season_start
-        years_to_load = list(range(effective_start.year, definition.window.season_end.year + 1))
+        forecast_horizon_end = definition.window.season_end + timedelta(days=clock.FORECAST_DAYS)
+        years_to_load = list(range(effective_start.year, forecast_horizon_end.year + 1))
 
         with transaction.atomic():
             self.cleaner.clear_scenario_data(

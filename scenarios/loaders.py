@@ -544,15 +544,18 @@ class WeatherAndForecastLoader:
 
     def _try_load_grid_from_archives(self, grid_id: str, region: str, years: list[int]) -> bool:
         """Próbuje wczytać pogodę dzienną i godzinową z paczek ZIP w `DATA_DIR`."""
-        dcols = {f.attname for f in WeatherDaily._meta.concrete_fields} - {"id"}
-        hcols = {f.attname for f in WeatherHourly._meta.concrete_fields} - {"id"}
-
+        archives_by_year: dict[int, tuple[Path, Path]] = {}
         for year in years:
             daily_zip = self._find_weather_zip("daily", year, region)
             hourly_zip = self._find_weather_zip("hourly", year, region)
             if daily_zip is None or hourly_zip is None:
                 return False
+            archives_by_year[year] = (daily_zip, hourly_zip)
 
+        dcols = {f.attname for f in WeatherDaily._meta.concrete_fields} - {"id"}
+        hcols = {f.attname for f in WeatherHourly._meta.concrete_fields} - {"id"}
+
+        for year, (daily_zip, hourly_zip) in archives_by_year.items():
             daily_df = self._read_parquet_from_zip(daily_zip, [grid_id])
             imerg_daily = self._read_imerg_parquet("daily", year, region, [grid_id])
             if not imerg_daily.empty:
@@ -749,12 +752,18 @@ class WeatherAndForecastLoader:
             start_d = date.fromisoformat(str(start_str))
             end_d = date.fromisoformat(str(end_str))
             filtered_values = {k: v for k, v in values.items() if k in valid_daily_cols}
+
+            if "avg_temperature" in filtered_values and filtered_values["avg_temperature"] is not None:
+                avg_t = float(filtered_values["avg_temperature"])
+                filtered_values.setdefault("min_temperature", round(avg_t - 4.0, 2))
+                filtered_values.setdefault("max_temperature", round(avg_t + 4.0, 2))
+                filtered_values.setdefault("midpoint_temperature", avg_t)
+
             if filtered_values:
                 WeatherDaily.objects.filter(
                     grid_id__in=grid_ids, date__range=(start_d, end_d)
                 ).update(**filtered_values)
 
-            # Synchronizuj podstawowe parametry godzinowe, aby reguły oparte na godzinach infekcji zadziałały spójnie
             hourly_updates: dict[str, Any] = {}
             if "avg_relative_humidity" in filtered_values and filtered_values["avg_relative_humidity"] is not None:
                 hourly_updates["relative_humidity"] = float(filtered_values["avg_relative_humidity"])
