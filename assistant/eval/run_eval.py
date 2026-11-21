@@ -1,7 +1,6 @@
 """Retrieval evaluation: hit@1/3/5 and MRR for dense / bm25 / hybrid x stemming variants.
 
-    python eval/run_eval.py                # from assistant/
-    python eval/run_eval.py --k 5 --show-failures
+    python assistant/eval/run_eval.py      # from the repo root
 """
 from __future__ import annotations
 
@@ -11,10 +10,10 @@ from pathlib import Path
 
 import yaml
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
-from rag.flags import has_pesticide_dose_text  # noqa: E402
-from rag.search import _store, search  # noqa: E402
+from assistant.rag.flags import has_pesticide_dose_text  # noqa: E402
+from assistant.rag.search import _store, search  # noqa: E402
 
 CONFIGS = [  # (label, mode, stemmer)
     ("dense", "dense", None),

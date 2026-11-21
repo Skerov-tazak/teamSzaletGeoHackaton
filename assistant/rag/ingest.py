@@ -1,8 +1,8 @@
 """CLI: full pipeline. PDFs + Excel -> chunks -> embeddings -> Qdrant + BM25.
 
-    python -m rag.ingest                          # 5 core PDFs + Excel
-    python -m rag.ingest --doc pszenica_doradcy --rebuild
-    python -m rag.ingest --all-crops
+    python -m assistant.rag.ingest                # 5 core PDFs + Excel (or: python manage.py rag_ingest)
+    python -m assistant.rag.ingest --doc pszenica_doradcy --rebuild
+    python -m assistant.rag.ingest --all-crops
 """
 from __future__ import annotations
 

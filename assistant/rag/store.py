@@ -50,8 +50,8 @@ class QdrantStore:
             self.client.get_collections()
         except Exception as e:  # connection refused, timeout, ...
             raise QdrantUnavailable(
-                f"Qdrant nie działa na {self.url} ({type(e).__name__}). Uruchom: "
-                f"docker compose -f docker-compose.qdrant.yml up -d  (w katalogu assistant/)"
+                f"Qdrant nie działa na {self.url} ({type(e).__name__}). Uruchom w katalogu repo: "
+                f"docker compose up -d qdrant"
             ) from None
 
     def ensure(self, dim: int, rebuild: bool = False) -> None:

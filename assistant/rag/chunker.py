@@ -75,9 +75,16 @@ def _split_long(text: str, max_tokens: int) -> list[str]:
         if ntok(piece) <= max_tokens:
             res.append(piece)
             continue
-        w = piece.split()
-        step = max(20, int(max_tokens / 1.8))
-        res += [" ".join(w[i:i + step]) for i in range(0, len(w), step)]
+        # last resort: greedy by words, measured with the tokenizer (Latin names, tables
+        # and numbers have far more tokens per word than running Polish text)
+        cur_w: list[str] = []
+        for w in piece.split():
+            if cur_w and ntok(" ".join(cur_w + [w])) > max_tokens:
+                res.append(" ".join(cur_w))
+                cur_w = []
+            cur_w.append(w)
+        if cur_w:
+            res.append(" ".join(cur_w))
     return res
 
 
@@ -160,6 +167,11 @@ class _Builder:
         path, sid = self.path_of(ent)
         header = context_header(self.doc["title"], path, sub, self.doc["crop"])
         embed = f"{header}\n\n{text}"
+        if ntok(embed) > config.CHUNK_MAX_TOKENS:
+            # hard guarantee of the token limit (e.g. one huge table row, dense Latin text)
+            for piece in _split_long(text, config.CHUNK_MAX_TOKENS - ntok(header) - 4):
+                self.emit(kind, piece, ent, sub, pages)
+            return
         n = self.seq[sid]
         self.seq[sid] += 1
         pdfp = [x[0] for x in pages]

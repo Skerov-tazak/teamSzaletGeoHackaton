@@ -31,33 +31,84 @@ NO_SECTION = "(bez sekcji)"
 
 
 # ----------------------------------------------------------------------------- TOC
-def _toc_lines(pdf: pymupdf.Document, pdf_pages: list[int]) -> list[str]:
+def _toc_lines(pdf: pymupdf.Document, pdf_pages: list[int]) -> list[list[str]]:
+    """Cleaned TOC lines, one list per TOC page (page numbers kept: columnar TOCs need them)."""
     out = []
     for pp in pdf_pages:
         raw = pdf[pp - 1].get_text("text")
-        raw = re.sub(r"�+|\t", " .... ", raw)  # leader glyphs / tabs -> dots
+        raw = re.sub(r"\ufffd+|\t", " .... ", raw)  # leader glyphs / tabs -> dots
+        lines = []
         for line in raw.splitlines():
             line = norm_ws(fix_mojibake(line))
-            if not line or re.fullmatch(r"\d{1,3}", line) or re.match(r"spis treści", line, re.I):
+            if not line or re.match(r"spis treści", line, re.I):
                 continue
-            out.append(line)
+            lines.append(line)
+        out.append(lines)
     return out
 
 
-def parse_toc(lines: list[str]) -> list[dict]:
-    """Join wrapped lines and parse 'number title ..... page' entries."""
-    entries, buf = [], ""
-    for line in lines:
-        buf = f"{buf} {line}".strip() if buf else line
-        m = LEADER_RE.match(buf)
-        if not m:
+PAGE_ONLY_RE = re.compile(r"^\.*\s*(\d{1,3})$")
+DOTS_END_RE = re.compile(r"(\.{2,}|…+)\s*$")
+
+
+def parse_toc(pages: list[list[str]]) -> list[dict]:
+    """'number title ..... page' entries; wrapped lines are joined.
+
+    Two layouts:
+    * inline: the page number ends the line (most guides);
+    * columnar: titles end with dots and the page numbers come as a separate column
+      (e.g. barley for advisors); numbers are then matched to titles in order, per page.
+    """
+    entries: list[dict] = []
+    for lines in pages:
+        inline, buf = [], ""
+        titles, numbers, tbuf = [], [], ""
+        for line in lines:
+            if PAGE_ONLY_RE.match(line) and not tbuf:
+                numbers.append(int(PAGE_ONLY_RE.match(line).group(1)))
+                continue
+            if NUM_ONLY_RE.match(line) and "." not in line.rstrip("."):
+                continue  # a lone chapter number column ("1.", "2.", ...); "3.6." stays
+            buf = f"{buf} {line}".strip() if buf else line
+            m = LEADER_RE.match(buf)
+            if m:
+                body = re.sub(r"(\s*\.{2,}\s*)+", " ", m.group("body")).strip(" .")
+                inline.append(_parse_number(body) | {"printed_page": int(m.group("page"))})
+                buf, tbuf = "", ""
+                continue
+            tbuf = f"{tbuf} {line}".strip() if tbuf else line
+            if DOTS_END_RE.search(tbuf):
+                titles.append(re.sub(r"(\s*(\.{2,}|…+)\s*)+$", "", tbuf).strip())
+                tbuf, buf = "", ""
+        if len(titles) > len(inline) and numbers:
+            # columnar page: pair titles with the number column in reading order
+            for title, page in zip(titles, numbers):
+                entries.append(_parse_number(title) | {"printed_page": page})
+        else:
+            entries += inline
+    return _assign_levels(_infer_chapter_numbers(entries))
+
+
+def _infer_chapter_numbers(entries: list[dict]) -> list[dict]:
+    """Unnumbered chapter titles in an arabic-numbered TOC get N from the next 'N.x.' entry,
+    else previous chapter + 1 (barley: 'WSTĘP' = 1, 'PRZEPISY PRAWNE …' = 2 because 2.1 follows)."""
+    if not any(e["kind"] == "arabic" for e in entries) or any(e["kind"] == "roman" for e in entries):
+        return entries
+    if sum(e["kind"] == "none" for e in entries) < 3:
+        return entries  # a few unnumbered extras (e.g. "Literatura") stay as they are
+    last = 0
+    for i, e in enumerate(entries):
+        if e["kind"] == "arabic" and "." not in e["number"].rstrip("."):
+            last = int(e["number"].rstrip("."))
+        if e["kind"] != "none":
             continue
-        body = re.sub(r"(\s*\.{2,}\s*)+", " ", m.group("body")).strip(" .")
-        page = int(m.group("page"))
-        buf = ""
-        entries.append(_parse_number(body) | {"printed_page": page})
-    # number + title glued from a "number-only" line are handled by the buffer above
-    return _assign_levels(entries)
+        nxt = entries[i + 1] if i + 1 < len(entries) else None
+        sub_of = int(nxt["number"].split(".")[0]) if nxt and nxt["kind"] == "arabic" \
+            and nxt["number"].count(".") >= 2 else None
+        n = sub_of if sub_of and sub_of > last else last + 1
+        e.update(kind="arabic", number=f"{n}.")
+        last = n
+    return entries
 
 
 def _parse_number(body: str) -> dict:

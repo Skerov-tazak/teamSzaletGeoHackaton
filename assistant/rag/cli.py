@@ -1,7 +1,7 @@
 """CLI search.
 
-    python -m rag.cli "w jakiej temperaturze rozwija się septorioza paskowana" --crop pszenica --k 5
-    python -m rag.cli --risk pszenica "rdza brunatna"
+    python -m assistant.rag.cli "w jakiej temperaturze rozwija się septorioza paskowana" --crop pszenica --k 5
+    python -m assistant.rag.cli --risk pszenica "rdza brunatna"
 """
 from __future__ import annotations
 

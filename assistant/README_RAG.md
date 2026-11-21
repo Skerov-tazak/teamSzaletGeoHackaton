@@ -4,28 +4,30 @@ Warstwa wyszukiwania dla asystenta Field Under Pressure. Obejmuje parsowanie PDF
 
 ## Uruchomienie
 
-Zależności są w `pyproject.toml` (wersje przypięte) i `uv.lock` w katalogu głównym repo. Python 3.12 jest ustawiony w `.python-version`.
+Moduł jest częścią aplikacji Django `assistant` (`assistant/rag/`), ale nie zależy od Django: serwer MCP i CLI importują `assistant.rag.*` bezpośrednio. Wszystkie komendy uruchamia się z **katalogu głównego repo**.
+
+Zależności to sekcja „AI assistant (Ola)” w `requirements.txt`. Wymaga Pythona 3.11+ (pymupdf 2.1); `.python-version` ustawia 3.12.
 
 ```bash
-uv sync                                                   # w katalogu repo: tworzy .venv z uv.lock
-cd assistant
-docker compose -f docker-compose.qdrant.yml up -d         # Qdrant 1.20.2; dashboard: http://localhost:6333/dashboard
-uv run python -m rag.ingest                               # 5 PDF + Excel -> chunks -> embeddingi -> Qdrant + BM25
-uv run python -m rag.ingest --doc pszenica_doradcy --rebuild
-uv run python -m rag.ingest --all-crops                   # + 10 pozostałych PDF (jęczmień, owies, …)
-uv run python -m rag.cli "w jakiej temperaturze rozwija się septorioza paskowana" --crop pszenica --k 5
-uv run python -m rag.cli --risk pszenica "rdza brunatna"
-uv run pytest -q
-uv run python eval/run_eval.py
+uv venv && uv pip install -r requirements.txt           # albo: python3 -m venv .venv && pip install -r requirements.txt
+cp .env.example .env                                     # QDRANT_HOST / QDRANT_PORT w sekcji "Assistant"
+docker compose up -d                                     # db (Postgres) + qdrant (1.20.2, dashboard: http://localhost:6333/dashboard)
+uv run python manage.py rag_ingest                       # 5 PDF + Excel -> chunks -> embeddingi -> Qdrant + BM25
+uv run python manage.py rag_ingest --doc pszenica_doradcy --rebuild
+uv run python manage.py rag_ingest --all-crops           # + 10 pozostałych PDF (jęczmień, owies, …)
+uv run python manage.py rag_search "w jakiej temperaturze rozwija się septorioza paskowana" --crop pszenica --k 5
+uv run python manage.py rag_search --risk pszenica "rdza brunatna"
+uv run python manage.py test assistant                   # testy RAG (assistant/test_rag.py) + testy czatu
+uv run python assistant/eval/run_eval.py                 # ewaluacja wyszukiwania
 ```
 
-Nową zależność dodaje się przez `uv add pakiet==wersja` (zależność dev: `uv add --dev …`), a nie przez `pip install`.
+`python -m assistant.rag.ingest` i `python -m assistant.rag.cli` działają tak samo jak komendy `manage.py`.
 
-- PDF-y są czytane z `metodyki/` w katalogu repo, a jeśli go nie ma, z `../field-under-pressure-materials/metodyki`. Ścieżkę można nadpisać przez `METODYKI_DIR`.
-- Inne zmienne środowiskowe: `QDRANT_URL` (domyślnie `http://localhost:6333`), `QDRANT_COLLECTION` (`guides_mmlw_v1`), `RAG_DATA_DIR`, `RAG_BM25_STEMMER` (`stempel` | `trunc6`).
-- Pierwszy ingest trwa ok. 4 min na M-series (MPS). Embeddingi liczą się ok. 165 s, a `find_tables` ok. 60 s; oba wyniki trafiają do cache. Kolejne przebiegi trwają ok. 1 min.
+- **Ścieżki**: PDF-y i Excel są czytane z submodułu `field-under-pressure-materials/metodyki/`, czyli `settings.MATERIALS_DIR / "metodyki"`. Wygenerowane pliki trafiają do `assistant/data/` (gitignore). Obie ścieżki można nadpisać w `.env` przez `METODYKI_DIR` i `RAG_DATA_DIR` (ścieżki względne liczone od katalogu repo).
+- **Konfiguracja**: `rag/config.py` czyta ten sam `.env` co Django. Zmienne: `QDRANT_HOST` / `QDRANT_PORT` (albo `QDRANT_URL`), `QDRANT_COLLECTION` (`guides_mmlw_v1`), `RAG_BM25_STEMMER` (`stempel` | `trunc6`).
+- **Testy**: bez indeksu albo bez działającego Qdranta testy RAG są pomijane, a nie oblane, więc `python manage.py test` nie blokuje reszty zespołu.
+- **Czas**: pierwszy ingest trwa ok. 4 min na M-series (MPS), w tym embeddingi ok. 165 s i `find_tables` ok. 60 s; oba wyniki trafiają do cache. Kolejne przebiegi trwają ok. 1 min. `docker compose down -v` kasuje też indeks w Qdrancie; wtedy wystarczy ponownie `rag_ingest`, bo embeddingi są w cache.
 - `--rebuild` usuwa kolekcję i wgrywa od nowa wszystko z `chunks.jsonl`. Bez tej flagi ingest usuwa i wgrywa tylko punkty przetwarzanych dokumentów. Ingest jest idempotentny dzięki deterministycznym `chunk_id` i id `uuid5(chunk_id)`.
-- `data/` (processed + index) jest poza gitem.
 
 ## Pipeline
 
@@ -64,10 +66,10 @@ Chunki z Excela mają `doc_id="ryzyka_zebrane"`, `audience="zestawienie"` oraz `
 
 Payload w Qdrant to chunk bez `embed_text`, z flagami skopiowanymi na najwyższy poziom. Indeksy keyword: `crop`, `audience`, `doc_id`, `kind`, `chunk_id`, `section_id`. Indeksy bool: `has_pesticide_doses`, `is_legal`, `has_fertilizer_doses`.
 
-## API (`rag/search.py`)
+## API (`assistant/rag/search.py`)
 
 ```python
-from rag.search import search, get_passage, get_page, get_risk_conditions
+from assistant.rag.search import search, get_passage, get_page, get_risk_conditions
 
 search(query, crop=None, audience=None, k=6, include_pesticide_doses=False,
        mode="hybrid" | "dense" | "bm25") -> list[Passage]
@@ -76,9 +78,12 @@ get_page(doc_id, printed_page) -> str                       # czysty tekst stron
 get_risk_conditions(crop, threat=None) -> list[dict]        # rekordy risk_conditions.json, fuzzy po nazwie
 ```
 
-`Passage` ma pola: `chunk_id, doc_id, doc_title, crop, audience, section, printed_pages, pdf_pages, kind, text, score, citation`.
+`Passage` ma pola: `chunk_id, doc_id, doc_title, crop, audience, section, printed_pages, pdf_pages, kind, text, score, citation, document, printed_page, sheet, row`.
 
-Przykład cytatu: `Metodyka integrowanej ochrony pszenicy ozimej i jarej dla doradców (doradcy), s. 70–71`.
+- `citation` to tekst dla człowieka, np. `Metodyka integrowanej ochrony pszenicy ozimej i jarej dla doradców (doradcy), s. 70–71`.
+- `passage.to_citation()` zwraca cytat w formacie API czatu (`docs/interfaces.md` → Chat → Citations), gotowy do `Reply.citations`:
+  - PDF: `{"type": "guide", "document": "metodyka_-_PSZENICA_-_www.pdf", "page": 79, "printed_page": 77, "section": "5. … > 5.1. …"}`. `page` to strona PDF (1-based), więc przeglądarka otworzy `plik.pdf#page=79`. `printed_page` (numer wydrukowany w książce) i `section` to dodatkowe klucze do wyświetlenia.
+  - Excel: `{"type": "guide", "document": "ryzyka_zebrane.xlsx", "sheet": "pszenica", "row": 19}`.
 
 - **Hybryda**: top 30 z wyszukiwania wektorowego i top 30 z BM25, z tymi samymi filtrami, łączone przez RRF `w/(60+rank)`. Wagi ustawia się w `config.py`.
 - **Filtry**:
@@ -89,25 +94,25 @@ Przykład cytatu: `Metodyka integrowanej ochrony pszenicy ozimej i jarej dla dor
 - **Scalanie sąsiadów**: sąsiednie chunki tej samej sekcji są łączone w jeden `Passage`. Nakładka jest usuwana, a zakres stron się sumuje.
 - **`get_risk_conditions`**: dopasowuje nazwę po złożeniu polskich znaków. Toleruje fleksję i literówki („septoriozy paskowanej”, „septorjoza”) dzięki `token_set_ratio` liczonemu też na 5-znakowych prefiksach słów.
 - **Ładowanie zasobów**: model, klient Qdrant, BM25, strony i ryzyka ładują się leniwie, raz na proces.
-- **Gdy Qdrant nie działa**: `QdrantUnavailable` z komunikatem „Qdrant nie działa na …, uruchom docker compose …”.
+- **Gdy Qdrant nie działa**: `QdrantUnavailable` z komunikatem „Qdrant nie działa na …, uruchom w katalogu repo: docker compose up -d qdrant”.
 
 ## Statystyki indeksu (5 PDF + Excel)
 
 | dokument | strony (pominięte) | tabele | chunki (tekst / tabela) | sekcje: wpisy, dopasowane |
 |---|---|---|---|---|
 | kukurydza_doradcy | 248 (39) | 64 | 525 (418 / 107) | 73, 73/73 |
-| kukurydza_producenci | 70 (14) | 28 | 154 (109 / 45) | 36, 34/36 |
+| kukurydza_producenci | 70 (14) | 28 | 153 (108 / 45) | 36, 34/36 |
 | pszenica_doradcy | 224 (36) | 73 | 431 (285 / 146) | 48, 48/48 |
 | pszenica_producenci | 70 (15) | 32 | 141 (79 / 62) | 36, 35/36 |
 | zboza_giorin | 24 (4) | 2 | 47 (44 / 3) | 33 (z fontów), wszystkie |
 | ryzyka_zebrane | 5 arkuszy | — | 106 (94 wiersze / 12 notatek) | — |
 
-- **Razem**: 1404 chunki, a w Qdrant jest 1404 punktów.
+- **Razem**: 1403 chunki dla 5 PDF + Excela (z `--all-crops`: 3978); liczba punktów w Qdrant zawsze równa liczbie chunków.
 - **Tokeny** (min / mediana / p95 / maks.): 39 / 339 / 439 / 446. Chunków powyżej 450 tokenów: 0.
 - **Pokrycie sekcjami**: 100% stron z treścią.
 - **Flagi**: `has_pesticide_doses` 212, `has_fertilizer_doses` 36, `is_legal` 27.
 
-## Ewaluacja (`eval/run_eval.py`, 29 pytań + 3 pułapki)
+## Ewaluacja (`assistant/eval/run_eval.py`, 29 pytań + 3 pułapki)
 
 | tryb | hit@1 | hit@3 | hit@5 | MRR |
 |---|---|---|---|---|
@@ -135,9 +140,7 @@ Przykład cytatu: `Metodyka integrowanej ochrony pszenicy ozimej i jarej dla dor
   - Temperatury z kilkoma zakresami w jednej komórce dają `null`.
   - „ok 20” daje `temp_approx=true`.
   - Jednostka temperatury w arkuszu pszenicy nie jest podana (zakładamy °C, ale tylko w polach `*_c`; `temperature_raw` zostaje bez zmian).
-- **`--all-crops`** (sprawdzone parsowanie i chunking 10 dodatkowych PDF, bez indeksowania):
-  - 13 z 15 dokumentów ma pokrycie sekcjami 100%.
-  - `jeczmien_doradcy`: spis treści sparsował się źle (4 sklejone wpisy, 0 dopasowanych), więc sekcje są bezużyteczne.
-  - `owies_doradcy`: 8 z 38 wpisów niedopasowanych (nagłówki wersalikami).
-  - `jeczmien_producenci`: 3 chunki ponad 450 tokenów (maks. 569).
-  - Do poprawy, zanim te uprawy trafią do indeksu.
+- **`--all-crops`** (wszystkie 15 PDF są w indeksie: 3978 chunków, 0 ponad 450 tokenów):
+  - `jeczmien_doradcy` ma spis „kolumnowy” (numery stron osobną kolumną), obsługiwany osobnym trybem w `toc.py`: 38/42 wpisów dopasowanych.
+  - `owies_doradcy`: 8 z 38 wpisów niedopasowanych (nagłówki wersalikami). Sekcje zaczynają się wtedy na stronie wyliczonej z offsetu.
+  - Pytania ewaluacyjne dotyczą tylko pszenicy, kukurydzy i zbóż.

@@ -1,0 +1,13 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color: #1f2a1f;
+  background: #f6f7f2;
+}
+
+body {
+  margin: 0;
+  padding: 16px;
+}
+
+#platform-status[data-state="ok"] { color: #2e7d32; }
+#platform-status[data-state="error"] { color: #c62828; }

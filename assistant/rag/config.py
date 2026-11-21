@@ -1,22 +1,33 @@
-"""Central configuration for the RAG module. Override paths with env vars."""
+"""Central configuration for the RAG module.
+
+Independent of Django (the MCP server / CLI import it directly), but it reads the same
+repo-root `.env` and uses the same materials folder as `settings.MATERIALS_DIR`.
+Environment variables override the defaults (see .env.example, "Assistant" section).
+"""
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 ASSISTANT_DIR = Path(__file__).resolve().parent.parent
 REPO_DIR = ASSISTANT_DIR.parent
 
-
-def _default_metodyki() -> Path:
-    for cand in (REPO_DIR / "metodyki", REPO_DIR.parent / "field-under-pressure-materials" / "metodyki"):
-        if cand.is_dir():
-            return cand
-    return REPO_DIR / "metodyki"
+load_dotenv(REPO_DIR / ".env", override=False)  # real env vars win over .env
 
 
-METODYKI_DIR = Path(os.getenv("METODYKI_DIR", _default_metodyki()))
-DATA_DIR = Path(os.getenv("RAG_DATA_DIR", ASSISTANT_DIR / "data"))
+def _path(env: str, default: Path) -> Path:
+    """Env path; relative values are resolved against the repo root (like DATA_DIR in settings)."""
+    value = os.getenv(env)
+    return (REPO_DIR / value).resolve() if value else default
+
+
+# Organiser materials (git submodule) = settings.MATERIALS_DIR / "metodyki"
+MATERIALS_DIR = REPO_DIR / "field-under-pressure-materials"
+METODYKI_DIR = _path("METODYKI_DIR", MATERIALS_DIR / "metodyki")
+# Generated RAG artefacts (pages, chunks, BM25, embedding cache). Gitignored.
+DATA_DIR = _path("RAG_DATA_DIR", ASSISTANT_DIR / "data")
 PROCESSED_DIR = DATA_DIR / "processed"
 INDEX_DIR = DATA_DIR / "index"
 
@@ -59,7 +70,7 @@ EMBED_BATCH = 32
 EMBED_MAX_SEQ = 512
 
 # --- Qdrant ---
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_URL = os.getenv("QDRANT_URL") or f"http://{os.getenv('QDRANT_HOST', 'localhost')}:{os.getenv('QDRANT_PORT', '6333')}"
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "guides_mmlw_v1")
 UPSERT_BATCH = 192
 

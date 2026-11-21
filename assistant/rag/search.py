@@ -36,10 +36,29 @@ class Passage:
     kind: str
     text: str
     score: float
-    citation: str
+    citation: str                      # human-readable, e.g. "Metodyka … (doradcy), s. 70–71"
+    document: str = ""                 # source file name in field-under-pressure-materials/metodyki/
+    printed_page: int | None = None    # first printed page (what the book says)
+    sheet: str | None = None           # spreadsheet rows only
+    row: int | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    def to_citation(self) -> dict:
+        """Citation in the chat API format (docs/interfaces.md -> Chat -> Citations).
+
+        guide PDF:   {"type": "guide", "document": "<pdf file>", "page": <PDF page, 1-based>,
+                      "printed_page": <page number printed in the book or null>, "section": "..."}
+        spreadsheet: {"type": "guide", "document": "ryzyka_zebrane.xlsx", "sheet": "...", "row": n}
+        `page` is the PDF page (so a viewer can open `file.pdf#page=N`); printed_page and
+        section are extra keys for display.
+        """
+        if self.sheet is not None:
+            return {"type": "guide", "document": self.document, "sheet": self.sheet, "row": self.row}
+        return {"type": "guide", "document": self.document,
+                "page": self.pdf_pages[0] if self.pdf_pages else None,
+                "printed_page": self.printed_page, "section": self.section}
 
 
 # ----------------------------------------------------------------------------- lazy resources
@@ -102,7 +121,17 @@ def to_passage(p: dict, score: float) -> Passage:
         audience=p["audience"], section=_section(p),
         printed_pages=_pages_str(p.get("printed_page_start"), p.get("printed_page_end")),
         pdf_pages=pdf, kind=p["kind"], text=p["text"], score=round(float(score), 5), citation=_citation(p),
+        document=_document_file(p["doc_id"]), printed_page=p.get("printed_page_start"),
+        sheet=p.get("sheet"), row=p.get("row"),
     )
+
+
+@lru_cache(maxsize=None)
+def _document_file(doc_id: str) -> str:
+    if doc_id == config.EXCEL_DOC_ID:
+        return config.EXCEL_FILE.name
+    from .docs import REGISTRY
+    return next((d.file for d in REGISTRY if d.doc_id == doc_id), "")
 
 
 # ----------------------------------------------------------------------------- fusion / dedup

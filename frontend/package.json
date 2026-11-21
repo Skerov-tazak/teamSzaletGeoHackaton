@@ -1,0 +1,15 @@
+{
+  "name": "field-under-pressure-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm run typecheck && npm run bundle",
+    "bundle": "esbuild src/main.ts --bundle --format=esm --sourcemap --target=es2020 --outdir=static/frontend/dist",
+    "watch": "npm run bundle -- --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}
