@@ -100,3 +100,19 @@ Threats (16): wheat — fusarium head blight, septoria leaf blotch, brown rust, 
 - **Grid `lat` / `lon` are decimals** in `weather_grids.parquet` (cast to float).
 - **Hourly year files overlap** by one UTC hour at New Year (unique constraint).
 - Weather 2025 is complete (1 Jan – 31 Dec) for daily and hourly; IMERG covers 2020–2025.
+
+### Crop model (satellite) — first results
+
+[`cropmodel.py`](cropmodel.py): LightGBM on the half-month NDVI curve of the season known so far (one model for every day; slots after today are empty). Trained on 30 random 3×3 km windows across Opolskie, seasons 2020, 2022, 2023 (pixels, crop-map labels); tested on 2024 in 6 windows never seen in training.
+
+| As of (2024) | wheat / maize / other: accuracy | "wheat" correct (precision) | "maize" correct | wheat vs maize, when it says one of them |
+|---|---|---|---|---|
+| 31 Mar | 0.72 | 0.44 | 0.21 | 0.82 |
+| 30 Apr | 0.72 | 0.52 | 0.26 | 0.93 |
+| 31 May | 0.75 | 0.51 | 0.46 | 0.98 |
+| 30 Jun | 0.78 | 0.56 | 0.54 | 0.98 |
+| 31 Aug | 0.82 | 0.60 | 0.73 | 0.99 |
+
+Reading: **wheat vs maize is reliable from late May; wheat vs other winter cereals (barley, triticale, rye) and maize vs other summer crops (sugar beet, potato) are not** from NDVI alone. So the satellite *proposes* the crop and the farmer confirms it. Next steps for accuracy: red-edge / SWIR bands, timing normalised by degree days, field-level averaging (pixel numbers above are a lower bound).
+
+**Data problem:** the organisers' 2021 crop map is pixel-identical to the 2022 map (the 2021 package holds the 2022 data; its labels fit the 2022 imagery). Season 2021 is excluded from training; `FieldCropYear` rows for 2021 are wrong too.
