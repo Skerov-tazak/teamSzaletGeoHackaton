@@ -11,7 +11,8 @@ from django.test import SimpleTestCase, TestCase
 
 from assistant import devdata
 from assistant.answer import Reply, answer
-from assistant.models import Conversation, Message, Observation
+from assistant.models import Conversation, Message
+from core.models import Observation
 from assistant.orchestrator import citations, guard, prompts, router
 from assistant.orchestrator.llm import FakeLLM, LLMError
 from assistant.orchestrator.state import State

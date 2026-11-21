@@ -119,7 +119,7 @@ class FieldIn(BaseModel):
 
 @register("get_field", """
 Szczegóły pola: uprawa, powierzchnia [ha], położenie (środek), historia upraw z ostatnich lat,
-gleba (pH, uziarnienie, próchnica; średnia z komórek pola). Bez geometrii.
+gleba (pH, udział iłu/piasku/pyłu w %, materia organiczna; średnia z komórek pola). Bez geometrii.
 """, FieldIn)
 def get_field(field_id: int) -> dict:
     f = _field(field_id)
@@ -132,7 +132,13 @@ def get_field(field_id: int) -> dict:
     cells = list(f.soil_cells().values("ph", "soil_texture", "clay", "sand", "silt", "om"))
     if cells:
         num = {k: [c[k] for c in cells if c[k] is not None] for k in ("ph", "clay", "sand", "silt", "om")}
-        out["soil"] = {k: round(sum(v) / len(v), 1) for k, v in num.items() if v}
+        avg = {k: sum(v) / len(v) for k, v in num.items() if v}
+        out["soil"] = {"ph": round(avg["ph"], 1)} if "ph" in avg else {}
+        for k in ("clay", "sand", "silt"):  # core.SoilCell stores fractions 0-1 (as in the real files)
+            if k in avg:
+                out["soil"][f"{k}_pct"] = round(avg[k] * 100 if avg[k] <= 1 else avg[k], 1)
+        if "om" in avg:
+            out["soil"]["om"] = round(avg["om"], 2)
         textures = [c["soil_texture"] for c in cells if c["soil_texture"]]
         if textures:
             out["soil"]["soil_texture"] = max(set(textures), key=textures.count)
@@ -318,17 +324,26 @@ class ObservationsIn(BaseModel):
 
 
 @register("get_observations", """
-Obserwacje rolnika zapisane dla pola (data, kategoria, zagrożenie, nasilenie, opis), najnowsze
-pierwsze. Tylko do dzisiejszej daty sezonu.
+Zgłoszenia rolnika dla pola (i te dotyczące całego gospodarstwa): data, rodzaj (objawy / czysto /
+sąsiad / zabieg / fakt o polu / zdarzenie), kategoria, zagrożenie, nasilenie, jego słowa. Najnowsze
+pierwsze, tylko do dzisiejszej daty sezonu.
 """, ObservationsIn)
 def get_observations(field_id: int, date_from=None, date_to=None) -> dict:
-    from assistant.models import Observation
+    from django.db.models import Q
+
+    from core.models import Observation
+
+    from .observations import CATEGORY_PL, severity_pl
     f = _field(field_id)
     today = season_today()
-    qs = Observation.objects.filter(field=f, date__lte=min(date_to or today, today)).select_related("threat")
+    qs = (Observation.objects.observed(min(date_to or today, today))
+          .filter(Q(field=f) | Q(field__isnull=True)).select_related("threat"))
     if date_from:
-        qs = qs.filter(date__gte=date_from)
+        qs = qs.filter(observed_on__gte=date_from)
     return {"field_id": f.id, "observations": [
-        {"id": o.id, "date": o.date, "category": o.category, "threat": o.threat.name if o.threat else None,
-         "threat_code": o.threat.code if o.threat else None, "severity": o.severity or None, "note": o.note}
+        {"id": o.id, "date": o.observed_on, "kind": o.kind, "category": CATEGORY_PL.get(o.category, o.category),
+         "threat": o.threat.name if o.threat else None, "threat_code": o.threat.code if o.threat else None,
+         "severity": severity_pl(o.severity), "distance_m": o.distance_m, "whole_farm": o.field_id is None,
+         "facts": {k: v for k, v in (o.details or {}).items() if k in ("sowing_date", "tillage", "resistant_to", "type")},
+         "text": o.text}
         for o in qs[:50]]}

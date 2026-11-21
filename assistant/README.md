@@ -105,7 +105,7 @@ python manage.py llm_models                # set GEMINI_MODEL / GROQ_MODEL from 
 | `get_weather` | – | observed + forecast; weekly aggregation for ranges > 31 days |
 | `get_observations` | – | farmer observations of a field |
 | `chart_risk_timeline`, `chart_weather_vs_risk`, `chart_farm_overview` | – | Vega-Lite spec + `summary` computed in code |
-| `record_observation` | yes | idempotent save + `engine.predict` (MCP: only with `confirm=true`; never offered to an agent loop) |
+| `record_observation` | yes | idempotent save to `core.Observation` + `engine.predict` (MCP: only with `confirm=true`; never offered to an agent loop) |
 | `run_readonly_sql` | – | disabled until `ASSISTANT_ENABLE_SQL=1` **and** a `readonly` DB exists |
 
 ### Flows (`assistant/orchestrator/`) — code decides, the model writes, ≤ 1 LLM call per question
@@ -141,7 +141,7 @@ Logs go to stderr; stdout carries only the protocol. The server warms up the emb
 
 - **No engine yet**: observations are saved but `reassessment.status = "unavailable"`; risk explanations in dev data are synthetic.
 - **Risk levels** come from the engine's `explanation.level`; fallback cut-offs < 0.33 / < 0.66 as in `engine/scoring.py` and the map (`assistant/domain.py`).
-- **Observations** live in the interim `assistant.Observation` table until `core.Observation` exists.
+- **Observations** are written to `core.Observation` (the interim `assistant.Observation` rows were moved; the table is kept empty for the engine's adapter).
 - **SQL tool off**: no read-only role.
 - **Agent mode (step G) not built**: complex questions use the single-call flows.
 - **No live run yet**: `.env` has no LLM keys; everything was verified with FakeLLM. Answer quality, Polish style and real citation behaviour need `chat_eval --live`.

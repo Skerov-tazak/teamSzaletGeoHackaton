@@ -9,12 +9,13 @@ What is simulated (inputs only — the decision engine computes the risks):
   Opole (monthly temperatures and precipitation), persistent anomalies, a wet/dry Markov chain, a soil
   moisture bucket and snow; season 2025 has the pattern the engine was calibrated on (dry April, wet
   first half of June); forecasts are the observed weather issued day by day (as the platform does);
-* soil cells (H3 level 10) with loess-loam values typical for the area;
-* a few farmer observations in the interim assistant.Observation table, in the format the engine reads;
+* soil cells (H3 level 10) with loess-loam values typical for the area, in the real files' formats
+  (sand/silt/clay as fractions 0–1, BAND_* as text);
+* a few farmer reports in core.Observation (docs/database.md -> Observation);
 * Clock = 2025-06-10 (winter wheat flowering in a wet spell, maize at a few leaves).
 
 Then the real engine runs: engine_load_threats + predict (previous season first, then 2025).
-Everything is marked: weather grid "SIM_…", observations details.source = "sim_farm".
+Everything is marked: weather grid "SIM_…", reports details.source = "sim_farm".
 """
 from __future__ import annotations
 
@@ -206,7 +207,7 @@ def _area_ha(poly) -> float:
 def wipe() -> int:
     from core.models import Field, Risk, SoilCell, WeatherDaily, WeatherForecastDaily, WeatherGrid, WeatherHourly
 
-    from assistant.models import Observation
+    from core.models import Observation
     grids = WeatherGrid.objects.filter(grid_id=SIM_GRID)
     fields = Field.objects.filter(weather_grid__in=grids)
     cells = [c for f in fields for c in f.h3_cells]
@@ -263,45 +264,47 @@ def build(seed: int = 2025, today: date = TODAY, log=print) -> dict:
             FieldCropYear.objects.create(field=f, year=year, crop_class_id=crop, share=round(1 - edge, 3))
             FieldCropYear.objects.create(field=f, year=year, crop_class_id=0, share=edge)
         for c in cells:
-            clay = rnd.uniform(14, 24)
-            sand = rnd.uniform(15, 30)
+            # real-file formats (core.SoilCell): sand/silt/clay as fractions 0-1, BAND_* as text
+            clay = rnd.uniform(0.14, 0.24)
+            sand = rnd.uniform(0.15, 0.30)
+            ph, om, cec = rnd.uniform(6.0, 7.1), rnd.uniform(1.6, 2.9), rnd.uniform(11, 19)
             SoilCell.objects.update_or_create(h3_index_10=c, defaults={
-                "clay": round(clay, 1), "sand": round(sand, 1), "silt": round(100 - clay - sand, 1),
-                "ph": round(rnd.uniform(6.0, 7.1), 1), "om": round(rnd.uniform(15, 28), 1),
-                "cec": round(rnd.uniform(11, 19), 1), "bulk_density": round(rnd.uniform(1.3, 1.5), 2),
-                "soil_texture": "silt loam" if clay < 20 else "loam"})
+                "clay": round(clay, 3), "sand": round(sand, 3), "silt": round(1 - clay - sand, 3),
+                "ph": round(ph, 1), "om": round(om, 2), "cec": round(cec, 1), "bulk_density": round(rnd.uniform(1.3, 1.5), 2),
+                "band_om": "low" if om < 2 else "moderate", "band_cec": "moderate", "band_ph": "moderate",
+                "soil_texture": "silt loam" if clay < 0.20 else "loam"})
         fields.append(f)
         log(f"field {f.id}: {f.name} ({LEGEND[f.crop_id]}, {f.area_ha} ha, {len(cells)} H3 cells) — {sf.story}")
     Clock.objects.update_or_create(pk=1, defaults={"today": today})
     return {"fields": fields, "today": today}
 
 
-# farmer observations already reported in the chat before the demo day (engine format, see engine/README.md)
+# farmer reports already given in the chat before the demo day (core.Observation, docs/database.md)
 OBSERVATIONS = [
-    ("Za Stodołą", date(2025, 4, 2), "inne", None, None, "Siałem 8 października, po kukurydzy na ziarno.",
-     {"kind": "field_fact", "sowing_date": "2024-10-08"}),
-    ("Długie", date(2025, 4, 2), "inne", None, None, "Na Długim nie orałem, tylko talerzówka po pszenicy.",
-     {"kind": "field_fact", "tillage": "reduced"}),
-    ("Przy Odrze", date(2025, 5, 28), "choroba", None, None,
-     "Przeszedłem całe pole przy Odrze, liście czyste, nie widzę ani rdzy, ani plam.", {"kind": "absence"}),
-    ("Długie", date(2025, 6, 2), "choroba", "wheat.septoria_leaf_blotch", "srednie",
-     "Na dolnych liściach brunatne plamy z czarnymi kropkami, na co trzeciej roślinie.", {"kind": "symptoms"}),
-    ("Kukurydza Krępna", date(2025, 6, 6), "szkodnik", "maize.european_corn_borer", None,
-     "Sąsiad mówi, że u niego za drogą lata już omacnica.", {"kind": "neighbour", "distance_m": 600}),
+    # field, observed_on, kind, category, threat code, severity 0-1, distance_m, details, text
+    ("Za Stodołą", date(2024, 10, 8), "field_fact", "other", None, None, None, {"sowing_date": "2024-10-08"},
+     "Siałem 8 października, po kukurydzy na ziarno."),
+    ("Długie", date(2025, 4, 2), "field_fact", "other", None, None, None, {"tillage": "reduced"},
+     "Na Długim nie orałem, tylko talerzówka po pszenicy."),
+    ("Przy Odrze", date(2025, 5, 28), "absence", "disease", None, None, None, {},
+     "Przeszedłem całe pole przy Odrze, liście czyste, nie widzę ani rdzy, ani plam."),
+    ("Długie", date(2025, 6, 2), "symptoms", "disease", "wheat.septoria_leaf_blotch", 0.6, None, {},
+     "Na dolnych liściach brunatne plamy z czarnymi kropkami, na co trzeciej roślinie."),
+    ("Kukurydza Krępna", date(2025, 6, 6), "neighbour", "pest", "maize.european_corn_borer", None, 600.0, {},
+     "Sąsiad mówi, że u niego za drogą lata już omacnica."),
 ]
 
 
 def add_observations(log=print) -> int:
-    from core.models import Field, Threat
-
-    from assistant.models import Observation
+    from core.models import Field, Observation, Threat
     n = 0
-    for name, d, cat, threat, sev, note, details in OBSERVATIONS:
+    for name, d, kind, cat, threat, sev, dist, details, text in OBSERVATIONS:
         f = Field.objects.get(name=name, weather_grid_id=SIM_GRID)
         Observation.objects.create(
-            field=f, date=d, category=cat, threat=Threat.objects.filter(code=threat).first() if threat else None,
-            severity=sev or "", note=note, details=details | {"source": "sim_farm"},
-            idempotency_key=f"sim_farm:{name}:{d.isoformat()}:{details['kind']}")
+            field=f, observed_on=d, kind=kind, category=cat,
+            threat=Threat.objects.filter(code=threat).first() if threat else None, severity=sev, distance_m=dist,
+            details=details | {"source": "sim_farm"}, text=text,
+            idempotency_key=f"sim_farm:{name}:{d.isoformat()}:{kind}")
         n += 1
-        log(f"observation {d} {name}: {details['kind']} — {note}")
+        log(f"report {d} {name}: {kind} — {text}")
     return n

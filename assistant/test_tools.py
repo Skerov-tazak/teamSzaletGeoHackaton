@@ -9,7 +9,7 @@ from unittest import mock
 from django.test import TestCase, override_settings
 
 from assistant import devdata, domain
-from assistant.models import Observation
+from core.models import Observation
 from assistant.tools import sql
 from assistant.tools.registry import ToolError, available, call, to_openai_tools
 
@@ -133,13 +133,27 @@ class ObservationToolTests(ToolTestCase):
         self.assertEqual(r1["observation_id"], r2["observation_id"])
         self.assertEqual(Observation.objects.count(), 1)
 
+    @mock.patch("assistant.tools.observations.engine_predict", return_value=None)
+    def test_stored_in_core_with_contract_values(self, _):
+        r = self._call(key="key-00000010", kind="neighbour", facts={"distance_m": 300})
+        o = Observation.objects.get(pk=r["observation_id"])
+        self.assertEqual((o.kind, o.category, o.severity, o.distance_m, o.text),
+                         ("neighbour", "disease", 0.6, 300.0, "brunatne plamy z czarnymi kropkami"))
+        self.assertEqual(o.observed_on, TODAY)
+        self.assertEqual(o.threat.code, "wheat.septoria_leaf_blotch")
+        r = self._call(key="key-00000011", category="chwasty", threat=None, severity=None)
+        o = Observation.objects.get(pk=r["observation_id"])
+        self.assertEqual((o.kind, o.category, o.severity), ("symptoms", "weeds", None))
+
     def test_engine_called_and_failure_keeps_observation(self):
         calls = []
         with mock.patch("assistant.tools.observations.engine_predict",
                         return_value=lambda **kw: calls.append(kw) or 7):
             r = self._call(key="key-00000002", date="2024-05-14")
         self.assertEqual(r["reassessment"]["status"], "ok")
-        self.assertEqual(calls, [{"field_ids": [self.wheat.id], "start": dt.date(2024, 5, 14)}])
+        self.assertEqual(calls[0]["field_ids"], [self.wheat.id])
+        self.assertEqual(calls[0]["start"], dt.date(2024, 5, 14))
+        self.assertEqual(calls[0]["end"], dt.date(2024, 5, 31))  # last precomputed day, not only today + 7
 
         def boom(**kw):
             raise RuntimeError("engine down")
