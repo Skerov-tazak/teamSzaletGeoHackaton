@@ -316,15 +316,32 @@ class SoilCell(models.Model):
     om = measure("g/kg (check)", "Organic matter, root-zone average to 30 cm. Unit to verify, see docs.")
     cec = measure("cmol(c)/kg", "CEC, root-zone average to 30 cm.")
     ph = measure("pH", "pH, root-zone average to 15 cm. Source name: pH.")
-    sand = measure("%", "Sand, root-zone average to 30 cm.")
-    silt = measure("%", "Silt, root-zone average to 30 cm.")
-    clay = measure("%", "Clay, root-zone average to 30 cm.")
+    # The organiser docs say %, but the real files hold fractions (0.18 = 18 %); stored as in the files.
+    sand = measure("fraction 0-1", "Sand, root-zone average to 30 cm.")
+    silt = measure("fraction 0-1", "Silt, root-zone average to 30 cm. Assumed like sand and clay: verify at import.")
+    clay = measure("fraction 0-1", "Clay, root-zone average to 30 cm.")
     bulk_density = measure("kg/dm³", "Bulk density, root-zone average to 30 cm.")
-    band_om = measure("category", "Organic matter band: low (< 2), moderate, high (> 3.5).")
-    band_cec = measure("category", "CEC band: low (< 10), moderate, high (> 20).")
-    band_ph = measure("category", "pH band: low (< 5.8), moderate, high (> 7.5). Source name: band_pH.")
+
+    class Band(models.TextChoices):
+        LOW = "low"
+        MODERATE = "moderate"
+        HIGH = "high"
+
+    # Text in the real files (the organiser docs say FLOAT). Source names: BAND_om, BAND_cec, BAND_pH.
+    band_om = models.CharField(
+        max_length=16, choices=Band.choices, null=True, blank=True,
+        help_text="Organic matter band: low (< 2), moderate, high (> 3.5). Source name: BAND_om.",
+    )
+    band_cec = models.CharField(
+        max_length=16, choices=Band.choices, null=True, blank=True,
+        help_text="CEC band: low (< 10), moderate, high (> 20). Source name: BAND_cec.",
+    )
+    band_ph = models.CharField(
+        max_length=16, choices=Band.choices, null=True, blank=True,
+        help_text="pH band: low (< 5.8), moderate, high (> 7.5). Source name: BAND_pH.",
+    )
     soil_texture = models.CharField(
-        max_length=64, null=True, blank=True, help_text="USDA soil texture class, root zone to 30 cm."
+        max_length=64, null=True, blank=True, help_text="USDA soil texture class, root zone to 30 cm. Source name: soilTexture."
     )
 
     def __str__(self) -> str:
@@ -437,6 +454,97 @@ class Threat(models.Model):
 
     def __str__(self) -> str:
         return self.code
+
+
+class ObservationQuerySet(models.QuerySet):
+    def observed(self, as_of: date | None = None):
+        """Only reports observed up to and including `as_of` (default: the demo's today)."""
+        return self.filter(observed_on__lte=as_of or clock.today())
+
+
+class Observation(models.Model):
+    """
+    A farmer's report about a field: something seen, done or known. Written only by the assistant's
+    "record an observation" tool after the farmer confirms it; read by the decision engine, which
+    recomputes the field's risks from `observed_on` on. One row per report.
+    """
+
+    class Kind(models.TextChoices):
+        SYMPTOMS = "symptoms"  # the farmer sees it on this field
+        ABSENCE = "absence"  # inspected, nothing found (threat empty = all threats)
+        NEIGHBOUR = "neighbour"  # a neighbour / the area has it (distance_m)
+        TREATMENT = "treatment"  # sprayed against it (threat empty = all fungal)
+        FIELD_FACT = "field_fact"  # a fact about the field: details.sowing_date / tillage / resistant_to
+        EVENT = "event"  # hail, lodging, flood: details.type
+
+    class Category(models.TextChoices):
+        DISEASE = "disease"
+        PEST = "pest"
+        WEEDS = "weeds"
+        DAMAGE = "damage"
+        OTHER = "other"
+
+    field = models.ForeignKey(
+        Field,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="observations",
+        help_text="The field it is about. Empty = the whole farm / the area.",
+    )
+    observed_on = models.DateField(
+        help_text="The day the farmer saw or did it (local, demo calendar), not the day they told the chat."
+    )
+    recorded_at = models.DateTimeField(auto_now_add=True, help_text="[UTC] When the report was stored.")
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+    category = models.CharField(
+        max_length=16,
+        choices=Category.choices,
+        blank=True,
+        help_text="What kind of problem. Needed when no threat is named, e.g. symptoms of 'some disease'.",
+    )
+    threat = models.ForeignKey(
+        Threat,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="observations",
+        help_text="The threat, if the farmer named one of the crop's threats.",
+    )
+    severity = measure("fraction 0-1", "How bad it is: 0.3 low, 0.6 medium, 0.9 high.")
+    distance_m = measure("m", "Neighbour reports only: distance to the reported case.")
+    details = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Extra facts the engine reads: sowing_date, tillage, resistant_to, type, scope.",
+    )
+    text = models.TextField(blank=True, help_text="The farmer's own words.")
+    idempotency_key = models.CharField(
+        max_length=64,
+        unique=True,
+        null=True,
+        blank=True,
+        help_text="Same key = same report: prevents duplicates when the farmer confirms twice.",
+    )
+
+    objects = ObservationQuerySet.as_manager()
+
+    class Meta:
+        ordering = ["-observed_on", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(severity__isnull=True) | (Q(severity__gte=0) & Q(severity__lte=1)),
+                name="observation_severity_0_1",
+            ),
+            models.CheckConstraint(
+                condition=Q(distance_m__isnull=True) | Q(distance_m__gte=0), name="observation_distance_positive"
+            ),
+        ]
+        indexes = [models.Index(fields=["field", "observed_on"], name="observation_field_date")]
+
+    def __str__(self) -> str:
+        where = self.field.name if self.field_id else "whole farm"
+        return f"{self.observed_on} {where}: {self.kind}"
 
 
 class RiskQuerySet(models.QuerySet):
