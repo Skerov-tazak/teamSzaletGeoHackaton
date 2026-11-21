@@ -1,8 +1,8 @@
 """
 The platform API (docs/interfaces.md -> Platform API). No authentication, no CSRF.
 
-    GET  /api/health/                          {status, database}
-    GET  /api/clock/                           {today, forecast_days}
+    GET  /api/health/                          {status, database, clock, assistant}
+    GET  /api/clock/                           {today, forecast_days, min_date, max_date}
     PUT  /api/clock/                           {today} -> moves the demo date
     GET  /api/threats/                         every threat
     GET  /api/fields/                          every field, GeoJSON FeatureCollection
@@ -29,7 +29,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core import clock
-from core.api_dates import date_range, parse_date, single_date
+from core.api_dates import InvalidDate, date_range, parse_date, single_date
 from core.models import Field, FieldCropYear, Risk, Threat
 from core.serializers import (
     ClockSerializer,
@@ -51,13 +51,40 @@ ERR_404 = {404: ErrorSerializer}
 ERR_503 = {503: ErrorSerializer}  # the Clock row is missing
 
 
+def assistant_health() -> dict | None:
+    """The chat's state (assistant.status), or None if the assistant app can't tell."""
+    try:
+        from assistant.status import assistant_status
+
+        return assistant_status()
+    except Exception:
+        return None
+
+
 class HealthView(APIView):
-    """Reports whether the platform is up and can reach the database."""
+    """
+    Reports whether the platform is up and can reach the database, whether the demo date is set, and whether
+    the chat can answer (assistant.available: an LLM is configured; rag: the guides index is there).
+    """
 
     @extend_schema(
         responses=inline_serializer(
             name="Health",
-            fields={"status": serializers.CharField(), "database": serializers.BooleanField()},
+            fields={
+                "status": serializers.CharField(),
+                "database": serializers.BooleanField(),
+                "clock": serializers.BooleanField(help_text="The demo date is set."),
+                "assistant": inline_serializer(
+                    name="AssistantHealth",
+                    allow_null=True,
+                    fields={
+                        "available": serializers.BooleanField(),
+                        "llm": serializers.BooleanField(),
+                        "rag": serializers.BooleanField(),
+                        "reason": serializers.CharField(allow_null=True),
+                    },
+                ),
+            },
         )
     )
     def get(self, request: Request) -> Response:
@@ -67,10 +94,25 @@ class HealthView(APIView):
             database_ok = True
         except Exception:
             database_ok = False
+        clock_ok = False
+        if database_ok:
+            try:
+                clock.today()
+                clock_ok = True
+            except clock.ClockNotSetError:
+                pass
         return Response(
-            {"status": "ok" if database_ok else "degraded", "database": database_ok},
+            {"status": "ok" if database_ok else "degraded", "database": database_ok, "clock": clock_ok,
+             "assistant": assistant_health()},
             status=200 if database_ok else 503,
         )
+
+
+def api_not_found(request, *args, **kwargs):
+    """404 for any /api/ path no view matches, in the API's error shape."""
+    from django.http import JsonResponse
+
+    return JsonResponse({"detail": "Not found."}, status=404)
 
 
 def crop_ref(crop) -> dict:
@@ -88,7 +130,8 @@ def get_field(pk: int) -> Field:
 
 
 def clock_json(today: date) -> dict:
-    return ClockSerializer({"today": today, "forecast_days": clock.FORECAST_DAYS}).data
+    lo, hi = clock.date_limits()
+    return ClockSerializer({"today": today, "forecast_days": clock.FORECAST_DAYS, "min_date": lo, "max_date": hi}).data
 
 
 class ClockView(APIView):
@@ -102,6 +145,9 @@ class ClockView(APIView):
     def put(self, request: Request) -> Response:
         body = request.data if isinstance(request.data, dict) else {}
         new = parse_date(body.get("today"), "today")
+        lo, hi = clock.date_limits()
+        if lo is not None and not lo <= new <= hi:
+            raise InvalidDate(f"today must be between {lo.isoformat()} and {hi.isoformat()} (the days with weather)")
         clock.set_today(new)  # saves the row (creates it if missing) and calls engine.clock_moved
         return Response(clock_json(new))
 
@@ -215,8 +261,18 @@ class DayRisksView(APIView):
 
 
 def season_start(today: date) -> date:
-    """1 September of the year before the demo's year, so winter wheat sown in autumn is covered."""
-    return date(today.year - 1, 9, 1)
+    """
+    The default `from` of the season chart: 1 September before this season's harvest (covers winter wheat
+    sown in autumn). From September to December that is 1 January instead: maize and beet of the season just
+    ending are still in the field, and the new winter crop's autumn starts in September.
+    """
+    return date(today.year, 1, 1) if today.month >= 9 else date(today.year - 1, 9, 1)
+
+
+def earliest_from(today: date) -> date:
+    """`from` is never earlier than the start of the previous season (older risks belong to other demos)."""
+    year = today.year + 1 if today.month >= 9 else today.year
+    return date(year - 2, 9, 1)
 
 
 class FieldRiskSeriesView(APIView):
@@ -228,9 +284,9 @@ class FieldRiskSeriesView(APIView):
     )
     def get(self, request: Request, pk: int) -> Response:
         field = get_field(pk)
-        start, end = date_range(
-            request.query_params.get("from"), request.query_params.get("to"), season_start(clock.today())
-        )
+        today = clock.today()
+        start, end = date_range(request.query_params.get("from"), request.query_params.get("to"), season_start(today))
+        start = min(max(start, earliest_from(today)), end)  # reported back in "from"
         rows = (
             Risk.objects.filter(field=field, date__range=(start, end))
             .order_by("threat__code", "date")

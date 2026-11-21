@@ -18,13 +18,17 @@ from .models import Conversation, Message
 
 
 def message_json(m: Message) -> dict:
+    meta = m.meta or {}
+    assistant = m.role == Message.Role.ASSISTANT
     return {
         "id": m.id,
         "role": m.role,
         "text": m.text,
         "citations": m.citations if m.role == Message.Role.ASSISTANT else [],
         "focus_field_id": m.focus_field_id,
-        "updated_field_ids": (m.meta or {}).get("updated_field_ids", []),
+        "updated_field_ids": meta.get("updated_field_ids", []),
+        "chart": meta.get("chart") if assistant else None,  # Vega-Lite spec or null (docs/interfaces.md -> Chat)
+        "pending_action": meta.get("pending_action") if assistant else None,  # the window enables it on the last message only
         "created_at": m.created_at.isoformat().replace("+00:00", "Z"),
     }
 
@@ -40,6 +44,8 @@ MessageOut = inline_serializer("ChatMessage", fields={
     "citations": serializers.ListField(child=serializers.DictField()),
     "focus_field_id": serializers.IntegerField(allow_null=True),
     "updated_field_ids": serializers.ListField(child=serializers.IntegerField()),
+    "chart": serializers.DictField(allow_null=True, help_text="Vega-Lite v5 spec, or null."),
+    "pending_action": serializers.DictField(allow_null=True, help_text='{"type": "confirm_observation", "draft": {...}} or null.'),
     "created_at": serializers.DateTimeField()})
 
 
@@ -72,6 +78,16 @@ class ChatView(OpenAPIView):
                 return Response({"detail": f"conversation {d['conversation_id']} not found"},
                                 status=status.HTTP_404_NOT_FOUND)
         else:
+            conv = None
+        # no LLM configured: say so instead of storing a conversation whose answers are all errors
+        from .answer import default_llm
+        from .orchestrator.llm import LLMError
+        from .status import NO_LLM
+        try:
+            default_llm()
+        except LLMError:
+            return Response({"detail": NO_LLM}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        if conv is None:
             conv = Conversation.objects.create(title=Conversation.title_from(d["message"]))
         Message.objects.create(conversation=conv, role=Message.Role.USER, text=d["message"], field=field)
 

@@ -15,12 +15,6 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/ChatIn'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/ChatIn'
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/ChatIn'
         required: true
       security:
       - {}
@@ -98,12 +92,6 @@ paths:
       requestBody:
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/ClockUpdate'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/ClockUpdate'
-          multipart/form-data:
             schema:
               $ref: '#/components/schemas/ClockUpdate'
         required: true
@@ -268,7 +256,9 @@ paths:
   /api/health/:
     get:
       operationId: health_retrieve
-      description: Reports whether the platform is up and can reach the database.
+      description: |-
+        Reports whether the platform is up and can reach the database, whether the demo date is set, and whether
+        the chat can answer (assistant.available: an LLM is configured; rag: the guides index is there).
       tags:
       - health
       security:
@@ -333,6 +323,23 @@ paths:
           description: ''
 components:
   schemas:
+    AssistantHealth:
+      type: object
+      properties:
+        available:
+          type: boolean
+        llm:
+          type: boolean
+        rag:
+          type: boolean
+        reason:
+          type: string
+          nullable: true
+      required:
+      - available
+      - llm
+      - rag
+      - reason
     ChatIn:
       type: object
       properties:
@@ -368,14 +375,26 @@ components:
           type: array
           items:
             type: integer
+        chart:
+          type: object
+          additionalProperties: {}
+          nullable: true
+          description: Vega-Lite v5 spec, or null.
+        pending_action:
+          type: object
+          additionalProperties: {}
+          nullable: true
+          description: '{"type": "confirm_observation", "draft": {...}} or null.'
         created_at:
           type: string
           format: date-time
       required:
+      - chart
       - citations
       - created_at
       - focus_field_id
       - id
+      - pending_action
       - role
       - text
       - updated_field_ids
@@ -397,8 +416,20 @@ components:
           format: date
         forecast_days:
           type: integer
+        min_date:
+          type: string
+          format: date
+          nullable: true
+          description: 'First demo date PUT accepts (null: no limit).'
+        max_date:
+          type: string
+          format: date
+          nullable: true
+          description: 'Last demo date PUT accepts (null: no limit).'
       required:
       - forecast_days
+      - max_date
+      - min_date
       - today
     ClockUpdate:
       type: object
@@ -716,7 +747,16 @@ components:
           type: string
         database:
           type: boolean
+        clock:
+          type: boolean
+          description: The demo date is set.
+        assistant:
+          allOf:
+          - $ref: '#/components/schemas/AssistantHealth'
+          nullable: true
       required:
+      - assistant
+      - clock
       - database
       - status
     LatLon:

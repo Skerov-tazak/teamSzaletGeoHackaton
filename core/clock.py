@@ -5,6 +5,7 @@ The demo's current date. The demo replays a past season, so never use date.today
     today = clock.today()
     last_day = clock.horizon()      # today + FORECAST_DAYS: nothing later is ever shown
     clock.set_today(new_date)       # moves the demo date and recomputes the risks that change
+    clock.date_limits()             # (first, last) demo date that has weather, or (None, None)
 """
 
 from datetime import date, timedelta
@@ -32,6 +33,23 @@ def today() -> date:
 def horizon(as_of: date | None = None) -> date:
     """The last day anything may be shown for: today + FORECAST_DAYS (the end of the forecast)."""
     return (as_of or today()) + timedelta(days=FORECAST_DAYS)
+
+
+def date_limits() -> tuple[date | None, date | None]:
+    """
+    The demo dates that make sense: the days a forecast was issued on (the scenario's window, previous season
+    included), else the days with observed weather; (None, None) with no weather at all. PUT /api/clock/
+    refuses dates outside them (a far jump recomputes whole seasons; a date without weather has no risks).
+    """
+    from django.db.models import Max, Min
+
+    from core.models import WeatherDaily, WeatherForecastDaily
+
+    fc = WeatherForecastDaily.objects.aggregate(lo=Min("issued_on"), hi=Max("issued_on"))
+    if fc["lo"] is not None:
+        return fc["lo"], fc["hi"]
+    obs = WeatherDaily.objects.aggregate(lo=Min("date"), hi=Max("date"))
+    return obs["lo"], obs["hi"]
 
 
 def set_today(new: date) -> date:

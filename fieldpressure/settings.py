@@ -127,6 +127,9 @@ REST_FRAMEWORK = {
     # No logins, no tokens, no CSRF (docs/interfaces.md -> General rules). /admin/ keeps Django's own login.
     "DEFAULT_AUTHENTICATION_CLASSES": [],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
+    # JSON bodies only. Without CSRF, a form on any other site could POST urlencoded data here (e.g. "tak" to a
+    # pending observation); a JSON body needs a CORS preflight, which this API never grants.
+    "DEFAULT_PARSER_CLASSES": ["rest_framework.parsers.JSONParser"],
     # DRF's handler, plus 503 {"detail"} when the Clock row is missing (core.clock.ClockNotSetError).
     "EXCEPTION_HANDLER": "core.api_errors.exception_handler",
 }

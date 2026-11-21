@@ -26,9 +26,16 @@ TODAY = date(2024, 5, 15)
 
 class HealthEndpointTests(TestCase):
     def test_health_reports_database_ok(self):
-        response = self.client.get(reverse("health"))
+        from unittest import mock
+        status = {"available": False, "llm": False, "rag": False, "reason": "x"}
+        with mock.patch("assistant.status.assistant_status", return_value=status):
+            response = self.client.get(reverse("health"))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"status": "ok", "database": True})
+        self.assertEqual(response.json(), {"status": "ok", "database": True, "clock": False, "assistant": status})
+
+    def test_health_says_whether_the_clock_is_set(self):
+        Clock.objects.create(today=TODAY)
+        self.assertTrue(self.client.get(reverse("health")).json()["clock"])
 
 
 class ClockTests(TestCase):

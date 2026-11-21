@@ -96,12 +96,13 @@ class ClockApiTests(ApiTestCase):
         return self.client.put(reverse("clock"), body, content_type="application/json")
 
     def test_get(self):
-        self.assertEqual(self.get("clock").json(), {"today": "2024-05-15", "forecast_days": 7})
+        self.assertEqual(self.get("clock").json(),
+                         {"today": "2024-05-15", "forecast_days": 7, "min_date": None, "max_date": None})
 
     def test_put_updates_the_date_and_lets_the_engine_recompute(self):
         with mock.patch("engine.clock_moved") as clock_moved:
             response = self.put({"today": "2024-06-01"})
-        self.assertEqual(response.json(), {"today": "2024-06-01", "forecast_days": 7})
+        self.assertEqual(response.json(), {"today": "2024-06-01", "forecast_days": 7, "min_date": None, "max_date": None})
         self.assertEqual(clock.today(), date(2024, 6, 1))
         clock_moved.assert_called_once_with(TODAY, date(2024, 6, 1))
 
@@ -118,9 +119,37 @@ class ClockApiTests(ApiTestCase):
             self.assertEqual(self.put({"today": "2024-05-15"}).status_code, 200)
         clock_moved.assert_not_called()
 
-    def test_put_accepts_any_valid_date(self):
+    def test_put_accepts_any_valid_date_without_weather(self):
         with mock.patch("engine.clock_moved"):
             self.assertEqual(self.put({"today": "2031-01-01"}).json()["today"], "2031-01-01")
+
+    def test_put_stays_within_the_days_with_a_forecast(self):
+        from core.models import WeatherForecastDaily
+        for issued in (date(2023, 9, 1), date(2024, 12, 31)):
+            WeatherForecastDaily.objects.create(grid=self.grid, issued_on=issued, date=issued + timedelta(days=1))
+        self.assertEqual(self.get("clock").json()["min_date"], "2023-09-01")
+        self.assertEqual(self.get("clock").json()["max_date"], "2024-12-31")
+        with mock.patch("engine.clock_moved") as clock_moved:
+            self.assertDetail(self.put({"today": "0002-05-31"}), 400,
+                              "today must be between 2023-09-01 and 2024-12-31 (the days with weather)")
+            self.assertEqual(self.put({"today": "2024-12-31"}).status_code, 200)
+        clock_moved.assert_called_once()
+
+    def test_iso_weeks_and_basic_dates_are_not_dates(self):
+        for value in ("2024-W22-1", "20240601", "2024-06-01T00:00"):
+            with self.subTest(value=value):
+                self.assertDetail(self.get("risks", date=value), 400, "date must be YYYY-MM-DD")
+
+    def test_unknown_api_paths_answer_json(self):
+        for url in ("/api/fields/abc/", "/api/nothing-here/"):
+            with self.subTest(url=url):
+                self.assertDetail(self.client.get(url), 404, "Not found.")
+
+    def test_form_posts_are_refused(self):
+        """No CSRF on the API: a urlencoded body (what a form on another site sends) is refused."""
+        response = self.client.put(reverse("clock"), "today=2024-06-01", content_type="application/x-www-form-urlencoded")
+        self.assertEqual(response.status_code, 415)
+        self.assertEqual(clock.today(), TODAY)
 
     def test_put_rejects_an_invalid_body(self):
         for body in [{"today": "2024-6-1"}, {"today": "yesterday"}, {"today": 20240601}, {}, ["2024-06-01"]]:
@@ -340,8 +369,17 @@ class FieldRiskSeriesApiTests(ApiTestCase):
         self.assertEqual(data["to"], iso(HORIZON + timedelta(days=1)))
         self.assertEqual(data["threats"][0]["points"][-1]["date"], iso(TODAY + timedelta(days=8)))
 
+    def test_from_is_never_before_the_previous_season(self):
+        data = self.get("field-risks", self.field.id, **{"from": "0001-01-01"}).json()
+        self.assertEqual(data["from"], "2022-09-01")
+
+    def test_default_from_in_autumn_keeps_this_years_late_crops(self):
+        Clock(today=date(2024, 10, 15)).save()
+        self.assertEqual(self.get("field-risks", self.field.id).json()["from"], "2024-01-01")
+
     def test_bad_ranges_are_400(self):
         cases = [({"from": "2024-05-10", "to": "2024-05-01"}, "from is after to"),
+                 ({"to": "2023-01-01"}, "to is before the default from (2023-09-01)"),
                  ({"from": iso(HORIZON + timedelta(days=1))}, "from is after today + 7"),
                  ({"from": "2024-13-01"}, "from must be YYYY-MM-DD"),
                  ({"to": "soon"}, "to must be YYYY-MM-DD")]

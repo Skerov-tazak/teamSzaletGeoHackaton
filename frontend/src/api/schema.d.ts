@@ -43,7 +43,10 @@ export interface paths {
     get: operations["field_risks_day"];
   };
   "/api/health/": {
-    /** @description Reports whether the platform is up and can reach the database. */
+    /**
+     * @description Reports whether the platform is up and can reach the database, whether the demo date is set, and whether
+     * the chat can answer (assistant.available: an LLM is configured; rag: the guides index is there).
+     */
     get: operations["health_retrieve"];
   };
   "/api/risks/": {
@@ -60,6 +63,12 @@ export type webhooks = Record<string, never>;
 
 export interface components {
   schemas: {
+    AssistantHealth: {
+      available: boolean;
+      llm: boolean;
+      rag: boolean;
+      reason: string | null;
+    };
     ChatIn: {
       conversation_id?: number | null;
       message: string;
@@ -74,6 +83,14 @@ export interface components {
         }[];
       focus_field_id: number | null;
       updated_field_ids: number[];
+      /** @description Vega-Lite v5 spec, or null. */
+      chart: {
+        [key: string]: unknown;
+      } | null;
+      /** @description {"type": "confirm_observation", "draft": {...}} or null. */
+      pending_action: {
+        [key: string]: unknown;
+      } | null;
       /** Format: date-time */
       created_at: string;
     };
@@ -85,6 +102,16 @@ export interface components {
       /** Format: date */
       today: string;
       forecast_days: number;
+      /**
+       * Format: date
+       * @description First demo date PUT accepts (null: no limit).
+       */
+      min_date: string | null;
+      /**
+       * Format: date
+       * @description Last demo date PUT accepts (null: no limit).
+       */
+      max_date: string | null;
     };
     ClockUpdate: {
       /** Format: date */
@@ -229,6 +256,9 @@ export interface components {
     Health: {
       status: string;
       database: boolean;
+      /** @description The demo date is set. */
+      clock: boolean;
+      assistant: components["schemas"]["AssistantHealth"] | null;
     };
     LatLon: {
       /** Format: double */
@@ -332,8 +362,6 @@ export interface operations {
     requestBody: {
       content: {
         "application/json": components["schemas"]["ChatIn"];
-        "application/x-www-form-urlencoded": components["schemas"]["ChatIn"];
-        "multipart/form-data": components["schemas"]["ChatIn"];
       };
     };
     responses: {
@@ -387,8 +415,6 @@ export interface operations {
     requestBody: {
       content: {
         "application/json": components["schemas"]["ClockUpdate"];
-        "application/x-www-form-urlencoded": components["schemas"]["ClockUpdate"];
-        "multipart/form-data": components["schemas"]["ClockUpdate"];
       };
     };
     responses: {
@@ -502,7 +528,10 @@ export interface operations {
       };
     };
   };
-  /** @description Reports whether the platform is up and can reach the database. */
+  /**
+   * @description Reports whether the platform is up and can reach the database, whether the demo date is set, and whether
+   * the chat can answer (assistant.available: an LLM is configured; rag: the guides index is there).
+   */
   health_retrieve: {
     responses: {
       200: {

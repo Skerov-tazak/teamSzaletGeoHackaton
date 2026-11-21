@@ -10,6 +10,7 @@ after today + FORECAST_DAYS:
 Errors are 400 {"detail": "..."}, like every other API error.
 """
 
+import re
 from datetime import date
 
 from rest_framework import status
@@ -25,9 +26,10 @@ class InvalidDate(APIException):
 
 
 def parse_date(value, name: str) -> date:
-    """`YYYY-MM-DD` -> date, otherwise 400 {"detail": "<name> must be YYYY-MM-DD"}."""
+    """`YYYY-MM-DD` -> date, otherwise 400 {"detail": "<name> must be YYYY-MM-DD"}. Only that form: Python's
+    fromisoformat also takes ISO weeks ("2024-W22-1") and "20240601", which are not dates here."""
     try:
-        if not isinstance(value, str) or len(value) != 10:
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
             raise ValueError
         return date.fromisoformat(value)
     except ValueError:
@@ -60,5 +62,7 @@ def date_range(from_: str | None, to: str | None, default_from: date) -> tuple[d
     if start > last:
         raise _after_horizon("from")
     if start > end:
+        if from_ in (None, ""):
+            raise InvalidDate(f"to is before the default from ({start.isoformat()})")
         raise InvalidDate("from is after to")
     return start, end

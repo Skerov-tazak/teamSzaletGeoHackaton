@@ -35,6 +35,8 @@ class ErrorSerializer(serializers.Serializer):
 class ClockSerializer(serializers.Serializer):
     today = serializers.DateField()
     forecast_days = serializers.IntegerField()
+    min_date = serializers.DateField(allow_null=True, help_text="First demo date PUT accepts (null: no limit).")
+    max_date = serializers.DateField(allow_null=True, help_text="Last demo date PUT accepts (null: no limit).")
 
 
 class ClockUpdateSerializer(serializers.Serializer):
