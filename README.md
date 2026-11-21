@@ -33,7 +33,7 @@ Hackathon: [Field Under Pressure](https://geo-hackathon.g.location360.ag/), 20â€
 ```text
 fieldpressure/      Django project: settings, root URLs
 core/               platform: every farm data model, data import commands, API
-engine/             decision engine (Django app, no models of its own)
+engine/             decision engine (Django app; its only model is its own cache, RiskSnapshot)
 assistant/          AI assistant (Django app; owns only the chat tables)
 frontend/           dashboard page (Django template) + TypeScript
   src/              TypeScript sources, built into static/frontend/dist/
