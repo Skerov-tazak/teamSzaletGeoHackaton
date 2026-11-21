@@ -1,0 +1,84 @@
+{
+  "title": "Gospodarstwo bazowe (maj — stan wyjściowy)",
+  "description": "Trzy pola w woj. opolskim (2x pszenica ozima, 1x kukurydza) bez aktywnych ognisk chorób.",
+  "region": "Opolskie",
+  "window": {
+    "season": 2025,
+    "season_start": "2024-09-01",
+    "season_end": "2025-07-31",
+    "clock_today": "2025-05-15",
+    "include_previous_season": true
+  },
+  "fields": [
+    {
+      "name": "Pole Północne (Pszenica)",
+      "crop_code": 1110,
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [17.640, 50.365],
+            [17.648, 50.365],
+            [17.648, 50.370],
+            [17.640, 50.370],
+            [17.640, 50.365]
+          ]
+        ]
+      }
+    },
+    {
+      "name": "Pole Południowe (Pszenica)",
+      "crop_code": 1110,
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [17.652, 50.352],
+            [17.660, 50.352],
+            [17.660, 50.357],
+            [17.652, 50.357],
+            [17.652, 50.352]
+          ]
+        ]
+      }
+    },
+    {
+      "name": "Pole Zachodnie (Kukurydza)",
+      "crop_code": 1130,
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [17.628, 50.345],
+            [17.636, 50.345],
+            [17.636, 50.350],
+            [17.628, 50.350],
+            [17.628, 50.345]
+          ]
+        ]
+      }
+    }
+  ],
+  "observations": [
+    {
+      "kind": "field_fact",
+      "observed_on": "2024-10-02",
+      "field_name": "Pole Północne (Pszenica)",
+      "details": {
+        "sowing_date": "2024-09-28",
+        "tillage": "reduced"
+      },
+      "text": "Siew pszenicy ozimej 28 września, uprawa uproszczona."
+    },
+    {
+      "kind": "field_fact",
+      "observed_on": "2025-04-22",
+      "field_name": "Pole Zachodnie (Kukurydza)",
+      "details": {
+        "sowing_date": "2025-04-20",
+        "tillage": "plough"
+      },
+      "text": "Siew kukurydzy 20 kwietnia po orce zimowej."
+    }
+  ]
+}
