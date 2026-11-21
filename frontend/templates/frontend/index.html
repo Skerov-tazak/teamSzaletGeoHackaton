@@ -1,20 +1,24 @@
 {% load static %}
 <!doctype html>
-<html lang="en">
+<html lang="pl">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Field Under Pressure</title>
+  <link rel="stylesheet" href="{% static 'frontend/dist/main.css' %}">
   <link rel="stylesheet" href="{% static 'frontend/style.css' %}">
   <script type="module" src="{% static 'frontend/dist/main.js' %}"></script>
 </head>
 <body>
-  <header>
+  <header class="app-header">
     <h1>Field Under Pressure</h1>
-    <p id="platform-status">Checking platform…</p>
+    <div id="date-control" class="date-control" aria-label="Data demo"></div>
+    <p id="platform-status" class="platform-status" role="status">Sprawdzanie platformy…</p>
   </header>
-  <main>
-    <p>Skeleton is running. The chat and map windows come in the frontend step.</p>
+  <main id="app-main" class="app-main">
+    <section id="map" class="map-area" aria-label="Mapa pól"></section>
+    <aside id="chat" class="chat-area" aria-label="Asystent"></aside>
   </main>
+  <noscript>Ta strona potrzebuje JavaScriptu.</noscript>
 </body>
 </html>

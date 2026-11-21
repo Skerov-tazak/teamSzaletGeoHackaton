@@ -1,5 +1,7 @@
 from django.contrib import admin
 
+from core import clock
+
 from .models import (
     Clock,
     CropClass,
@@ -25,6 +27,11 @@ class ClockAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False  # the clock must always exist
+
+    def save_model(self, request, obj, form, change):
+        # like PUT /api/clock/: save and let the engine recompute the days that change (no signal)
+        clock.set_today(obj.today)
+        obj.pk = 1  # set_today saved its own instance; the admin's messages and log need the id
 
 
 @admin.register(WeatherGrid)

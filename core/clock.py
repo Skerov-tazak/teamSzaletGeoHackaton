@@ -3,9 +3,11 @@ The demo's current date. The demo replays a past season, so never use date.today
 
     from core import clock
     today = clock.today()
+    last_day = clock.horizon()      # today + FORECAST_DAYS: nothing later is ever shown
+    clock.set_today(new_date)       # moves the demo date and recomputes the risks that change
 """
 
-from datetime import date
+from datetime import date, timedelta
 
 # How many days ahead the forecast (and the "coming days" risks) reach.
 FORECAST_DAYS = 7
@@ -25,3 +27,30 @@ def today() -> date:
         raise ClockNotSetError(
             "The Clock row is missing. Set the demo date in /admin/ (Platform > Clock) or run the seed."
         ) from None
+
+
+def horizon(as_of: date | None = None) -> date:
+    """The last day anything may be shown for: today + FORECAST_DAYS (the end of the forecast)."""
+    return (as_of or today()) + timedelta(days=FORECAST_DAYS)
+
+
+def set_today(new: date) -> date:
+    """
+    Moves the demo date to `new` (creates the Clock row if it is missing) and lets the decision engine
+    recompute the days that change (engine.clock_moved). The engine has no signal on Clock, so every
+    date change goes through here: PUT /api/clock/ and the admin's clock page. Returns the old date
+    (None if there was no row).
+
+    Saving and recomputing happen in one transaction: if the engine fails, the date stays where it was.
+    """
+    from django.db import transaction
+
+    from core.models import Clock
+    from engine import clock_moved
+
+    with transaction.atomic():
+        old = Clock.objects.select_for_update().filter(pk=1).values_list("today", flat=True).first()
+        Clock(today=new).save()
+        if old is not None and old != new:
+            clock_moved(old, new)
+    return old

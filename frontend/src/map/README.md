@@ -38,6 +38,15 @@ The map draws itself inside `container` and talks to the rest of the page only t
 
 Risk scores are 0–1. "Season so far" is up to today; "coming days" are today + 1 … today + 7. The API never returns anything later ([why and how](../../../docs/interfaces.md#no-data-after-the-forecast)), so you don't need your own checks; to see later days, the demo date has to move.
 
+## What is built
+
+A first version, by Jan + Szymek, to the contract above (`index.ts`, `panel.ts`, `season-chart.ts`):
+
+- Leaflet with OpenStreetMap tiles and an Esri satellite layer (CARTO's tiles now need an API key), a legend of the three levels;
+- fields from `GET /api/fields/`, coloured by each field's highest `level` from `GET /api/risks/?date={ctx.clock.today}`;
+- a field panel inside the map: details, that day's threats with the "why" from explanation v1, and the season chart (`?to=` today + 7, default `from`; solid up to today, dashed after, 0.33 / 0.66 lines). Opening a threat shows it on the chart;
+- all four events; a `ResizeObserver` on the container calls `invalidateSize()`.
+
 ## Building
 
 - **Plain TypeScript, no framework.** Map libraries (Leaflet, MapLibre, …) are fine: install them with `npm install` in [`frontend/`](../../), and esbuild bundles them into `static/frontend/dist/main.js`.

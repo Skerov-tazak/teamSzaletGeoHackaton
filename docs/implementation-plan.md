@@ -5,8 +5,8 @@ Field Under Pressure · owners: Jan + Szymek (map: Kuba) · draft of 21 Nov 2026
 How to build what [interfaces.md](interfaces.md) agrees, starting from what exists
 ([frontend-status.md](frontend-status.md)). Part A is the platform API in `core`; Part B is the frontend, which
 reads only through that API. [Decisions](#decisions) records what is settled and what is still open;
-[Proposed chat contract](#proposed-chat-contract) is the text for interfaces.md once Ola's
-proposals are accepted.
+[Proposed chat contract](#proposed-chat-contract) was the text for interfaces.md; it is accepted and
+now lives there. [Implementation status](#implementation-status-21-nov) lists where the build differs.
 
 ## Starting point
 
@@ -230,14 +230,27 @@ without colours) and add colouring when A4 lands.
 - **8. Cut-offs:** 0.33 / 0.66, level names `low` / `medium` / `high`, the same for the engine, the assistant
   and the map.
 - **9a. Ola's proposal 5** (extra citation keys): accepted.
+- **9b. Ola's proposals 6 and 7** (`pending_action` and `chart`): accepted as the interface (Szymek, 21 Nov).
+  The contract is now in interfaces.md → Chat. The platform builds the chat window's side (Vega-Lite charts,
+  Zapisz / Anuluj) and does not touch the assistant: Ola's `message_json` adds the two keys to conform.
+- **10. `level` in `GET /api/risks/?date=`:** yes (Szymek, 21 Nov). Copied from `explanation.level`; rows
+  without one (the assistant's dev seed) get it from the score with the cut-offs.
 
-### Still open
+## Implementation status (21 Nov)
 
-- **9b. Ola's proposals 6 and 7** (`pending_action` and `chart` in the chat response; charts as Vega-Lite): the
-  contract they would add is written out [below](#proposed-chat-contract). Once accepted, it goes into
-  interfaces.md → Chat and the README, and Ola's `message_json` adds the two keys.
-- **10. `level` in `GET /api/risks/?date=`:** an addition to the agreed shape, so the map can colour by level
-  without recomputing it from the score. (Proposed: yes.)
+Parts A and B are built on `claude/frontend-backend-api-impl-241034`. Where the build differs from the text above:
+
+- **Moving the date (A1):** `feat/decision-engine` is merged and its engine no longer has a signal on `Clock`.
+  The platform calls `engine.clock_moved(old, new)` itself, through `core.clock.set_today()` (save and
+  recompute in one transaction), from `PUT /api/clock/` and from the admin's clock page. About 1.5 s per day
+  moved on the dev farm.
+- **Type generation (B0):** `openapi-typescript` **6.7** (no TypeScript dependency). Version 7 needs
+  TypeScript 5's compiler API, which the repo's TypeScript 7 no longer ships.
+- **Base map (B4):** CARTO's tiles now need an API key, so the map uses OpenStreetMap tiles with an Esri
+  satellite layer.
+- **Still open:** `assistant/views.py` sends neither `chart` nor `pending_action` yet (Ola); the explanation
+  texts are still English (Bartek); the end-to-end check on the real assistant needs
+  `sentence-transformers` installed (the assistant's guide search imports it).
 
 ## Proposed chat contract
 

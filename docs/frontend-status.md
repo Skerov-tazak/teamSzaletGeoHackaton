@@ -2,6 +2,8 @@
 
 Field Under Pressure · owners: Jan + Szymek · state on 21 Nov 2026, branch `feature-frontend`
 
+> **Superseded:** the pieces listed below as missing are now built; see [implementation-plan.md → Implementation status](implementation-plan.md#implementation-status-21-nov). Kept as the record of the starting point.
+
 What the agreed documentation says the frontend must do, and how much of it exists. "Agreed" means the
 documents as of 3e96862, before the unagreed frontend commits:
 
