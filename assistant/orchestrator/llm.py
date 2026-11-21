@@ -239,12 +239,18 @@ class FakeLLM:
 
 
 # ----------------------------------------------------------------------------- factory
+DEFAULT_BASE_URL = {"gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
+                    "groq": "https://api.groq.com/openai/v1"}
+DEFAULT_MODEL = {"groq": "openai/gpt-oss-120b"}  # Gemini model names change: pick one with `manage.py llm_models`
+
+
 def provider_configs() -> list[dict]:
+    from assistant.rag import config  # noqa: F401 - loads the repo .env
     out = []
-    for name in [p.strip().lower() for p in os.getenv("LLM_PROVIDERS", "gemini,groq").split(",") if p.strip()]:
+    for name in [p.strip().lower() for p in (os.getenv("LLM_PROVIDERS") or "gemini,groq").split(",") if p.strip()]:
         up = name.upper()
-        cfg = {"name": name, "base_url": os.getenv(f"{up}_BASE_URL", ""), "api_key": os.getenv(f"{up}_API_KEY", ""),
-               "model": os.getenv(f"{up}_MODEL", "")}
+        cfg = {"name": name, "base_url": os.getenv(f"{up}_BASE_URL") or DEFAULT_BASE_URL.get(name, ""),
+               "api_key": os.getenv(f"{up}_API_KEY", ""), "model": os.getenv(f"{up}_MODEL") or DEFAULT_MODEL.get(name, "")}
         cfg["configured"] = bool(cfg["base_url"] and cfg["api_key"])
         out.append(cfg)
     return out
@@ -252,14 +258,18 @@ def provider_configs() -> list[dict]:
 
 def get_llm(sleep: Callable[[float], None] = time.sleep) -> FallbackLLM:
     """Real LLM from .env (providers with a key and a model). Raises LLMError if none."""
-    from assistant.rag import config  # noqa: F401 - loads the repo .env
-    providers = []
+    providers, problems = [], []
     for c in provider_configs():
+        up = c["name"].upper()
         if c["configured"] and c["model"]:
             providers.append(OpenAICompatLLM(c["name"], c["base_url"], c["api_key"], c["model"]))
         elif c["configured"]:
-            log.warning("LLM provider %s has a key but no %s_MODEL; skipped (see: manage.py llm_models)",
-                        c["name"], c["name"].upper())
+            problems.append(f"{up}: jest klucz, brak {up}_MODEL (wybierz: python manage.py llm_models)")
+            log.warning("LLM provider %s has a key but no %s_MODEL; skipped", c["name"], up)
+        else:
+            problems.append(f"{up}: brak {up}_API_KEY" + ("" if c["base_url"] else f" i {up}_BASE_URL"))
+    if not providers:
+        raise LLMError("Brak skonfigurowanego dostawcy LLM. " + "; ".join(problems) + ".")
     return FallbackLLM(providers, sleep=sleep)
 
 
