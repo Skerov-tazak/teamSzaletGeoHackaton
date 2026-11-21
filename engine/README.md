@@ -151,6 +151,8 @@ Report(observed_on: date, kind: str, threat_code: str | None = None, severity: f
 | `engine_summary [--date D] [--json]` | Print the field ranking. |
 | `engine_check_data [--season Y]` | Check that every table / file the engine needs is loaded; lists what is missing per field. |
 | `engine_dev_seed` | **Development only**: demo farm + data. The platform's import replaces it. |
+| `engine_dev_seed --season 2024 --today 2024-06-15 --crop-from-map` | **Development only**: the demo farm of 2024, all seven crops, crop from the 2024 crop map (no satellite, no network), Polish field names. |
+| `engine_mock_api [--port 8001]` | **Development only**: the platform API's agreed endpoints and shapes from the database, plus the map's dev page (frontend/src/map/README.md). |
 
 ## When and how to run it
 

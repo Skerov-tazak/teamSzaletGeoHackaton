@@ -64,12 +64,13 @@ You need Python 3.11+ (the assistant's PDF library needs it; `.python-version` s
 3. **Settings:** `cp .env.example .env` (the defaults work as-is for local development).
 4. **Database:** `docker compose up -d` (starts Postgres and Qdrant, the assistant's vector store), then `python manage.py migrate`.
 5. **Admin user** (to browse data at `/admin/`): `python manage.py createsuperuser`.
-   Then set the demo date: run the server (step 7), open <http://localhost:8000/admin/> → Platform → Clocks → Add. Until a seed does this for you, anything that needs "today" raises `ClockNotSetError`.
+   Then set the demo date: run the server (step 7), open <http://localhost:8000/admin/> → Platform → Clocks → Add. Until a seed does this for you, anything that needs "today" raises `ClockNotSetError` (the API answers `503`). For frontend work, `python manage.py assistant_dev_seed` fills a synthetic farm (5 fields, threats, risks) and sets the date.
 6. **Frontend build:**
    ```bash
    cd frontend && npm install && npm run build && cd ..
    ```
-7. **Run:** `python manage.py runserver`, then open <http://localhost:8000>. The page should say "Platform OK".
+   The build checks that the committed API types are current, type-checks, and bundles into `frontend/static/frontend/dist/` (Leaflet for the map, marked + DOMPurify for chat answers, and `vega-embed` for chat charts in a separate chunk that loads only when a message has a chart).
+7. **Run:** `python manage.py runserver`, then open <http://localhost:8000>. The header should say "Platforma OK".
 8. **Assistant's guide index** (only if you work on or demo the chat): `python manage.py rag_ingest`. Takes ~4 min the first time (downloads the embedding model), then ~1 min. Details: [assistant/README_RAG.md](assistant/README_RAG.md).
 
 ## Day to day
@@ -82,6 +83,7 @@ You need Python 3.11+ (the assistant's PDF library needs it; `.python-version` s
 | Run the backend | `python manage.py runserver` |
 | Rebuild TypeScript on every save | `cd frontend && npm run watch` |
 | Type-check TypeScript | `cd frontend && npm run typecheck` |
+| After changing an API endpoint: regenerate the schema and the TypeScript types (commit both) | `python manage.py spectacular --file frontend/openapi.yml`, then `cd frontend && npm run api:types` |
 | Run tests | `python manage.py test` |
 
 Useful pages while the server runs:
