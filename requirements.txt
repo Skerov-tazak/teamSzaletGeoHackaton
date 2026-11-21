@@ -18,6 +18,12 @@ shapely>=2.0                 # field polygons -> grid cells / H3 cells
 openpyxl>=3.1                # reading ryzyka_zebrane.xlsx
 
 # --- Decision engine (Bartek) ---
+rasterio>=1.3                # cropland rasters, Sentinel-2 COG windows
+pystac-client>=0.8           # Earth Search (Sentinel-2 L2A) catalogue
+pyproj>=3.6
+scipy>=1.11
+scikit-learn>=1.4
+lightgbm>=4.0                # crop model
 
 # --- AI assistant (Ola) ---
 # RAG over the guides: assistant/rag (README_RAG.md). Needs Python 3.11+ (pymupdf 2.1).
