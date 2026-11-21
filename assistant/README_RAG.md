@@ -9,7 +9,7 @@ Moduł jest częścią aplikacji Django `assistant` (`assistant/rag/`), ale nie 
 Zależności to sekcja „AI assistant (Ola)” w `requirements.txt`. Wymaga Pythona 3.11+ (pymupdf 2.1); `.python-version` ustawia 3.12.
 
 ```bash
-uv venv && uv pip install -r requirements.txt           # albo: python3 -m venv .venv && pip install -r requirements.txt
+uv venv --seed && uv pip install -r requirements.txt    # albo: python3.12 -m venv .venv && pip install -r requirements.txt
 cp .env.example .env                                     # QDRANT_HOST / QDRANT_PORT w sekcji "Assistant"
 docker compose up -d                                     # db (Postgres) + qdrant (1.20.2, dashboard: http://localhost:6333/dashboard)
 uv run python manage.py rag_ingest                       # 5 PDF + Excel -> chunks -> embeddingi -> Qdrant + BM25

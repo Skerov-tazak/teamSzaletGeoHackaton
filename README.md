@@ -51,12 +51,15 @@ You need Python 3.11+ (the assistant's PDF library needs it; `.python-version` s
    git clone --recursive <this repo's URL>
    ```
    Already cloned without it? Run `git submodule update --init`.
-2. **Python environment:**
+2. **Python environment** (Python 3.11+; `.python-version` pins 3.12):
    ```bash
-   python3 -m venv .venv
+   uv venv --seed                     # with uv: Python 3.12, pip included
+   # or without uv: python3.12 -m venv .venv   (plain `python3` may be an older version)
    source .venv/bin/activate          # Windows: .venv\Scripts\activate
-   pip install -r requirements.txt
+   python --version                   # must say 3.11 or newer
+   pip install -r requirements.txt    # or: uv pip install -r requirements.txt
    ```
+   If `pip install` complains about `pymupdf==2.1` and the error mentions `Python.framework/Versions/3.10` (or any path outside `.venv`), you are using the system `pip`, not the venv's: the venv was created without pip (`uv venv` without `--seed`). Fix: `uv pip install pip`, then `hash -r`.
 3. **Settings:** `cp .env.example .env` (the defaults work as-is for local development).
 4. **Database:** `docker compose up -d` (starts Postgres and Qdrant, the assistant's vector store), then `python manage.py migrate`.
 5. **Admin user** (to browse data at `/admin/`): `python manage.py createsuperuser`.
