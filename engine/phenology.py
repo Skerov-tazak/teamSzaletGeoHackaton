@@ -33,27 +33,30 @@ STAGE_NAMES = [
 ]
 
 # (GDD, BBCH) breakpoints, linear in between.
-WHEAT_AUTUMN = [(0, 0), (120, 10), (250, 13), (420, 21), (600, 25)]  # base 0, since sowing
-# Heading and ripening re-calibrated to Sentinel-2 on 7 wheat field-seasons near Krapkowice (2024-25):
-# NDVI peak (heading, ~BBCH 55) at a median 1060 GDD, NDVI < 0.5 (ripening, ~BBCH 83) at a median 2135 GDD.
-WHEAT_SPRING = [(0, 25), (420, 30), (560, 32), (700, 37), (820, 39), (950, 49), (1010, 55), (1080, 59),
-                (1130, 61), (1250, 69), (1600, 75), (2000, 83), (2200, 85), (2400, 89), (2550, 92)]  # base 0, since 1 Jan
-MAIZE_TABLE = [(0, 0), (80, 9), (110, 10), (200, 13), (350, 16), (450, 30), (820, 51), (900, 59),
-               (950, 63), (1050, 69), (1200, 75), (1400, 85), (1600, 87), (1750, 89)]  # base 6, since sowing
-
+# Calibrated on observed phenology (engine/scripts/calibrate_phenology_dwd.py): DWD annual reporters in
+# eastern Germany (Saxony, Brandenburg, Saxony-Anhalt, Thuringia; ~250 station-seasons per phase,
+# seasons 2024-2026) with ERA5 temperatures. Wheat heading (BBCH 51) at a median 957 GDD agrees with the
+# earlier Sentinel-2 calibration near Krapkowice (NDVI peak ~ heading at 1060 GDD).
+WHEAT_AUTUMN = [(0, 0), (145, 10), (270, 13), (440, 21), (620, 25)]  # base 0, since sowing (emergence: DWD 144)
+WHEAT_SPRING = [(0, 25), (400, 30), (485, 31), (560, 32), (700, 37), (820, 39), (900, 49), (957, 51), (1010, 55),
+                (1080, 59), (1130, 61), (1250, 69), (1440, 75), (1650, 83), (1785, 87), (1950, 89), (2150, 92)]  # base 0, since 1 Jan
+MAIZE_TABLE = [(0, 0), (90, 9), (120, 10), (210, 13), (300, 16), (350, 30), (370, 31), (780, 51), (812, 53), (860, 59),
+               (909, 63), (1000, 69), (1199, 75), (1374, 85), (1499, 87), (1650, 89)]  # base 6, since sowing
 
 def _scaled(table, k):
     """The same stage curve reached with k x the degree days (k < 1 = an earlier crop)."""
     return [(g * k if b > 25 else g, b) for g, b in table]
 
 
-# Other crops: typical dates in Opolskie (team assumption, not calibrated to the satellite yet).
-BARLEY_SPRING = _scaled(WHEAT_SPRING, 0.82)         # heading ~ mid May, harvest early July
-OTHER_CEREALS_SPRING = _scaled(WHEAT_SPRING, 0.95)
-RAPESEED_AUTUMN = [(0, 0), (70, 9), (120, 10), (200, 12), (300, 14), (400, 16), (500, 18), (650, 19)]   # base 5, since sowing
-RAPESEED_SPRING = [(0, 19), (30, 30), (80, 50), (130, 60), (200, 65), (300, 69), (500, 75), (700, 79),
-                   (850, 83), (1000, 89), (1100, 92)]  # base 5, since 1 Jan: flowering late April - mid May, harvest mid July
-SUGAR_BEET_TABLE = [(0, 0), (110, 10), (200, 12), (300, 14), (500, 19), (700, 31), (900, 39), (1600, 45), (2200, 49)]  # base 3
+# Other crops, same DWD calibration (rye stands for "other cereals"; triticale and oats are a little later).
+BARLEY_SPRING = [(0, 25), (330, 30), (400, 31), (560, 37), (650, 49), (709, 51), (760, 55), (800, 59), (840, 61),
+                 (930, 69), (1100, 75), (1270, 83), (1377, 87), (1500, 89), (1650, 92)]  # winter barley, base 0
+OTHER_CEREALS_SPRING = [(0, 25), (360, 30), (430, 31), (620, 37), (780, 49), (830, 51), (880, 55), (950, 59), (1000, 61),
+                        (1120, 69), (1380, 75), (1600, 83), (1750, 87), (1900, 89), (2100, 92)]  # rye / triticale, base 0
+RAPESEED_AUTUMN = [(0, 0), (100, 9), (160, 10), (260, 12), (380, 14), (480, 16), (580, 18), (700, 19)]   # base 5, since sowing
+RAPESEED_SPRING = [(0, 19), (40, 30), (65, 31), (82, 51), (120, 57), (160, 60), (230, 65), (330, 69), (520, 75),
+                   (720, 79), (860, 83), (990, 89), (1100, 92)]  # base 5, since 1 Jan: flowering mid April, harvest early July
+SUGAR_BEET_TABLE = [(0, 0), (155, 10), (230, 12), (320, 14), (450, 19), (520, 31), (590, 39), (1300, 45), (2000, 49)]  # base 3
 POTATO_TABLE = [(0, 0), (130, 9), (200, 15), (300, 21), (450, 35), (550, 51), (650, 61), (750, 65), (850, 69),
                 (1000, 75), (1300, 91), (1500, 97)]  # base 6, since planting
 
