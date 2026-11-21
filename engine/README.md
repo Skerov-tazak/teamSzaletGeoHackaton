@@ -1,6 +1,6 @@
 # Decision engine
 
-**Owner:** Bartek · version 0.5 · history and findings: [CHANGELOG.md](CHANGELOG.md)
+**Owner:** Bartek · version 0.5 · data checklist: `python manage.py engine_check_data` · history and findings: [CHANGELOG.md](CHANGELOG.md)
 
 The engine turns each field's data into a **risk per threat and day, each with an explanation of why**, and writes them to the `Risk` table. The map and the assistant only read those rows; they never compute risk themselves.
 
@@ -11,7 +11,7 @@ It is a **rule-based (expert) system** built from the official guides (metodyki 
 1. [Quick start](#quick-start)
 2. [Interface](#interface)
 3. [When and how to run it](#when-and-how-to-run-it)
-4. [What data it needs](#what-data-it-needs)
+4. [Data to load](#data-to-load)
 5. [What it writes: Risk and the explanation](#what-it-writes-risk-and-the-explanation)
 6. [How it works](#how-it-works)
 7. [Threats](#threats)
@@ -21,7 +21,7 @@ It is a **rule-based (expert) system** built from the official guides (metodyki 
 ## Quick start
 
 ```bash
-# prerequisites: database migrated, Clock set, fields + weather + forecast + soil + crop history imported
+# prerequisites: the data in "Data to load" (check: python manage.py engine_check_data)
 python manage.py engine_load_threats                 # Threat rows for every rule (upsert by code)
 python manage.py engine_fetch_ndvi --season 2025     # optional: satellite curves per field (needs network)
 python manage.py predict                             # all fields, 1 September .. today + 7
@@ -116,6 +116,7 @@ Report(observed_on: date, kind: str, threat_code: str | None = None, severity: f
 | `engine_load_threats` | Create / update the `Threat` rows of all 25 rules (by `code`; other rows untouched). |
 | `engine_fetch_ndvi [--season Y] [--fields ...]` | Download and cache each field's Sentinel-2 NDVI series (network). |
 | `engine_summary [--date D] [--json]` | Print the field ranking. |
+| `engine_check_data [--season Y]` | Check that every table / file the engine needs is loaded; lists what is missing per field. |
 | `engine_dev_seed` | **Development only**: demo farm + data. The platform's import replaces it. |
 
 ## When and how to run it
@@ -137,39 +138,93 @@ Report(observed_on: date, kind: str, threat_code: str | None = None, severity: f
 
 ```bash
 python manage.py migrate
-# platform import: CropClass, WeatherGrid, Field (+ weather_grid, h3_cells, crop), FieldCropYear, SoilCell,
-#                  WeatherDaily, WeatherHourly, WeatherForecastDaily, Clock
+# platform import (exact spec: "Data to load"): CropClass, WeatherGrid, Field, FieldCropYear, SoilCell,
+#                  WeatherDaily (+ IMERG), WeatherHourly (+ IMERG), WeatherForecastDaily, Clock
 python manage.py engine_load_threats            # or the platform's Threat fixture with the same codes
 python manage.py engine_fetch_ndvi --season 2024
 python manage.py engine_fetch_ndvi --season 2025   # both optional (network)
+python manage.py engine_check_data              # must end with "Everything the engine requires is present."
 python manage.py predict --start 2024-01-15 --end 2024-08-31   # last season first (carry-over)
 python manage.py predict --start 2024-09-01 --end 2025-10-31   # this season, including the maize harvest
 ```
 
 Last season goes first because this season reads last season's risks: a pathogen that peaked on the field carries over in the residue.
 
-## What data it needs
+## Data to load
 
-Read through the Django ORM and the platform helpers only (`.observed(as_of=...)`, `.current(as_of=...)`, `field.soil_cells()`, `field.crop_years`).
+Everything below must be in place **before** `predict()` runs. Check it with:
 
-| Data | Table / source | Columns used | Needed for |
-|---|---|---|---|
-| Today | `Clock` | `today` | default range, forecast confidence |
-| Fields | `Field` | `crop`, `weather_grid`, `h3_cells`, `geometry`, `centroid_lat/lon` | everything; geometry for the satellite and spread between fields |
-| Crop history | `FieldCropYear` | `year`, `crop_class`, `share` | previous crop, maize years in a row, last season's crop |
-| Daily weather | `WeatherDaily` | `avg/min/max_temperature`, `avg_relative_humidity`, `total_precipitation` **or** `imerg_total_precipitation`, `eto`, `avg_wind_speed`, `avg/min_soil_temperature_level_1`, `avg_soil_moisture_level_1`, `avg_snow_depth` | growth stage, soil / snow / flood rules, drought, pests |
-| Hourly weather | `WeatherHourly` | `temperature`, `relative_humidity`, `precipitation` **or** `imerg_precipitation` | infection hours (fallback: estimated from daily values, lower confidence) |
-| Forecast | `WeatherForecastDaily` (`.current(as_of=day)`) | `max/min_temperature`, `total_precipitation`, `avg_wind_speed`, `avg_relative_humidity` | spraying window, harvest dry days |
-| Soil | `SoilCell` via `field.soil_cells()` | `clay`, `sand`, `ph` (fractions or %, both accepted) | heavy soil → waterlogging |
-| Threats | `Threat` | `code` (must match `engine/catalog.py`) | which rules run for which crop |
-| Farmer reports | `Observation` (**planned**, columns [proposed below](#open-items-for-other-components)) | read only through `engine/observations.py` | report effects |
-| Earlier risks | `Risk` (last season) | `score` | carry-over |
-| Satellite (optional) | `DATA_DIR/satellite/fields/field<id>_<polygon hash>_s<season>.parquet` | NDVI per scene | stage calibration, crop check |
-| Crop model (optional) | `DATA_DIR/models/crop_lgbm.txt` | — | crop check |
+```bash
+python manage.py engine_check_data        # per field: OK / MISSING (required) / OPTIONAL; exit code 1 if something required is missing
+```
 
-Everything optional degrades gracefully: without the satellite cache the stage comes from degree days only; without hourly weather infection hours are estimated from daily values; without reports nothing changes. **No network is needed at run time.**
+The engine reads only through the Django ORM and the platform helpers (`.observed(as_of=...)`, `.current(as_of=...)`, `field.soil_cells()`, `field.crop_years`); it never reads the raw files itself, except the two `DATA_DIR` files at the end.
 
-Units are the dataset's (wind km/h, RH %, radiation MJ/m²); the engine converts where a guide uses another unit (wind 4 m/s = 14.4 km/h).
+### Which rows: scope and dates
+
+- **Cells:** weather only for the grid cells the fields point to (`Field.weather_grid`), soil only for the fields' H3 cells (`Field.h3_cells`). One weather cell usually serves the whole farm.
+- **Dates** (season = harvest year; wheat 1 Sep – 31 Aug, maize to 31 Dec):
+
+| Data | From | To |
+|---|---|---|
+| `WeatherDaily`, `WeatherHourly` | **45 days before the season start** (trailing windows); for the demo season 2025: **2024-07-18** | the last day you compute: for a precomputed demo season **2025-10-31** (maize harvest); live: today |
+| same, previous season (carry-over) | 2023-07-18 | 2024-08-31 |
+| `WeatherForecastDaily` | issued on **every day** from the season start | issued on the last computed day (each issue covers +1 … +7) |
+| `FieldCropYear` | at least the previous season (2024 for season 2025); ideally the 5 previous years (2020–2024) | |
+
+### Tables, sources and columns
+
+**Required** = no risks (or wrong risks) without it. Source paths are as in the organisers' package (`DATA_DIR/raw/...`).
+
+| Table | Required | Rows | Columns the engine reads (format) | Source file → how |
+|---|---|---|---|---|
+| `Clock` | **yes** | 1 | `today` (date) | set by the seed: the demo date, e.g. 2025-06-15 |
+| `CropClass` | **yes** | all 21 legend codes (at least every code in `FieldCropYear`) | `code`, `name` | cropland legend (`data/cropland.md`): 0 No cropland, 1110 Wheat, 1120 Barley, 1130 Maize, … |
+| `Threat` | **yes** | 25 | `code` = the codes in [Threats](#threats), `crop` | `python manage.py engine_load_threats` (or a fixture with **the same codes**) |
+| `WeatherGrid` | **yes** | the fields' cells | `grid_id`, `lat`, `lon` (floats) | `weather_data/weather_grids.zip` → `weather_grids.parquet` (`grid_id`, `lat`, `lon` are **decimals → cast to float**, `l1_name` = voivodeship) |
+| `Field` | **yes** | the farm's fields | `geometry` (GeoJSON Polygon/MultiPolygon, EPSG:4326, **[lon, lat]**, non-empty), `centroid_lat/lon`, `area_ha` (EPSG:2180), `weather_grid` (**nearest grid point to the centroid**), `h3_cells` (**H3 level 10 cells whose centre is inside the polygon** — `h3.geo_to_cells(polygon, 10)`; the centroid's cell if none), `crop` (**this season's crop**: 1110 or 1130 get risks, other codes get none) | polygons drawn by us; crop from the farmer or the crop model (`field_day()["crop_check"]`) |
+| `FieldCropYear` | **yes** | per field × year × class | `year`, `crop_class`, `share` (0–1, shares of a year sum to 1) | `cropland/cropland_pl_4326_<year>.zip` (48 GeoTIFF tiles, EPSG:4326, uint16 codes): pixels of each class inside the polygon ÷ all pixels. **2021 is a copy of 2022** in the package — store it but expect it to be wrong |
+| `WeatherDaily` | **yes** | per cell × day | `avg_temperature`, `min_temperature`, `max_temperature` (°C), `avg_relative_humidity` (%), `eto` (mm/day), `avg_wind_speed` (km/h), `avg_soil_temperature_level_1`, `min_soil_temperature_level_1` (°C), `avg_soil_moisture_level_1` (m³/m³, 0–1), `avg_snow_depth` (mm w.e.), **precipitation: `total_precipitation` or `imerg_total_precipitation`** (mm/day) | `weather_data/daily/<year>/weather_daily_<year>_<Region>.zip` (same column names; **no precipitation in it**) + `weather_data/imerg_precipitation_daily.zip` → `daily/<year>/precip_daily_<year>_<Region>.zip` (nested zip) → `total_precipitation` **stored as `imerg_total_precipitation`**, joined on `grid_id` + `date` |
+| `WeatherHourly` | recommended | per cell × hour | `utc_time` (aware, UTC), `date` (local Europe/Warsaw date), `temperature` (°C), `relative_humidity` (%), **`precipitation` or `imerg_precipitation`** (mm/h) | `weather_data/hourly/<year>/weather_hourly_<year>_<Region>.zip` (`utc_time` is naive UTC → make aware; drop `local_time`; year files **overlap by one hour** at New Year → ignore duplicates) + `imerg_precipitation_hourly.zip` → `hourly/<year>/precip_hourly_<year>_<Region>.zip` → `precipitation` stored as `imerg_precipitation`, joined on `grid_id` + `utc_time`. Without it infection hours are estimated from daily values (confidence × 0.7) |
+| `WeatherForecastDaily` | **yes** (without it: no spraying window, no harvest dry days) | per cell × issue day × 7 | `max_temperature`, `min_temperature`, `avg_wind_speed`, `avg_relative_humidity`, `total_precipitation` | demo: for every day D copy `WeatherDaily` of D+1 … D+7 with `issued_on = D` (all daily columns except IMERG). Live: a real forecast |
+| `SoilCell` | optional | the fields' H3 cells | `clay`, `sand` (fraction 0–1 **or** %; both accepted), `ph` | `soil_isric_250_v2/soil_<Region>_isric_250_v2.zip` → parquet keyed by `h3_index_10`; rename `soilTexture` → `soil_texture`; `BAND_om`/`BAND_pH`/`BAND_cec` are **text** (`low`/`moderate`/`high`) while the model columns are floats — leave them empty or change the model. Used only for the heavy-soil multiplier |
+| `Observation` | optional (planned) | farmer reports | see [below](#observation-rows) | written by the assistant's tool |
+| `Risk` | — | written by `predict()` | — | last season's rows are read back for carry-over, so compute the previous season first |
+
+`<Region>` in file names is the voivodeship without Polish letters (`Opolskie`, `Dolnoslaskie`, `Slaskie`; some packages spell `Łódzkie` as `odzkie` and `Małopolskie` as `Maopolskie`).
+
+### Observation rows
+
+Proposed table (Jan + Szymek: schema; Ola: writes). The engine reads it only through `engine/observations.py`, so a renamed column is a one-line change there.
+
+| Column | Type | Content |
+|---|---|---|
+| `field` | FK Field, null | the field; null = the whole farm / "nearby" |
+| `observed_on` | date | the day the farmer saw it (not the day they wrote) |
+| `recorded_at` | datetime | when it was stored |
+| `kind` | text | `symptoms`, `absence`, `neighbour`, `treatment`, `field_fact`, `event` |
+| `threat_code` | text, null | e.g. `wheat.brown_rust`; null = all threats (`absence`) / all fungal (`treatment`) |
+| `severity` | float 0–1, null | `symptoms`: how bad (the chat may map low/medium/high → 0.3/0.6/0.9) |
+| `distance_m` | float, null | `neighbour`: distance to the reported case |
+| `details` | JSON | `field_fact`: `{"sowing_date": "2024-09-25"}`, `{"tillage": "reduced"}` or `"plough"`, `{"resistant_to": ["wheat.brown_rust"]}`; `event`: `{"type": "hail" \| "lodging" \| "flood"}` |
+| `text` | text | the farmer's own words (shown in the explanation) |
+
+After storing a row: `predict(field_ids=[field.id], start=observed_on)`.
+
+### Files in `DATA_DIR` (optional, not in git)
+
+`DATA_DIR` is set in `.env` (default `../field-under-pressure-data`).
+
+| File | Used for | How to produce |
+|---|---|---|
+| `satellite/fields/field<id>_<polygon hash>_s<season>.parquet` (columns `date`, `ndvi`, `ndvi_p25`, `ndvi_p75`, `clear_share`, `pixels`) | growth-stage calibration, crop check | `python manage.py engine_fetch_ndvi --season 2025` (and `--season 2024`) after the fields exist; needs internet (Earth Search, no account). A new polygon gets a new hash, so re-run after redrawing a field |
+| `models/crop_lgbm.txt` + `models/crop_model.json` (≈ 15 MB) | crop check | copy from Bartek, or train: put the organisers' zips in `DATA_DIR/raw/` (`cropland/`, `weather_data/daily/<year>/`), then `python engine/scripts/clip_cropland.py DATA_DIR/raw/cropland DATA_DIR/cropland`, `python engine/scripts/build_crop_samples.py DATA_DIR` (internet), `python -m engine.cropmodel train DATA_DIR`; also needs `DATA_DIR/weather/weather_grids.parquet` |
+
+Without them the engine still runs: stages from degree days only, no crop check.
+
+**The dev seed** (`engine_dev_seed`, development only) reads: `DATA_DIR/cropland/cropland_<year>.tif` (from `clip_cropland.py`), `DATA_DIR/weather/weather_grids.parquet`, `DATA_DIR/raw/weather_data/{daily,hourly}/<year>/*.zip`, `DATA_DIR/raw/weather_data/imerg_precipitation_{daily,hourly}.zip`, `DATA_DIR/soil/<Region>_isric_250_v2.parquet`.
+
+Units stay the dataset's (wind km/h, RH %, radiation MJ/m²); the engine converts where a guide uses another unit (wind 4 m/s = 14.4 km/h).
 
 ## What it writes: Risk and the explanation
 
@@ -322,7 +377,7 @@ Main sources: metodyka PSZENICA (Tabela 25–33, 42, rozdz. 13), Metodyka kukury
 | Item | Who | Engine side |
 |---|---|---|
 | **API endpoints for risks** (`/api/risks/?date=`, `/api/fields/{id}/risks/`, `/api/fields/{id}/risks/{date}/`), optionally `field_day` / `farm_ranking` | Jan + Szymek | ready: `Risk` rows, `engine.summary` |
-| **`Observation` table** — proposed columns: `field` (FK, null = whole farm), `observed_on` (date), `recorded_at`, `kind`, `threat_code` (null), `severity` (0–1, null), `distance_m` (null), `details` (JSON), `text` | Jan + Szymek (schema), Ola (writes) | ready: read only through `observations.load_all()` |
+| **`Observation` table** — columns and values in [Observation rows](#observation-rows) | Jan + Szymek (schema), Ola (writes) | ready: read only through `observations.load_all()` |
 | Assistant tools: record a report → `predict(field_ids=[...], start=observed_on)`; "what if" → `what_if()`; "which field first" → `farm_ranking()` | Ola | ready |
 | Map: colour by `level` (cut-offs 0.3 / 0.6), "why" panel from `summary` + `drivers`, crop check from `field_day()["crop_check"]` | Kuba | ready |
 | Threat codes: use `engine_load_threats`, or a fixture with the same codes | Jan + Szymek | ready |
