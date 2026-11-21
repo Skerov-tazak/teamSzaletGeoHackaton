@@ -97,16 +97,6 @@ body {
   gap: 8px;
 }
 
-#platform-status {
-  font-size: 12px;
-  margin: 0 6px 0 0;
-  color: var(--muted);
-  white-space: nowrap;
-}
-
-#platform-status[data-state="ok"] { color: var(--accent); }
-#platform-status[data-state="error"] { color: var(--danger); }
-
 .pill {
   border: 1px solid var(--line);
   background: var(--surface);

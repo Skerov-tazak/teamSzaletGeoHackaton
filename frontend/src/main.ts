@@ -19,19 +19,6 @@ import { initAccount } from "./ui/account-dialog";
 import { LayersPanel, showClockNote } from "./ui/layers";
 import { byId } from "./ui/dom";
 
-async function showPlatformStatus(): Promise<void> {
-  const element = byId("platform-status");
-  element.hidden = false;
-  try {
-    const health = await api.health();
-    element.textContent = health.database ? "Platforma OK" : "Baza niedostępna";
-    element.dataset.state = health.database ? "ok" : "error";
-  } catch {
-    element.textContent = "Brak API";
-    element.dataset.state = "error";
-  }
-}
-
 async function start(): Promise<void> {
   const events = new EventBus();
   const shell = new ShellBus();
@@ -85,8 +72,6 @@ async function start(): Promise<void> {
   ctx.clock = platformClock;
   map.setClock(platformClock);
   showClockNote(platformClock.today, platformClock.forecastDays);
-
-  void showPlatformStatus();
 }
 
 void start();
