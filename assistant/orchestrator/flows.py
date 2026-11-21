@@ -128,7 +128,7 @@ def field_question(route: Route, question: str, history, llm: LLM, conv_id=None)
     text, meta = ask_llm(llm, route.type, lines, sources, question, history, instructions, conversation_id=conv_id)
     meta["field_id"], meta["field_choice"] = field_id, how
     return FlowResult(ensure_referral(text, question), sources=sources, risk_citations=risk_cits,
-                      focus_field_id=field_id if how != "selected" else None, meta=meta)
+                      focus_field_id=field_id if how not in ("selected", "conversation") else None, meta=meta)
 
 
 # ----------------------------------------------------------------------------- farm overview
@@ -155,9 +155,12 @@ def farm_summary(route: Route, question: str, history, llm: LLM, conv_id=None) -
     sources, err = ctx.guide_sources([(ctx.threat_query(t, c), c, 2) for t, c in threats], budget=1600, max_n=4)
     if err:
         lines.append(err)
-    instructions = ("Wymień pola od najpilniejszego. Przy każdym: zagrożenie, powód z silnika i JEDNO konkretne "
-                    "działanie (np. lustracja, metoda niechemiczna), z cytatem metodyki, jeśli pasuje.")
+    instructions = ("Omów TYLKO pola z listy „Najpilniejsze pary”, od najpilniejszego. Przy każdym: zagrożenie, powód "
+                    "z silnika i JEDNO konkretne działanie (np. lustracja, metoda niechemiczna), z cytatem metodyki, jeśli "
+                    "pasuje. Pozostałe pola wspomnij jednym zdaniem na końcu (bez wymyślania powodów).")
     text, meta = ask_llm(llm, route.type, lines, sources, question, history, instructions, conversation_id=conv_id)
+    if picked:  # a follow-up ("co mam zrobić?") continues with the most urgent field
+        meta["field_id"] = picked[0]["field_id"]
     return FlowResult(text, sources=sources, risk_citations=[p["citation"] for p in picked], meta=meta)
 
 
