@@ -296,8 +296,21 @@ def _fold(s: str) -> str:
     return re.sub(r"[^a-z0-9 ]+", " ", "".join(ch for ch in s if not unicodedata.combining(ch))).strip()
 
 
-def _stem5(s: str) -> str:
-    return " ".join(w[:5] for w in s.split())
+def _prefix_cover(q: str, name: str) -> float:
+    """% of query words that match a name word by prefix (3 letters for short words, 4 otherwise).
+    Catches Polish case endings that change early letters: rdzy/rdza, brunatnej/brunatna."""
+    qw = [w for w in q.split() if len(w) >= 3]
+    nw = name.split()
+    if not qw:
+        return 0.0
+    def pre(w):
+        return w[:3] if len(w) <= 5 else w[:4]
+    hit = sum(any(n.startswith(pre(w)) for n in nw) for w in qw)
+    return 100.0 * hit / len(qw)
+
+
+def _stem5(s: str, n: int = 5) -> str:
+    return " ".join(w[:n] for w in s.split())
 
 
 def get_risk_conditions(crop: str, threat: str | None = None, min_score: float = 70) -> list[dict]:
@@ -315,7 +328,8 @@ def get_risk_conditions(crop: str, threat: str | None = None, min_score: float =
         name = _fold(re.sub(r"\(.*?\)", "", r["threat"]))
         # token_set handles extra words ("septorioza paskowana liści pszenicy");
         # partial_ratio on 5-char prefixes handles inflection ("septoriozy paskowanej")
-        sc = max(fuzz.token_set_ratio(q, name), fuzz.token_set_ratio(_stem5(q), _stem5(name)))
+        sc = max(fuzz.token_set_ratio(q, name), fuzz.token_set_ratio(_stem5(q), _stem5(name)),
+                 _prefix_cover(q, name))
         if sc >= min_score:
             scored.append((sc, r))
     scored.sort(key=lambda x: -x[0])

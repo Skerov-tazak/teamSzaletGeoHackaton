@@ -101,13 +101,13 @@ def _risk(threat, weather: list[dict], day_idx: int) -> tuple[float, dict]:
         temp_fit = 1.0 if tmin <= t <= tmax else max(0.0, 1 - min(abs(t - tmin), abs(t - tmax)) / 6)
         thr = f"{tmin:g}–{tmax:g} °C"
     else:
-        temp_fit = max(0.0, min(1.0, (t - 8) / 12))
-        thr = "ciepło"
+        temp_fit = 0.6 + 0.4 * max(0.0, min(1.0, (t - 8) / 10))  # no range in the source: mild effect
+        thr = "brak zakresu w źródle"
     if threat.category == "pest":
-        score = 0.75 * temp_fit + 0.25 * (1 - min(rain3, 20) / 20)
+        score = 0.55 * temp_fit * max(0.0, min(1.0, (t - 10) / 10)) + 0.15 * (1 - min(rain3, 20) / 20)
     else:
-        wet = 0.6 * min(rh3, 100) / 100 + 0.4 * min(rain3, 15) / 15
-        score = temp_fit * (0.25 + 0.75 * wet)
+        wet = 0.6 * max(0.0, min(1.0, (rh3 - 60) / 35)) + 0.4 * min(rain3, 20) / 20
+        score = temp_fit * (0.08 + 0.95 * wet)
     score = round(max(0.0, min(1.0, score)), 3)
     factors = [
         {"variable": "avg_temperature", "value": t, "unit": "°C", "threshold": thr},
@@ -122,10 +122,14 @@ def _risk(threat, weather: list[dict], day_idx: int) -> tuple[float, dict]:
 
 def _threat_rows(crop_sheet: str) -> list[dict]:
     from assistant.rag import config
-    if not config.RISK_JSON.exists():
-        from assistant.rag import excel_parse
-        excel_parse.run()
-    rows = json.loads(config.RISK_JSON.read_text())
+    if config.RISK_JSON.exists():
+        rows = json.loads(config.RISK_JSON.read_text())
+    else:  # parse in memory (no side effects on the RAG index files)
+        import openpyxl
+
+        from assistant.rag.excel_parse import parse_sheet
+        wb = openpyxl.load_workbook(config.EXCEL_FILE, data_only=True)
+        rows = [r for ws in wb.worksheets for r in parse_sheet(ws)]
     return [r for r in rows if r["kind"] == "row" and r["crop"] == crop_sheet
             and r["threat_type"] in ("choroba", "szkodnik") and "," not in r["threat"]]
 
