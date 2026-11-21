@@ -88,6 +88,40 @@ class MockApiShapeTests(EngineTestBase):
         self.assertEqual(scores, sorted(scores, reverse=True))
         self.assertEqual(call(M.field_day, str(self.wheat.id), "2025-06-23")[0], 400)
 
+    def test_threats_ordered_by_crop_then_code(self):
+        _, rows = call(M.threats)
+        keys = [(r["crop"]["code"], r["code"]) for r in rows]
+        self.assertEqual(keys, sorted(keys))
+
+    def test_crop_history_and_texture_majority(self):
+        from core.models import CropClass, FieldCropYear
+        FieldCropYear.objects.create(field=self.wheat, year=2023, crop_class_id=1130, share=0.3)
+        FieldCropYear.objects.create(field=self.wheat, year=2023, crop_class_id=1110, share=0.7)
+        cells = ["8a1e3a5a1d07fff", "8a1e3a5a1d0ffff", "8a1e3a5a1d17fff"]
+        for c, tex in zip(cells, ("Loam", "Silt Loam", "Silt Loam")):
+            SoilCell.objects.create(h3_index_10=c, ph=6.5, soil_texture=tex)
+        self.wheat.h3_cells = cells
+        self.wheat.save()
+        _, d = call(M.field_detail, str(self.wheat.id))
+        self.assertEqual([y["year"] for y in d["crop_history"]], sorted(y["year"] for y in d["crop_history"]))
+        y23 = next(y for y in d["crop_history"] if y["year"] == 2023)
+        self.assertEqual([c["share"] for c in y23["classes"]], [0.7, 0.3])         # by share, descending
+        self.assertEqual(d["soil"]["soil_texture"], "Silt Loam")                    # most common class
+
+    def test_strict_dates(self):
+        self.assertEqual(call(M.risks_day, q={"date": "20250615"})[0], 400)
+        self.assertEqual(call(M.field_day, str(self.wheat.id), "2025-W24-6")[0], 400)
+
+    def test_moving_the_clock_moves_the_limit(self):
+        from core.models import Clock
+        self.assertEqual(call(M.risks_day, q={"date": "2025-06-23"})[0], 400)
+        c = Clock.objects.get()
+        c.today = date(2025, 6, 16)
+        c.save()
+        self.assertEqual(call(M.risks_day, q={"date": "2025-06-23"})[0], 200)       # now today + 7
+        c.today = TODAY
+        c.save()
+
     def test_put_clock_recomputes_the_window(self):
         before = Risk.objects.filter(date=TODAY + timedelta(days=3)).first()
         self.assertEqual(before.explanation["forecast_lead_days"], 3)
@@ -101,3 +135,38 @@ class MockApiShapeTests(EngineTestBase):
 class MockApiNoClockTests(TestCase):
     def test_missing_clock_is_503(self):
         self.assertEqual(call(M.clock_get)[0], 503)
+
+
+class MockApiHttpTests(TestCase):
+    """The HTTP layer: JSON errors for unknown routes, wrong methods and bad bodies (no database needed)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        import threading
+        from http.server import HTTPServer
+        cls.server = HTTPServer(("127.0.0.1", 0), M.Handler)
+        cls.server.log = lambda line: None
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        super().tearDownClass()
+
+    def request(self, method, path, body=None):
+        import http.client
+        import json
+        conn = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=5)
+        conn.request(method, path, body=body, headers={"Content-Type": "application/json"})
+        r = conn.getresponse()
+        return r.status, json.loads(r.read() or b"null")
+
+    def test_errors_are_json(self):
+        self.assertEqual(self.request("GET", "/api/nothing/"), (404, {"detail": "Not found."}))
+        status, body = self.request("POST", "/api/clock/", "{}")
+        self.assertEqual(status, 405)
+        self.assertIn("detail", body)
+        self.assertEqual(self.request("PUT", "/api/clock/", "{not json")[0], 400)

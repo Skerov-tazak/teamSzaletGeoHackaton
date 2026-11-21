@@ -64,8 +64,14 @@ def _horizon() -> date:
     return _today() + timedelta(days=clock.FORECAST_DAYS)
 
 
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
 def _parse_date(value: str, name: str) -> date:
+    """Exactly YYYY-MM-DD (implementation plan A0), else 400."""
     try:
+        if not DATE_RE.match(value or ""):
+            raise ValueError(value)
         return date.fromisoformat(value)
     except (TypeError, ValueError):
         raise ApiError(400, f"{name} must be YYYY-MM-DD") from None
@@ -230,6 +236,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, fn(q, body, *match.groups()))
             except ApiError as e:
                 return self._json(e.status, {"detail": e.detail})
+            except Exception as e:  # never drop the connection: DRF-style 500 with a detail
+                self.server.log(f"500 {type(e).__name__}: {e}")
+                return self._json(500, {"detail": "A server error occurred."})
         if allowed:
             return self._json(405, {"detail": f'Method "{method}" not allowed.'})
         return self._json(404, {"detail": "Not found."})
@@ -260,6 +269,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._api("PUT")
 
     def do_POST(self):
+        if self.path.startswith("/api/"):
+            return self._api("POST")
         return self._json(404, {"detail": "Not found."})
 
 

@@ -66,6 +66,16 @@ agreed shapes and rules (cut-off at today + 7, `{"detail"}` errors), from the re
 calls `engine.clock_moved()`. [`dev/`](dev/) is a stand-in page: it builds the `AppContext`, has the demo date
 control (what `main.ts` will do) and buttons that send the chat's events. Its tests: `engine/test_mock_api.py`.
 
+**Contract details the module keeps:**
+
+- From `explanation` it reads exactly the map's keys (database.md → "Who reads what"): `level`, `summary`,
+  `drivers` (`label`, `effect`; sorted by `effect`, `null` = context), `action` (`type`, `text`,
+  `spray_window.date`), `growth_stage.name`, `confidence`. Threat names come from the API's `threat.name`.
+- Every rule of `map.css` is scoped under `.fup-map`; the layout uses container queries (the map's own width).
+- Responses that arrive after the day or the demo date changed are dropped; a season series is cached per today.
+- `ctx.clock` is read at each use; a `field:focus` that arrives before the fields are drawn is applied after.
+- Closing the field panel also sends `field:selected { fieldId: null }` (no field selected any more).
+
 **What changes when the platform's pieces land (nothing in the map's behaviour):**
 
 - **Types:** [`contract.ts`](contract.ts) holds the response types written from interfaces.md's examples. Once

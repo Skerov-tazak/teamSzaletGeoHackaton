@@ -1,7 +1,7 @@
 // Season chart of one field: risk score (0–1) per threat over time. Solid up to today (season so far),
-// dashed for the coming days (today + 1 … + 7), the agreed level cut-offs as bands, crosshair + tooltip.
+// dashed for the coming days, the agreed level cut-offs as named bands, crosshair + tooltip.
 
-import { CUT_HIGH, CUT_MEDIUM, LEVEL_LABEL, addDays, daysBetween, esc, levelOf, monthShort, shortDate } from "./format";
+import { CUT_HIGH, CUT_MEDIUM, LEVEL_LABEL, addDays, daysBetween, esc, levelOf, monthShort, num, shortDate } from "./format";
 
 export interface ChartSeries {
   code: string;
@@ -11,8 +11,8 @@ export interface ChartSeries {
 }
 
 const SVG = "http://www.w3.org/2000/svg";
-const H = 210;
-const M = { top: 18, right: 58, bottom: 24, left: 34 };
+const H = 240;
+const M = { top: 26, right: 12, bottom: 26, left: 12 };
 
 function el<K extends keyof SVGElementTagNameMap>(name: K, attrs: Record<string, string | number>, parent?: Element) {
   const node = document.createElementNS(SVG, name);
@@ -24,27 +24,24 @@ function el<K extends keyof SVGElementTagNameMap>(name: K, attrs: Record<string,
 export function renderSeasonChart(host: HTMLElement, series: ChartSeries[], from: string, to: string, today: string): void {
   host.replaceChildren();
   host.classList.add("fup-chart");
-  const W = Math.max(280, Math.round(host.clientWidth || 360));   // drawn at its real width: text stays 11 px
+  const W = Math.max(280, Math.round(host.clientWidth || 360));   // drawn at its real width: text stays 10-11 px
   const span = Math.max(1, daysBetween(from, to));
   const iw = W - M.left - M.right;
   const ih = H - M.top - M.bottom;
   const x = (d: string) => M.left + (daysBetween(from, d) / span) * iw;
   const y = (s: number) => M.top + (1 - s) * ih;
 
-  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Ryzyko w sezonie" }, host);
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": "Ryzyko w sezonie" }, host);
 
-  // level bands + their labels on the right
+  // named level bands (the agreed cut-offs), labelled inside the plot
   const bands: [number, number, keyof typeof LEVEL_LABEL][] = [[CUT_HIGH, 1, "high"], [CUT_MEDIUM, CUT_HIGH, "medium"], [0, CUT_MEDIUM, "low"]];
   for (const [lo, hi, lvl] of bands) {
     el("rect", { x: M.left, y: y(hi), width: iw, height: y(lo) - y(hi), class: `band band-${lvl}` }, svg);
-    const t = el("text", { x: M.left + iw + 8, y: (y(lo) + y(hi)) / 2 + 4, class: "band-label" }, svg);
+    const t = el("text", { x: M.left + 6, y: y(hi) + 13, class: `band-label band-label-${lvl}` }, svg);
     t.textContent = LEVEL_LABEL[lvl];
   }
-  for (const s of [0, CUT_MEDIUM, CUT_HIGH, 1]) {
-    el("line", { x1: M.left, x2: M.left + iw, y1: y(s), y2: y(s), class: s === 0 ? "axis" : "grid" }, svg);
-    const t = el("text", { x: M.left - 6, y: y(s) + 4, class: "tick", "text-anchor": "end" }, svg);
-    t.textContent = s.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
-  }
+  for (const s of [CUT_MEDIUM, CUT_HIGH]) el("line", { x1: M.left, x2: M.left + iw, y1: y(s), y2: y(s), class: "grid" }, svg);
+  el("line", { x1: M.left, x2: M.left + iw, y1: y(0), y2: y(0), class: "axis" }, svg);
 
   // month ticks
   let d = from.slice(0, 8) + "01";
@@ -60,13 +57,17 @@ export function renderSeasonChart(host: HTMLElement, series: ChartSeries[], from
     d = addDays(d, 32).slice(0, 8) + "01";
   }
 
-  // future shade + today line
+  // coming days: shaded zone with its name, and the "today" marker
   if (today < to) {
     el("rect", { x: x(today), y: M.top, width: x(to) - x(today), height: ih, class: "future" }, svg);
   }
   if (today >= from && today <= to) {
-    el("line", { x1: x(today), x2: x(today), y1: M.top - 4, y2: M.top + ih, class: "today" }, svg);
-    const t = el("text", { x: x(today), y: M.top - 4, class: "today-label", "text-anchor": "middle" }, svg);
+    el("line", { x1: x(today), x2: x(today), y1: M.top - 2, y2: M.top + ih, class: "today" }, svg);
+    const label = el("g", { class: "today-tag" }, svg);
+    const tw = 34;
+    const tx = Math.min(Math.max(x(today) - tw / 2, M.left), M.left + iw - tw);
+    el("rect", { x: tx, y: 4, width: tw, height: 17, rx: 8.5 }, label);
+    const t = el("text", { x: tx + tw / 2, y: 16.5, "text-anchor": "middle" }, label);
     t.textContent = "dziś";
   }
 
@@ -83,7 +84,7 @@ export function renderSeasonChart(host: HTMLElement, series: ChartSeries[], from
     if (last) el("circle", { cx: x(last.date), cy: y(last.score), r: 4, fill: s.color, class: "dot" }, svg);
   }
 
-  // hover: crosshair + tooltip
+  // hover: crosshair + tooltip on the side of the plot away from the cursor
   const cross = el("line", { y1: M.top, y2: M.top + ih, class: "cross", visibility: "hidden" }, svg);
   const marks = series.map((s) => el("circle", { r: 4, fill: s.color, class: "dot", visibility: "hidden" }, svg));
   const tip = document.createElement("div");
@@ -102,6 +103,8 @@ export function renderSeasonChart(host: HTMLElement, series: ChartSeries[], from
     cross.setAttribute("x2", String(x(day)));
     cross.setAttribute("visibility", "visible");
     const rows: string[] = [];
+    let ys = 0;
+    let n = 0;
     series.forEach((s, k) => {
       const v = byDate[k].get(day);
       if (v == null) {
@@ -111,17 +114,22 @@ export function renderSeasonChart(host: HTMLElement, series: ChartSeries[], from
       marks[k].setAttribute("cx", String(x(day)));
       marks[k].setAttribute("cy", String(y(v)));
       marks[k].setAttribute("visibility", "visible");
+      ys += y(v);
+      n++;
       rows.push(`<div class="tip-row"><span class="swatch" style="background:${s.color}"></span><span class="tip-name">${esc(s.name)}</span>` +
-        `<span class="tip-val">${v.toFixed(2)} · ${LEVEL_LABEL[levelOf(v)]}</span></div>`);
+        `<span class="tip-val">${num(v, 2)} · ${LEVEL_LABEL[levelOf(v)]}</span></div>`);
     });
     const when = day > today ? ` · prognoza +${daysBetween(today, day)}` : day === today ? " · dziś" : "";
     tip.innerHTML = `<div class="tip-date">${shortDate(day)}${when}</div>${rows.join("") || '<div class="tip-row">brak danych</div>'}`;
     tip.hidden = false;
     const hostBox = host.getBoundingClientRect();
     const left = ev.clientX - hostBox.left;
-    const onRight = left < hostBox.width / 2;      // beside the cursor, never over the hovered point
+    const onRight = left < hostBox.width / 2;
     tip.style.left = onRight ? `${left + 14}px` : "";
     tip.style.right = onRight ? "" : `${hostBox.width - left + 14}px`;
+    const pointsHigh = n ? ys / n < M.top + ih / 2 : false;   // the points sit in the upper half: tooltip goes low
+    tip.style.top = pointsHigh ? "" : `${M.top}px`;
+    tip.style.bottom = pointsHigh ? `${hostBox.height - (M.top + ih) + 4}px` : "";
   });
   hit.addEventListener("pointerleave", () => {
     cross.setAttribute("visibility", "hidden");

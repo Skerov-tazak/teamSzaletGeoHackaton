@@ -17,6 +17,11 @@ export const LEVEL_RANK: Record<Level, number> = { low: 0, medium: 1, high: 2 };
 export const LEVEL_LABEL: Record<Level, string> = { low: "niskie", medium: "średnie", high: "wysokie" };
 export const LEVEL_TITLE: Record<Level, string> = { low: "Niskie ryzyko", medium: "Średnie ryzyko", high: "Wysokie ryzyko" };
 
+/** Short labels for the filter chips. */
+export const CATEGORY_SHORT: Record<string, string> = {
+  fungal: "grzyby", bacterial: "bakterie", viral: "wirusy", pest: "szkodniki", weed: "chwasty",
+};
+
 export const CATEGORY_LABEL: Record<string, string> = {
   fungal: "choroby grzybowe",
   bacterial: "choroby bakteryjne",
@@ -80,6 +85,11 @@ export function monthShort(iso: string): string {
 /** "pt" */
 export function weekday(iso: string): string {
   return WEEKDAYS_SHORT[toUtc(iso).getUTCDay()];
+}
+
+/** A number in Polish notation (decimal comma). */
+export function num(v: number, digits = 1): string {
+  return (+v.toFixed(digits)).toLocaleString("pl-PL");
 }
 
 export function pct(x: number | null | undefined): string {

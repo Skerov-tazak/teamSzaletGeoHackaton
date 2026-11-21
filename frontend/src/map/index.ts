@@ -15,15 +15,16 @@ import "leaflet/dist/leaflet.css";
 
 import type { AppContext, DayRisks, FieldCollection, FieldDayRisks, FieldDetail, FieldFeature, FieldRiskSeries, Level, Threat } from "./contract";
 import {
-  CATEGORY_LABEL, LEVEL_LABEL, addDays, cropName, daysBetween, esc, ha, levelOf, longDate, shortDate, weekday,
+  CATEGORY_LABEL, CATEGORY_SHORT, LEVEL_LABEL, addDays, cropName, daysBetween, esc, ha, levelOf, longDate, shortDate, weekday,
 } from "./format";
-import { levelPill, renderPanel, type PanelState } from "./panel";
+import { ICON, levelPill, renderPanel, type PanelState } from "./panel";
 import "./map.css";
 
 type FieldLevel = { level: Level | null; score: number; top: string | null };
 
 /** Status colours (fixed, never themed); the level always comes with its label too. */
 const FILL: Record<Level | "none", string> = { high: "#d03b3b", medium: "#fab219", low: "#0ca30c", none: "#8a8f87" };
+const LEVELS: Level[] = ["high", "medium", "low"];
 
 const BASEMAPS = {
   satellite: {
@@ -33,13 +34,32 @@ const BASEMAPS = {
   },
   map: {
     label: "Mapa",
-    url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
-    attribution: "© OpenStreetMap, © CARTO",
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+    attribution: "© Esri, HERE, Garmin, OpenStreetMap",
   },
 } as const;
 
+/** A small silhouette of the field's outline (largest ring), for the field list. */
+function silhouette(f: FieldFeature): string {
+  const g = f.geometry as GeoJSON.Polygon | GeoJSON.MultiPolygon;
+  let ring: number[][] | undefined;
+  if (g?.type === "Polygon") ring = g.coordinates[0] as number[][];
+  else if (g?.type === "MultiPolygon") ring = (g.coordinates.map((p) => p[0]) as number[][][]).sort((a, b) => b.length - a.length)[0];
+  if (!ring || ring.length < 3) return "";
+  const k = Math.cos((ring[0][1] * Math.PI) / 180);
+  const pts = ring.map(([lon, lat]) => [lon * k, -lat]);
+  const xs = pts.map((p) => p[0]);
+  const ys = pts.map((p) => p[1]);
+  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const s = 26 / Math.max(x1 - x0, y1 - y0, 1e-9);
+  const ox = (32 - (x1 - x0) * s) / 2;
+  const oy = (32 - (y1 - y0) * s) / 2;
+  const d = pts.map(([x, y], i) => `${i ? "L" : "M"}${(ox + (x - x0) * s).toFixed(1)},${(oy + (y - y0) * s).toFixed(1)}`).join("") + "Z";
+  return `<svg class="fr-shape" viewBox="0 0 32 32" aria-hidden="true"><path d="${d}"/></svg>`;
+}
+
 export function initMap(container: HTMLElement, ctx: AppContext): void {
-  const { api, events, clock } = ctx;
+  const { api, events } = ctx;   // ctx.clock is read at each use: main.ts updates it
 
   // --- DOM -------------------------------------------------------------------------------------
   container.classList.add("fup-map");
@@ -47,11 +67,12 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
     <div class="fup-canvas"></div>
     <aside class="fup-card fup-side" aria-label="Pola gospodarstwa">
       <div class="side-head">
-        <div class="side-title">Twoje pola</div>
-        <div class="side-date"></div>
+        <div><div class="side-title">Twoje pola</div><div class="side-date"></div></div>
+        <button class="side-toggle" aria-expanded="false" aria-label="Pokaż listę pól">Lista pól
+          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
       </div>
-      <div class="side-counts"></div>
-      <div class="side-filter" role="group" aria-label="Koloruj według"></div>
+      <div class="side-counts" role="group" aria-label="Filtruj według poziomu"></div>
+      <div class="side-filter" role="group" aria-label="Koloruj według kategorii"></div>
       <ol class="side-list"></ol>
       <div class="fup-legend-box" aria-label="Legenda"></div>
     </aside>
@@ -61,6 +82,7 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
     <div class="fup-toast" role="status" hidden></div>`;
   const $ = <T extends HTMLElement>(sel: string) => container.querySelector<T>(sel)!;
   const canvas = $<HTMLDivElement>(".fup-canvas");
+  const sideCard = $(".fup-side");
   const side = { date: $(".side-date"), counts: $(".side-counts"), filter: $(".side-filter"), list: $(".side-list") };
   const daysBox = $(".fup-days");
   const panel = $<HTMLElement>(".fup-panel");
@@ -69,22 +91,28 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
   // --- state -----------------------------------------------------------------------------------
   let fields: FieldFeature[] = [];
   const threats = new Map<string, Threat>();
-  const threatNames = new Map<string, string>();
-  let viewDate = clock.today;                    // today or one of the coming days
+  let viewDate = ctx.clock.today;                // today or one of the coming days
   let dayRisks: DayRisks | null = null;
   let category = "all";
+  let levelFilter: Level | null = null;
   let selected: number | null = null;
+  let pendingFocus: number | null = null;        // field:focus that arrived before the fields were drawn
   let basemap: keyof typeof BASEMAPS = "satellite";
   const layers = new Map<number, L.GeoJSON>();
-  const labels = new Map<number, L.Tooltip>();
   const detailCache = new Map<number, FieldDetail>();
-  const seriesCache = new Map<number, FieldRiskSeries>();
-  const panelState: PanelState = { open: new Set(), range: "recent" };
+  const seriesCache = new Map<string, FieldRiskSeries>();   // key: field id + the today it was asked for
+  const panelState: PanelState = { open: new Set(), range: "recent", lowOpen: false };
   let panelToken = 0;
+  let dayToken = 0;
+
+  const narrow = () => container.clientWidth <= 860;
+  const horizon = () => addDays(ctx.clock.today, ctx.clock.forecastDays);
+  const seriesKey = (id: number) => `${id}@${ctx.clock.today}`;
 
   // --- Leaflet ---------------------------------------------------------------------------------
-  const map = L.map(canvas, { zoomControl: false, attributionControl: true, minZoom: 6, maxZoom: 18 }).setView([50.36, 17.68], 13);
-  L.control.zoom({ position: "topright" }).addTo(map);
+  const map = L.map(canvas, { zoomControl: false, attributionControl: true, minZoom: 6, maxZoom: 18 })  // whole zoom levels: raster tiles stay crisp, no seams
+    .setView([50.36, 17.68], 13);
+  L.control.zoom({ position: "topright", zoomInTitle: "Przybliż", zoomOutTitle: "Oddal" }).addTo(map);
   map.attributionControl.setPrefix(false);
   let tiles = L.tileLayer(BASEMAPS[basemap].url, { attribution: BASEMAPS[basemap].attribution, maxZoom: 19 }).addTo(map);
   map.on("click", () => select(null, { emit: true }));
@@ -93,8 +121,8 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
   function showError(msg: string): void {
     toast.textContent = msg;
     toast.hidden = false;
-    window.clearTimeout((toast as unknown as { _t?: number })._t);
-    (toast as unknown as { _t?: number })._t = window.setTimeout(() => (toast.hidden = true), 6000);
+    window.clearTimeout(Number(toast.dataset.timer));
+    toast.dataset.timer = String(window.setTimeout(() => (toast.hidden = true), 6000));
   }
   const fail = (what: string) => (e: unknown) => {
     const detail = (e as { detail?: string })?.detail ?? (e as Error)?.message ?? String(e);
@@ -116,23 +144,26 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
   function styleFor(id: number): L.PathOptions {
     const { level } = fieldLevel(id);
     const isSel = id === selected;
+    const dimmed = levelFilter !== null && level !== levelFilter && !isSel;
     return {
-      className: `fup-field ${level ? `lvl-${level}` : "lvl-none"}${isSel ? " is-selected" : ""}`,
-      color: isSel ? "#ffffff" : "rgba(255,255,255,0.85)",
-      weight: isSel ? 3.5 : 1.5,
+      className: `fup-field ${level ? `lvl-${level}` : "lvl-none"}${isSel ? " is-selected" : ""}${dimmed ? " is-dimmed" : ""}`,
+      color: "#ffffff",
+      opacity: dimmed ? 0.35 : isSel ? 1 : 0.9,
+      weight: isSel ? 3.5 : 2,
       fillColor: FILL[level ?? "none"],
-      fillOpacity: isSel ? 0.62 : 0.48,
+      fillOpacity: dimmed ? 0.12 : isSel ? 0.66 : 0.58,
     };
   }
 
   function recolour(ids?: number[]): void {
     for (const [id, layer] of layers) {
       if (ids && !ids.includes(id)) continue;
-      layer.setStyle(styleFor(id));
+      const st = styleFor(id);
+      layer.setStyle(st);
       // className on an existing path is not updated by setStyle: set it on the element
       layer.eachLayer((l) => {
         const el = (l as L.Path & { _path?: SVGElement })._path;
-        if (el) el.setAttribute("class", `leaflet-interactive ${styleFor(id).className}`);
+        if (el) el.setAttribute("class", `leaflet-interactive ${st.className}`);
       });
     }
     renderSide();
@@ -140,7 +171,7 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
 
   // --- side card ---------------------------------------------------------------------------------
   function renderSide(): void {
-    const lead = daysBetween(clock.today, viewDate);
+    const lead = daysBetween(ctx.clock.today, viewDate);
     side.date.innerHTML = lead > 0
       ? `Prognoza na <b>${weekday(viewDate)} ${shortDate(viewDate)}</b> · +${lead} ${lead === 1 ? "dzień" : "dni"}`
       : `Stan na <b>${longDate(viewDate)}</b>`;
@@ -148,23 +179,26 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
       .sort((a, b) => (b.lv.score - a.lv.score) || a.f.properties.name.localeCompare(b.f.properties.name, "pl"));
     const counts: Record<Level, number> = { high: 0, medium: 0, low: 0 };
     rows.forEach((r) => r.lv.level && counts[r.lv.level]++);
-    side.counts.innerHTML = (["high", "medium", "low"] as Level[])
-      .map((l) => `<div class="count lvl-${l}"><span class="count-n">${counts[l]}</span><span class="count-k">${LEVEL_LABEL[l]}</span></div>`).join("");
-    side.list.innerHTML = rows.map(({ f, lv }) => {
-      const top = lv.top ? threatNames.get(lv.top) ?? lv.top : "brak zagrożeń w tej kategorii";
+    side.counts.innerHTML = LEVELS.map((l) =>
+      `<button class="count lvl-${l}${levelFilter === l ? " on" : ""}" data-level="${l}" aria-pressed="${levelFilter === l}" title="Pokaż tylko pola: ${LEVEL_LABEL[l]}">` +
+      `<span class="count-n">${counts[l]}</span><span class="count-k">${ICON[l]}${LEVEL_LABEL[l]}</span></button>`).join("");
+    const shown = levelFilter ? rows.filter((r) => r.lv.level === levelFilter) : rows;
+    side.list.innerHTML = shown.map(({ f, lv }) => {
+      const top = lv.top ? threats.get(lv.top)?.name ?? lv.top : "brak zagrożeń w tej kategorii";
       return `<li><button class="field-row${f.id === selected ? " on" : ""}" data-id="${f.id}">` +
-        `<span class="fr-dot ${lv.level ? `lvl-${lv.level}` : "lvl-none"}"></span>` +
+        `<span class="fr-icon ${lv.level ? `lvl-${lv.level}` : "lvl-none"}">${silhouette(f)}</span>` +
         `<span class="fr-main"><span class="fr-name">${esc(f.properties.name)}</span>` +
         `<span class="fr-sub">${esc(cropName(f.properties.crop))} · ${ha(f.properties.area_ha)}</span>` +
         `<span class="fr-top">${esc(top)}</span></span>` +
         (lv.level ? levelPill(lv.level, "sm") : '<span class="fup-pill lvl-none sm">—</span>') + "</button></li>";
-    }).join("");
+    }).join("") || '<li class="side-empty">Brak pól na tym poziomie.</li>';
   }
 
   function renderFilter(): void {
     const cats = [...new Set([...threats.values()].map((t) => t.category))].sort();
     side.filter.innerHTML = ["all", ...cats].map((c) =>
-      `<button data-cat="${esc(c)}" class="${c === category ? "on" : ""}">${c === "all" ? "wszystkie" : esc(CATEGORY_LABEL[c] ?? c)}</button>`).join("");
+      `<button data-cat="${esc(c)}" class="${c === category ? "on" : ""}" title="${c === "all" ? "wszystkie zagrożenia" : esc(CATEGORY_LABEL[c] ?? c)}">` +
+      `${c === "all" ? "wszystkie" : esc(CATEGORY_SHORT[c] ?? CATEGORY_LABEL[c] ?? c)}</button>`).join("");
   }
 
   side.filter.addEventListener("click", (ev) => {
@@ -174,18 +208,33 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
     renderFilter();
     recolour();
   });
+  side.counts.addEventListener("click", (ev) => {
+    const b = (ev.target as HTMLElement).closest<HTMLButtonElement>("button[data-level]");
+    if (!b) return;
+    const l = b.dataset.level as Level;
+    levelFilter = levelFilter === l ? null : l;
+    recolour();
+  });
   side.list.addEventListener("click", (ev) => {
     const b = (ev.target as HTMLElement).closest<HTMLButtonElement>("button[data-id]");
-    if (b) focusField(Number(b.dataset.id));
+    if (!b) return;
+    sideCard.classList.remove("side-open");
+    focusField(Number(b.dataset.id));
+  });
+  $(".side-toggle").addEventListener("click", () => {
+    const open = sideCard.classList.toggle("side-open");
+    $(".side-toggle").setAttribute("aria-expanded", String(open));
   });
 
   // --- day strip: today + the coming days ----------------------------------------------------------
   function renderDays(): void {
-    const n = clock.forecastDays;
-    const items = Array.from({ length: n + 1 }, (_, k) => addDays(clock.today, k));
-    daysBox.innerHTML = '<span class="days-k">Dzień</span>' + items.map((d, k) =>
-      `<button data-day="${d}" class="${d === viewDate ? "on" : ""}${k ? "" : " today"}">` +
-      `<span class="d-w">${k ? weekday(d) : "dziś"}</span><span class="d-n">${shortDate(d)}</span></button>`).join("");
+    const n = ctx.clock.forecastDays;
+    const items = Array.from({ length: n + 1 }, (_, k) => addDays(ctx.clock.today, k));
+    daysBox.innerHTML = '<span class="days-k">Dzień</span>' + items.map((d, k) => {
+      const [dd, mm] = shortDate(d).split(" ");
+      return `<button data-day="${d}" class="${d === viewDate ? "on" : ""}${k ? "" : " today"}" aria-pressed="${d === viewDate}">` +
+        `<span class="d-w">${k ? weekday(d) : "dziś"}</span><span class="d-n">${dd}<span class="d-m"> ${mm}</span></span></button>`;
+    }).join("");
   }
   daysBox.addEventListener("click", (ev) => {
     const b = (ev.target as HTMLElement).closest<HTMLButtonElement>("button[data-day]");
@@ -195,17 +244,21 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
     void loadDay();
   });
 
-  // --- legend + basemap --------------------------------------------------------------------------
+  // --- legend + basemap + whole farm ---------------------------------------------------------------
   $(".fup-legend-box").innerHTML = '<div class="lg-title">Kolor pola = najwyższe ryzyko na nim</div><div class="lg-items">' +
-    (["high", "medium", "low"] as Level[]).map((l) => `<span class="lg-row"><span class="lg-sw lvl-${l}"></span>${LEVEL_LABEL[l]}</span>`).join("") +
+    LEVELS.map((l) => `<span class="lg-row"><span class="lg-sw lvl-${l}"></span>${LEVEL_LABEL[l]}</span>`).join("") +
     '<span class="lg-row"><span class="lg-sw lvl-none"></span>brak oceny</span></div>';
   const baseBox = $(".fup-base");
   function renderBase(): void {
     baseBox.innerHTML = (Object.keys(BASEMAPS) as (keyof typeof BASEMAPS)[]).map((k) =>
-      `<button data-base="${k}" class="${k === basemap ? "on" : ""}">${BASEMAPS[k].label}</button>`).join("");
+      `<button data-base="${k}" class="${k === basemap ? "on" : ""}" aria-pressed="${k === basemap}">${BASEMAPS[k].label}</button>`).join("") +
+      '<button data-fit class="fit" title="Pokaż całe gospodarstwo" aria-label="Pokaż całe gospodarstwo">' +
+      '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>';
   }
   baseBox.addEventListener("click", (ev) => {
-    const b = (ev.target as HTMLElement).closest<HTMLButtonElement>("button[data-base]");
+    const t = ev.target as HTMLElement;
+    if (t.closest("button[data-fit]")) return fitAll(true);
+    const b = t.closest<HTMLButtonElement>("button[data-base]");
     if (!b || b.dataset.base === basemap) return;
     basemap = b.dataset.base as keyof typeof BASEMAPS;
     map.removeLayer(tiles);
@@ -220,6 +273,18 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
     L.DomEvent.disableScrollPropagation($(el));
   }
 
+  /** Every field in view, in the part of the map the cards leave free. */
+  function fitAll(animate: boolean): void {
+    if (!layers.size) return;
+    const bounds = L.featureGroup([...layers.values()]).getBounds();
+    const panelOpen = selected != null;
+    const pad = narrow()
+      ? { paddingTopLeft: [20, sideCard.offsetHeight + 24] as L.PointTuple, paddingBottomRight: [20, 80] as L.PointTuple }
+      : { paddingTopLeft: [340, 40] as L.PointTuple, paddingBottomRight: [panelOpen ? 440 : 70, 96] as L.PointTuple };
+    if (animate) map.flyToBounds(bounds, { ...pad, duration: 0.6 });
+    else map.fitBounds(bounds, pad);
+  }
+
   // --- fields ------------------------------------------------------------------------------------
   function drawFields(fc: FieldCollection): void {
     fields = fc.features;
@@ -228,44 +293,44 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
       layer.on("click", () => focusField(f.id, { zoom: false }));
       layer.on("mouseover", () => container.querySelector(`.field-row[data-id="${f.id}"]`)?.classList.add("hover"));
       layer.on("mouseout", () => container.querySelector(`.field-row[data-id="${f.id}"]`)?.classList.remove("hover"));
-      const tip = L.tooltip({ permanent: true, direction: "center", className: "fup-label", opacity: 1 }).setContent(esc(f.properties.name));
-      layer.bindTooltip(tip);
+      layer.bindTooltip(L.tooltip({ permanent: true, direction: "center", className: "fup-label", opacity: 1 }).setContent(esc(f.properties.name)));
       layer.addTo(map);
       layers.set(f.id, layer);
-      labels.set(f.id, tip);
     }
-    const all = L.featureGroup([...layers.values()]);
-    if (fields.length) {
-      const narrow = container.clientWidth <= 860;
-      const sideH = $(".fup-side").offsetHeight;
-      map.fitBounds(all.getBounds(), narrow
-        ? { paddingTopLeft: [20, sideH + 30], paddingBottomRight: [20, 80] }
-        : { paddingTopLeft: [340, 40], paddingBottomRight: [60, 90] });
-    }
+    fitAll(false);
     const toggleLabels = () => container.classList.toggle("labels-off", map.getZoom() < 13);
     map.on("zoomend", toggleLabels);
     toggleLabels();
   }
 
   async function loadDay(): Promise<void> {
+    const token = ++dayToken;
+    const asked = viewDate;
     container.classList.add("is-loading");
     try {
-      dayRisks = await api.getRisks(viewDate);
+      const risks = await api.getRisks(asked);
+      if (token !== dayToken || asked !== viewDate) return;      // a newer request (or day) won
+      dayRisks = risks;
       recolour();
       if (selected != null) void loadPanel(selected);
     } catch (e) {
-      fail("Nie udało się wczytać ryzyk")(e);
+      if (token === dayToken) fail("Nie udało się wczytać ryzyk")(e);
     } finally {
-      container.classList.remove("is-loading");
+      if (token === dayToken) container.classList.remove("is-loading");
     }
   }
 
   // --- selection + panel ---------------------------------------------------------------------------
   function select(id: number | null, opts: { emit: boolean }): void {
     if (id === selected && id !== null) return;
+    if (id === null && selected === null) {
+      if (opts.emit) events.emit("field:selected", { fieldId: null });
+      return;
+    }
     const prev = selected;
     selected = id;
     panelState.open.clear();
+    panelState.lowOpen = false;
     recolour([prev, id].filter((x): x is number => x != null));
     if (id == null) {
       panel.hidden = true;
@@ -281,8 +346,7 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
   function flyTo(id: number): void {
     const layer = layers.get(id);
     if (!layer) return;
-    const narrow = container.clientWidth <= 860;
-    const pad = narrow
+    const pad = narrow()
       ? { paddingTopLeft: [24, 24] as L.PointTuple, paddingBottomRight: [24, Math.round(container.clientHeight * 0.62) + 24] as L.PointTuple }
       : { paddingTopLeft: [340, 60] as L.PointTuple, paddingBottomRight: [440, 100] as L.PointTuple };
     map.flyToBounds(layer.getBounds(), { ...pad, maxZoom: 15, duration: 0.6 });
@@ -296,6 +360,8 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
 
   async function loadPanel(id: number): Promise<void> {
     const token = ++panelToken;
+    const asked = { day: viewDate, today: ctx.clock.today };
+    const stale = () => token !== panelToken || asked.day !== viewDate || asked.today !== ctx.clock.today;
     panel.hidden = false;
     container.classList.add("has-panel");
     if (!panel.innerHTML || panel.dataset.field !== String(id)) {
@@ -304,17 +370,18 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
     panel.dataset.field = String(id);
     try {
       const detailP = detailCache.get(id) ? Promise.resolve(detailCache.get(id)!) : api.getField(id);
-      const dayP: Promise<FieldDayRisks> = api.getFieldDayRisks(id, viewDate);
+      const dayP: Promise<FieldDayRisks> = api.getFieldDayRisks(id, asked.day);
       const [detail, day] = await Promise.all([detailP, dayP]);
-      if (token !== panelToken) return;
+      if (stale()) return;
       detailCache.set(id, detail);
       const draw = (series: FieldRiskSeries | null) =>
-        renderPanel(panel, { detail, day, series, today: clock.today, viewDate }, panelState, threatNames);
-      draw(seriesCache.get(id) ?? null);
-      if (!seriesCache.get(id)) {
-        const series = await api.getFieldRisks(id, { to: addDays(clock.today, clock.forecastDays) });
-        if (token !== panelToken) return;
-        seriesCache.set(id, series);
+        renderPanel(panel, { detail, day, series, today: asked.today, forecastDays: ctx.clock.forecastDays, viewDate: asked.day }, panelState);
+      const key = seriesKey(id);
+      draw(seriesCache.get(key) ?? null);
+      if (!seriesCache.get(key)) {
+        const series = await api.getFieldRisks(id, { to: horizon() });
+        if (stale()) return;                                    // never cache a series asked for another today
+        seriesCache.set(key, series);
         draw(series);
       }
     } catch (e) {
@@ -327,7 +394,18 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
 
   panel.addEventListener("click", (ev) => {
     const t = ev.target as HTMLElement;
-    if (t.closest(".p-close")) return select(null, { emit: true });
+    if (t.closest(".p-close")) {
+      select(null, { emit: true });
+      fitAll(true);
+      return;
+    }
+    const low = t.closest<HTMLButtonElement>(".low-head");
+    if (low) {
+      panelState.lowOpen = !panelState.lowOpen;
+      low.closest(".low-group")?.classList.toggle("open", panelState.lowOpen);
+      low.setAttribute("aria-expanded", String(panelState.lowOpen));
+      return;
+    }
     const head = t.closest<HTMLButtonElement>(".threat-head");
     if (head) {
       const li = head.closest<HTMLElement>(".threat")!;
@@ -346,25 +424,34 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
   });
 
   // --- events from the page ------------------------------------------------------------------------
-  events.on("field:focus", ({ fieldId }) => {
-    if (!layers.has(fieldId)) return;
+  function onFocus(fieldId: number): void {
+    if (!layers.size) {                            // fields not drawn yet: do it once they are
+      pendingFocus = fieldId;
+      return;
+    }
+    if (!layers.has(fieldId)) return;              // not a field of this farm
     flyTo(fieldId);
     if (selected !== fieldId) select(fieldId, { emit: false });
     events.emit("field:selected", { fieldId });   // the map sends it itself after focusing (interfaces.md)
-  });
+  }
+  events.on("field:focus", ({ fieldId }) => onFocus(fieldId));
 
   events.on("date:changed", () => {
-    viewDate = clock.today;                       // ctx.clock is already updated by main.ts
+    viewDate = ctx.clock.today;                   // ctx.clock is already updated by main.ts
     seriesCache.clear();
     renderDays();
     void loadDay();
   });
 
   events.on("risks:updated", ({ fieldIds }) => {
-    fieldIds.forEach((id) => seriesCache.delete(id));
+    for (const id of fieldIds) seriesCache.delete(seriesKey(id));
     void (async () => {
+      const token = ++dayToken;
+      const asked = viewDate;
       try {
-        dayRisks = await api.getRisks(viewDate);
+        const risks = await api.getRisks(asked);
+        if (token !== dayToken || asked !== viewDate) return;
+        dayRisks = risks;
         recolour(fieldIds);
         for (const id of fieldIds) {
           layers.get(id)?.eachLayer((l) => {
@@ -375,7 +462,7 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
         }
         if (selected != null && fieldIds.includes(selected)) void loadPanel(selected);
       } catch (e) {
-        fail("Nie udało się odświeżyć ryzyk")(e);
+        if (token === dayToken) fail("Nie udało się odświeżyć ryzyk")(e);
       }
     })();
   });
@@ -386,13 +473,15 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
     container.classList.add("is-loading");
     try {
       const [fc, th] = await Promise.all([api.getFields(), api.getThreats()]);
-      th.forEach((t) => {
-        threats.set(t.code, t);
-        threatNames.set(t.code, t.name);
-      });
+      th.forEach((t) => threats.set(t.code, t));
       renderFilter();
       drawFields(fc);
       await loadDay();
+      if (pendingFocus != null) {
+        const id = pendingFocus;
+        pendingFocus = null;
+        onFocus(id);
+      }
     } catch (e) {
       fail("Nie udało się wczytać mapy")(e);
     } finally {
@@ -400,4 +489,3 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
     }
   })();
 }
-
