@@ -162,7 +162,7 @@ def summarize_threat(threat, rows, today: dt.date, field_id: int) -> dict:
     past = [r for r in rows if r.date <= today]
     now = next((r for r in reversed(past)), None) or (rows[0] if rows else None)
     peak = max(rows, key=lambda r: r.score)
-    lvl_n, lvl = domain.level(now.score if now else None)
+    lvl_n, lvl = domain.level_from_explanation(now.explanation, now.score) if now else domain.level(None)
     scores_to_today = [r.score for r in past]
     return {
         "threat_code": threat.code, "threat": threat.name, "category": threat.category,
@@ -181,7 +181,7 @@ def summarize_threat(threat, rows, today: dt.date, field_id: int) -> dict:
 @register("get_field_risks", """
 Ryzyko zagrożeń pola według silnika decyzyjnego (score 0–1, poziom: niskie/średnie/wysokie —
 progi silnika), dziś i w zakresie dat: maksimum, trend (liczony w kodzie), wyjaśnienie silnika
-(dlaczego) i punkty dzienne. Bez filtra zwraca szczegóły tylko zagrożeń istotnych (score ≥ 0,3
+(dlaczego) i punkty dzienne. Bez filtra zwraca szczegóły tylko zagrożeń istotnych (score ≥ 0,33
 w zakresie) + nazwy pozostałych. Powody ryzyka bierz tylko z pola `explanation`.
 """, FieldRisksIn)
 def get_field_risks(field_id: int, date_from=None, date_to=None, threat: str | None = None) -> dict:
@@ -212,7 +212,7 @@ def get_field_risks(field_id: int, date_from=None, date_to=None, threat: str | N
                 weeks[p["date"] - dt.timedelta(days=p["date"].weekday())].append(p["score"])
             x["points"] = [{"week_start": w, "max_score": max(s)} for w, s in sorted(weeks.items())]
     return {"field": field_summary(f), "today": today, "date_from": a, "date_to": b, "cut_at_forecast": cut,
-            "levels_note": "poziomy silnika: <0,3 niskie, <0,6 średnie, ≥0,6 wysokie",
+            "levels_note": "poziomy silnika: <0,33 niskie, <0,66 średnie, ≥0,66 wysokie",
             "threats": relevant, "other_threats_low": other}
 
 
@@ -241,7 +241,8 @@ def get_farm_risk_summary(date: dt.date | None = None) -> dict:
         if last.date != d:
             continue
         pairs.append({"field_id": fid, "field": fields[fid].name, "threat_code": last.threat.code,
-                      "threat": last.threat.name, "score": round(last.score, 2), "level": domain.level(last.score)[1],
+                      "threat": last.threat.name, "score": round(last.score, 2),
+                      "level": domain.level_from_explanation(last.explanation, last.score)[1],
                       "trend": domain.trend([r.score for r in rs]), "explanation": _expl(last.explanation).get("summary", ""),
                       "citation": {"type": "risk", "field_id": fid, "threat_code": last.threat.code,
                                    "date": d.isoformat()}})

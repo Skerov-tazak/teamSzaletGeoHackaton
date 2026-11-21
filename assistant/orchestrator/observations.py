@@ -173,8 +173,10 @@ def observation(route: Route, question: str, history, llm: LLM, state, selected_
         category = "inne"
     elif kind == "event":
         category = "uszkodzenie"
-    elif kind == "absence" and category is None:
-        category = "choroba"
+    elif kind in ("absence", "treatment", "neighbour") and category is None:
+        category = "choroba"  # the engine: absence -> all threats, treatment -> all fungal, neighbour -> disease group
+    elif kind == "symptoms" and category in ("chwasty", "inne"):
+        kind = None  # weeds / other notes: stored, but not a disease or pest report for the engine (it skips them)
 
     missing = []
     if field_id is None:

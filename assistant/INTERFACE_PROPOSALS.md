@@ -7,7 +7,7 @@ code: each item says what the assistant does **until** it is accepted. For Jan, 
 |---|----------|-----|--------|
 | 1 | `core.Observation` table | Jan + Szymek (schema), Bartek (reads) | proposed |
 | 2 | Read-only database role + `readonly` connection | Jan + Szymek | proposed (needed before the SQL tool is enabled) |
-| 3 | Risk levels (cut-offs of the 0–1 score) | Bartek, Kuba | assistant uses provisional cut-offs |
+| 3 | Risk levels (cut-offs of the 0–1 score) | Bartek, Kuba | agreed: engine `level` / 0.33–0.66; engine README to fix |
 | 4 | `Risk.explanation` format | Bartek, Kuba | assistant reads the starting-point format defensively |
 | 5 | Guide citation: extra keys `printed_page`, `section`; spreadsheet citations | Jan + Szymek (chat UI) | proposed |
 | 6 | `Reply` extensions: `chart`, `pending_action`, `meta` | Jan + Szymek (chat endpoint/UI) | proposed |
@@ -57,13 +57,13 @@ ORM helpers (`season_so_far()`, `coming_days()`, `observed()`, `current()`) on `
 The SQL tool itself also validates queries (one SELECT, allowlisted `core_*` tables, no system
 functions) and runs them in a read-only transaction with a 3 s timeout and a row cap.
 
-## 3. Risk levels (cut-offs of `Risk.score`)
+## 3. Risk levels (cut-offs of `Risk.score`) — agreed
 
-Open in docs/database.md ("what are the cut-offs for the map colours?"). The assistant needs words
-("wysokie") that match the map colours. **Provisional, in one place (`assistant/domain.py` `LEVELS`):**
-`< 0.33` niskie, `< 0.66` średnie, `≥ 0.66` wysokie. Please decide the real cut-offs (Bartek, Kuba);
-ideally the platform exposes them (e.g. in `GET /api/threats/` or a constant in `core`) so the map
-and the assistant read the same values.
+The engine writes `level` (low / medium / high) into every explanation; the assistant uses it, and
+falls back to the same cut-offs as `engine/scoring.py` and the map (`frontend/src/risk.ts`):
+`< 0.33` low, `< 0.66` medium, `≥ 0.66` high (`assistant/domain.py`).
+**For Bartek:** `engine/README.md` still says "low < 0.3 ≤ medium < 0.6 ≤ high" — the code and
+`docs/interfaces.md` say 0.33 / 0.66; please fix the README.
 
 ## 4. `Risk.explanation` format
 

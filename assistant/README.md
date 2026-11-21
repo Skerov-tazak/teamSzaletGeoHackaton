@@ -100,7 +100,7 @@ python manage.py llm_models                # set GEMINI_MODEL / GROQ_MODEL from 
 |------|--------|------|
 | `search_guides`, `get_passage`, `get_risk_conditions` | – | guides (RAG, dose passages always excluded), risk spreadsheet rows |
 | `get_season_date`, `list_fields`, `get_field` | – | demo date, fields, field details (no geometry) |
-| `get_field_risks` | – | engine risk per threat: score, provisional level, trend, max, engine explanation; ≤ today + 7 |
+| `get_field_risks` | – | engine risk per threat: score, the engine's level, trend, max, engine explanation; ≤ today + 7 |
 | `get_farm_risk_summary` | – | top threats per field, most urgent field × threat pairs |
 | `get_weather` | – | observed + forecast; weekly aggregation for ranges > 31 days |
 | `get_observations` | – | farmer observations of a field |
@@ -140,7 +140,7 @@ Logs go to stderr; stdout carries only the protocol. The server warms up the emb
 ### Known limitations
 
 - **No engine yet**: observations are saved but `reassessment.status = "unavailable"`; risk explanations in dev data are synthetic.
-- **Provisional risk levels** (< 0.33 low, < 0.66 medium, else high) until Bartek/Kuba fix the cut-offs (`assistant/domain.py`, one place).
+- **Risk levels** come from the engine's `explanation.level`; fallback cut-offs < 0.33 / < 0.66 as in `engine/scoring.py` and the map (`assistant/domain.py`).
 - **Observations** live in the interim `assistant.Observation` table until `core.Observation` exists.
 - **SQL tool off**: no read-only role.
 - **Agent mode (step G) not built**: complex questions use the single-call flows.

@@ -101,7 +101,7 @@ def field_risk_context(field_id: int, threat_codes: list[str] | None = None, max
     gs = growth_stage_line(focus)
     if gs:
         lines.append(gs)
-    lines.append("Ryzyko według silnika decyzyjnego (poziomy silnika: <0,3 niskie, <0,6 średnie, wyżej wysokie):")
+    lines.append("Ryzyko według silnika decyzyjnego (poziomy silnika: <0,33 niskie, <0,66 średnie, wyżej wysokie):")
     if not focus:
         lines.append("- brak danych o ryzyku dla tego pola w okresie dziś−3 … dziś+7")
     for t in focus:
