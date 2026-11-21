@@ -18,6 +18,7 @@ docker compose up -d
 python manage.py migrate
 python manage.py rag_ingest                                    # indeks metodyk, ok. 2 min
 python manage.py scenario switch demo_2024 --reset-chat        # ok. 1,5 min (pogoda + przeliczenie dwóch sezonów)
+python manage.py engine_precompute_dates                       # ok. 1 min: strzałki daty kopiują gotowe wyniki (0,3 s)
 cd frontend && npm install && npm run build && cd ..
 python manage.py runserver                                     # z kluczami LLM, patrz niżej
 ```
@@ -30,6 +31,7 @@ Klucze LLM (`GEMINI_API_KEY`, `GROQ_API_KEY`, `GEMINI_MODEL`, `LLM_PROVIDERS`) m
 
 ```bash
 python manage.py scenario switch demo_2024 --keep-weather --reset-chat
+python manage.py engine_precompute_dates
 ```
 
 Identyfikatory pól zmieniają się przy każdym przełączeniu: odwołuj się do pól po nazwie.
@@ -93,8 +95,8 @@ zmienia kolor z czerwonego na żółty** (zostają mszyce, na które fungicyd ni
 
 ### 7. (opcjonalnie) Zmiana daty
 
-Strzałka **›** w nagłówku przesuwa datę demo o dzień: silnik przelicza dni, które się zmieniają (ok. 1–2 s),
-a mapa wraca na „dziś”. Najlepiej po pokazie, bo zmienia stan pokazany wyżej.
+Strzałka **›** w nagłówku przesuwa datę demo o dzień: silnik kopiuje gotowe wyniki dla nowej daty (ok. 0,3 s,
+po `engine_precompute_dates`; bez niego liczy 1–4 s), a mapa wraca na „dziś”. Najlepiej po pokazie, bo zmienia stan pokazany wyżej.
 
 ## Co powiedzieć o danych
 

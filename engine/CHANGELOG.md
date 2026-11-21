@@ -2,6 +2,20 @@
 
 History of the engine's versions and the findings behind them. The reference documentation is [README.md](README.md).
 
+## v0.12: date moves copy precomputed rows
+
+Moving the demo date used to recompute `(min(old, new), max(old, new) + 7]` for every field (1–4 s per click on the
+date control). The engine now keeps every row it computes in its own cache table, `engine.RiskSnapshot` (the engine's
+first model and migration; farm data stays in `core`): one bundle per field and day, either "as of that day" or "coming
+day of demo date D". `clock_moved()` copies the bundles it needs and computes only fields with a gap;
+`precompute_dates()` / `engine_precompute_dates` fills the cache ahead (default: Clock - 7 … + 30). `predict()` drops
+the stale bundles of a field from its `start` on (reports, crop changes). On the demo farm a move takes about 0.3 s.
+
+The spraying window of a day assessed as of itself now always uses the forecast issued that day (days after today + 7
+used the one issued today, which is empty that far ahead); those days are never shown before they become past or
+coming days, where nothing changes. Tests: `SnapshotTests` (copies equal a full recompute, row for row; a report drops
+stale bundles; gaps are computed and kept).
+
 ## v0.11: explanations in Polish
 
 Every text that reaches the farmer is Polish, as explanation v1 requires (docs/database.md → "Text language"):
