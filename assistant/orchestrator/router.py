@@ -24,7 +24,11 @@ CONFIRM_NO = {"nie", "anuluj", "nie zapisuj", "rezygnuje", "odrzuc", "stop", "ni
 
 CHART = [r"\bpokaz", r"\bwykres", r"\btrend", r"jak sie zmienial", r"\bprzebieg", r"\bnarysuj", r"\bzobrazuj"]
 OBSERVATION = [r"\bwidze\b", r"zauwazyl", r"pojawil\w* sie", r"znalazl", r"zapisz obserwacj", r"\bdostrzegl",
-               r"na polu (sa|jest|maja)", r"mam na polu", r"zaobserwowal", r"odnotuj"]
+               r"na polu (sa|jest|maja)", r"mam na polu", r"zaobserwowal", r"odnotuj",
+               r"oprysk\w*al\w*", r"\bpryskal", r"wykonal\w* zabieg", r"\b(zasial|posial|sialem|sialam|wysial)",
+               r"\b(przeszedl|przeszlam|obszedl|obeszlam|sprawdzil)\w*", r"\bgrad\b", r"wylegl|polegl", r"zalal\w*|podtopi",
+               r"nie oral|bez orki"]
+OBSERVATION_STATEMENT = [r"\bsasiad\w*"]   # only when it is a statement, not a question
 FARM = [r"wszystkie pola", r"wszystkich pol", r"najpilniejsz", r"gospodarstw", r"ktore pole", r"na ktorym polu",
         r"podsumuj", r"przeglad pol", r"cala farm", r"wszystkich uprawach"]
 FIELD_REF = [r"\bto pole", r"\btym polu", r"\btego pola", r"\bmoje pole", r"\bmoim polu", r"\bmojego pola",
@@ -119,6 +123,8 @@ def route(message: str, selected_field=None, state=None) -> Route:
     # 3. observation
     if p := _any(OBSERVATION, t):
         return Route("obserwacja", reason=f"observation word {p}", **base)
+    if not message.strip().endswith("?") and (p := _any(OBSERVATION_STATEMENT, t)):
+        return Route("obserwacja", reason=f"observation statement {p}", **base)
     # 4. farm overview
     complex_q = len(named) >= 2 or (len(threats) >= 2 and _any(COMPARE, t)) or bool(_any(DATE_RANGE, t))
     if agent and complex_q:

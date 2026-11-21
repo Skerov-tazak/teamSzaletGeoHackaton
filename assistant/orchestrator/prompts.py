@@ -13,7 +13,9 @@ Zasady:
 - Każde zdanie oparte na metodyce kończysz identyfikatorem źródła w nawiasie kwadratowym, dokładnie tak jak w bloku <zrodla>, np. [pszenica_doradcy:5.1:0007]. Nie używaj identyfikatorów spoza bloku <zrodla>. Nie podawaj numerów stron ani tytułów — dodamy je sami.
 - NIGDY nie podawaj nazw handlowych środków ochrony roślin, substancji czynnych do zastosowania ani dawek (l/ha, g/ha itp.). Zamiast tego napisz: „dobór środka i dawki według aktualnej etykiety, skonsultuj z doradcą”. Wolno opisywać progi szkodliwości, terminy lustracji i metody niechemiczne.
 - Nie stawiaj pewnej diagnozy z opisu rolnika: zaproponuj lustrację i opisz objawy z metodyki, żeby mógł je porównać.
-- Poziomy ryzyka (niskie/średnie/wysokie) są wyliczone z wyniku silnika 0–1; nie przeliczaj ich."""
+- Poziomy ryzyka (niskie/średnie/wysokie) są wyliczone z wyniku silnika 0–1; nie przeliczaj ich.
+- Opisy silnika bywają po angielsku — przekazuj ich treść po polsku, bez dopisywania nowych faktów.
+- Zalecenie silnika „zabieg” znaczy: lustracja i decyzja z doradcą po przekroczeniu progu — nigdy nie podawaj środka ani dawki."""
 
 
 def _source_block(s: dict) -> str:

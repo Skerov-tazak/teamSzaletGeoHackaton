@@ -55,14 +55,28 @@ def _range(date_from, date_to, back: int, ahead: int) -> tuple[dt.date, dt.date,
 
 
 def _expl(e) -> dict:
-    """Defensive read of Risk.explanation (format still open): keep summary + factors if present."""
+    """Read Risk.explanation: the engine's version 1 (summary, drivers, action, growth_stage, confidence),
+    or the older {summary, factors} shape. Unknown keys are ignored."""
     if not isinstance(e, dict):
         return {"summary": str(e) if e else ""}
     out = {"summary": e.get("summary", "")}
-    if isinstance(e.get("factors"), list):
+    if isinstance(e.get("drivers"), list):  # engine v1: why, with each factor's effect on the score
+        drivers = sorted(e["drivers"], key=lambda d: -(d.get("effect") or 0))
+        out["drivers"] = [{k: d.get(k) for k in ("label", "value", "unit", "threshold", "effect", "kind", "observed_on", "text")
+                           if d.get(k) not in (None, "")} for d in drivers[:5]]
+    elif isinstance(e.get("factors"), list):
         out["factors"] = e["factors"][:6]
-    if e.get("source"):
-        out["source"] = e["source"]
+    act = e.get("action")
+    if isinstance(act, dict):
+        out["action"] = {"type": act.get("type"), "text": act.get("text"), "threshold": act.get("threshold")}
+        if isinstance(act.get("spray_window"), dict) and act["spray_window"].get("date"):
+            out["action"]["weather_window"] = act["spray_window"]["date"]
+    gs = e.get("growth_stage")
+    if isinstance(gs, dict) and gs.get("bbch") is not None:
+        out["growth_stage"] = {k: gs.get(k) for k in ("bbch", "name", "sowing_assumed", "confidence") if gs.get(k) is not None}
+    for k in ("confidence", "source"):
+        if e.get(k) is not None:
+            out[k] = e[k]
     return out
 
 
@@ -166,8 +180,8 @@ def summarize_threat(threat, rows, today: dt.date, field_id: int) -> dict:
 
 @register("get_field_risks", """
 Ryzyko zagrożeń pola według silnika decyzyjnego (score 0–1, poziom: niskie/średnie/wysokie —
-progi tymczasowe), dziś i w zakresie dat: maksimum, trend (liczony w kodzie), wyjaśnienie silnika
-(dlaczego) i punkty dzienne. Bez filtra zwraca szczegóły tylko zagrożeń istotnych (score ≥ 0,33
+progi silnika), dziś i w zakresie dat: maksimum, trend (liczony w kodzie), wyjaśnienie silnika
+(dlaczego) i punkty dzienne. Bez filtra zwraca szczegóły tylko zagrożeń istotnych (score ≥ 0,3
 w zakresie) + nazwy pozostałych. Powody ryzyka bierz tylko z pola `explanation`.
 """, FieldRisksIn)
 def get_field_risks(field_id: int, date_from=None, date_to=None, threat: str | None = None) -> dict:
@@ -198,7 +212,7 @@ def get_field_risks(field_id: int, date_from=None, date_to=None, threat: str | N
                 weeks[p["date"] - dt.timedelta(days=p["date"].weekday())].append(p["score"])
             x["points"] = [{"week_start": w, "max_score": max(s)} for w, s in sorted(weeks.items())]
     return {"field": field_summary(f), "today": today, "date_from": a, "date_to": b, "cut_at_forecast": cut,
-            "levels_note": "poziomy tymczasowe: <0,33 niskie, <0,66 średnie, ≥0,66 wysokie",
+            "levels_note": "poziomy silnika: <0,3 niskie, <0,6 średnie, ≥0,6 wysokie",
             "threats": relevant, "other_threats_low": other}
 
 

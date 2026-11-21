@@ -26,6 +26,56 @@ CATEGORY_PL = {"choroba": "choroba", "szkodnik": "szkodnik", "chwasty": "chwasty
                "inne": "inne"}
 
 
+KIND_PL = {"symptoms": "objawy na polu", "absence": "lustracja — pole czyste", "neighbour": "zgłoszenie od sąsiada",
+           "treatment": "wykonany zabieg", "field_fact": "informacja o polu", "event": "zdarzenie (grad / wyleganie / zalanie)"}
+MONTHS = {"stycz": 1, "lut": 2, "mar": 3, "kwie": 4, "maj": 5, "czerw": 6, "lip": 7, "sierp": 8, "wrze": 9,
+          "pazdziern": 10, "listop": 11, "grud": 12}
+
+
+def detect_kind(text: str, today: dt.date) -> tuple[str, dict]:
+    """Report kind + engine facts from the farmer's words, by rules (no LLM). Default: symptoms."""
+    t = domain.fold(text)
+    facts: dict = {}
+    if m := re.search(r"\b(grad|wylegl|polegl|polozyl|zalal|zalane|podtop)", t):
+        word = m.group(1)
+        facts["type"] = "hail" if word == "grad" else "flood" if word.startswith(("zal", "podtop")) else "lodging"
+        return "event", facts
+    if re.search(r"\b(sial\w*|zasial\w*|posial\w*|wysial\w*)\b", t) and (d := parse_pl_date(t, today, past_season=True)):
+        facts["sowing_date"] = d.isoformat()
+        return "field_fact", facts
+    if re.search(r"nie oral|bez orki|nie orze|uproszczon|talerzow|siew bezposredni", t):
+        facts["tillage"] = "reduced"
+        return "field_fact", facts
+    if re.search(r"\b(oprysk\w*al\w*|pryskal\w*|zrobil\w* zabieg|wykonal\w* zabieg)", t):
+        return "treatment", facts
+    if re.search(r"sasiad|u sasiada|w okolicy|we wsi", t):
+        facts["distance_m"] = 300 if re.search(r"za drog|obok|przez miedz|zaraz", t) else 1500 if re.search(r"we wsi|w okolicy", t) else 1000
+        return "neighbour", facts
+    if re.search(r"czyst|nic nie (ma|znalazl|widac)|nie widze|brak objaw|zdrowe|bez objaw", t):
+        return "absence", facts
+    return "symptoms", facts
+
+
+def parse_pl_date(t: str, today: dt.date, past_season: bool = False) -> dt.date | None:
+    """'8 pazdziernika', '25.09', '2024-09-25' (folded text) -> date not after today."""
+    if m := re.search(r"(20\d\d)-(\d\d)-(\d\d)", t):
+        return dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    day = month = None
+    if m := re.search(r"\b(\d{1,2})\s+([a-z]+)", t):
+        mon = next((v for k, v in MONTHS.items() if m.group(2).startswith(k)), None)
+        if mon:
+            day, month = int(m.group(1)), mon
+    if day is None and (m := re.search(r"\b(\d{1,2})\.(\d{1,2})\b", t)):
+        day, month = int(m.group(1)), int(m.group(2))
+    if day is None:
+        return None
+    try:
+        d = dt.date(today.year, month, day)
+    except ValueError:
+        return None
+    return d if d <= today else dt.date(today.year - 1, month, day)
+
+
 class DraftOut(BaseModel):
     field_id: int | None = None
     date: dt.date | None = None
@@ -71,8 +121,21 @@ def symptom_snippet(text: str, threat_name: str, limit: int = 260) -> str:
 
 def draft_text(d: dict) -> str:
     sev = {"niskie": "niskie", "srednie": "średnie", "wysokie": "wysokie"}.get(d.get("severity") or "", "nie podano")
-    return (f"**Szkic obserwacji**\n- pole: {d['field']}\n- data: {d['date']}\n- kategoria: {d['category']}\n"
-            f"- zagrożenie: {d.get('threat') or 'nie wskazano'}\n- nasilenie: {sev}\n- opis: {d['note']}")
+    lines = [f"**Szkic obserwacji** ({KIND_PL.get(d.get('kind'), 'obserwacja')})", f"- pole: {d['field']}",
+             f"- data: {d['date']}", f"- kategoria: {d['category']}", f"- zagrożenie: {d.get('threat') or 'nie wskazano'}"]
+    if d.get("kind") in (None, "symptoms"):
+        lines.append(f"- nasilenie: {sev}")
+    facts = d.get("facts") or {}
+    if facts.get("sowing_date"):
+        lines.append(f"- data siewu: {facts['sowing_date']}")
+    if facts.get("tillage"):
+        lines.append("- uprawa: bez orki (uproszczona)" if facts["tillage"] == "reduced" else "- uprawa: orka")
+    if facts.get("distance_m"):
+        lines.append(f"- odległość od pola: ok. {facts['distance_m']} m")
+    if facts.get("type"):
+        lines.append(f"- zdarzenie: {({'hail': 'grad', 'lodging': 'wyleganie', 'flood': 'zalanie'})[facts['type']]}")
+    lines.append(f"- opis: {d['note']}")
+    return "\n".join(lines)
 
 
 def observation(route: Route, question: str, history, llm: LLM, state, selected_field, conv_id=None) -> FlowResult:
@@ -104,7 +167,14 @@ def observation(route: Route, question: str, history, llm: LLM, state, selected_
         if t is None and route.threats:
             t = Threat.objects.filter(code=route.threats[0], crop_id=fcrop).first()
         threat = t
+    kind, facts = detect_kind(question, today)
     category = out.category or ("choroba" if threat and threat.category != "pest" else "szkodnik" if threat else None)
+    if kind == "field_fact":
+        category = "inne"
+    elif kind == "event":
+        category = "uszkodzenie"
+    elif kind == "absence" and category is None:
+        category = "choroba"
 
     missing = []
     if field_id is None:
@@ -123,8 +193,8 @@ def observation(route: Route, question: str, history, llm: LLM, state, selected_
     fname = next(f["name"] for f in fields if f["id"] == field_id)
     draft = {"draft_id": uuid.uuid4().hex[:12], "field_id": field_id, "field": fname, "date": date.isoformat(),
              "category": category, "threat_code": threat.code if threat else None,
-             "threat": threat.name if threat else None, "severity": out.severity,
-             "note": (out.note or question).strip()[:500]}
+             "threat": threat.name if threat else None, "severity": out.severity if kind == "symptoms" else None,
+             "note": (out.note or question).strip()[:500], "kind": kind, "facts": facts}
     state.set_draft(draft)
     text = draft_text(draft) + "\n\nZapisać tę obserwację? (tak / nie)"
     sources = []
@@ -151,7 +221,7 @@ def confirmation(route: Route, question: str, state, conv_id=None) -> FlowResult
     try:
         res = call("record_observation", field_id=draft["field_id"], date=draft["date"], category=draft["category"],
                    threat=draft.get("threat_code"), severity=draft.get("severity"), note=draft["note"],
-                   idempotency_key=key)
+                   idempotency_key=key, kind=draft.get("kind"), facts=draft.get("facts") or None)
     except ToolError as e:
         return FlowResult(f"Nie udało się zapisać obserwacji: {e}")
     draft["saved_observation_id"] = res["observation_id"]
@@ -163,7 +233,7 @@ def confirmation(route: Route, question: str, state, conv_id=None) -> FlowResult
     text = f"Zapisałem obserwację nr {res['observation_id']} dla pola {draft['field']} ({draft['date']})."
     updated = []
     if r["status"] == "ok":
-        updated = [draft["field_id"]]
+        updated = r.get("recomputed_field_ids") or [draft["field_id"]]
         ch = r.get("changed", {})
         if ch:
             parts = [f"{(v['after'] or {}).get('threat', c)}: {(v['before'] or {}).get('level', '—')} → {v['after']['level']}"
@@ -171,6 +241,11 @@ def confirmation(route: Route, question: str, state, conv_id=None) -> FlowResult
             text += " Silnik przeliczył ryzyko pola: " + "; ".join(parts) + "."
         else:
             text += " Silnik przeliczył ryzyko pola — poziomy zagrożeń na dziś się nie zmieniły."
+        others = [i for i in updated if i != draft["field_id"]]
+        if others:
+            from core.models import Field
+            text += (" Przeliczył też sąsiednie pola tej samej uprawy: "
+                     + ", ".join(Field.objects.filter(pk__in=others).values_list("name", flat=True)) + ".")
     elif r["status"] == "unavailable":
         text += " Silnik decyzyjny nie jest jeszcze podłączony, więc ryzyko pola nie zostało przeliczone."
     else:

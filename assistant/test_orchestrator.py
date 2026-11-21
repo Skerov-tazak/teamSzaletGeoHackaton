@@ -335,3 +335,16 @@ class ChatEndpointTests(WorldTestCase):
         self.assertEqual(self.client.post("/api/chat/", {"message": ""}, content_type="application/json").status_code, 400)
         self.assertEqual(self.client.post("/api/chat/", {"message": "x", "conversation_id": 999999},
                                           content_type="application/json").status_code, 404)
+
+
+class ReportKindTests(SimpleTestCase):
+    def test_kinds_and_facts(self):
+        from assistant.orchestrator.observations import detect_kind
+        today = dt.date(2025, 6, 10)
+        self.assertEqual(detect_kind("Wczoraj był grad", today), ("event", {"type": "hail"}))
+        self.assertEqual(detect_kind("Siałem 8 października", today), ("field_fact", {"sowing_date": "2024-10-08"}))
+        self.assertEqual(detect_kind("Na tym polu nie orałem", today), ("field_fact", {"tillage": "reduced"}))
+        self.assertEqual(detect_kind("Opryskałem w piątek na septoriozę", today)[0], "treatment")
+        self.assertEqual(detect_kind("Sąsiad za drogą ma fuzariozę", today), ("neighbour", {"distance_m": 300}))
+        self.assertEqual(detect_kind("Przeszedłem pole, jest czyste", today)[0], "absence")
+        self.assertEqual(detect_kind("Widzę rdzawe plamy", today)[0], "symptoms")

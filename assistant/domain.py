@@ -25,9 +25,9 @@ def crop_pl(code: int | None) -> str:
     return CROP_PL.get(code or -1, "inna uprawa")
 
 
-# --- risk levels (PROVISIONAL) ----------------------------------------------------------------
+# --- risk levels (the engine's cut-offs) ----------------------------------------------------------------
 # (upper bound exclusive, level number, Polish label). Proposed in INTERFACE_PROPOSALS.md.
-LEVELS = [(0.33, 1, "niskie"), (0.66, 2, "średnie"), (1.0001, 3, "wysokie")]
+LEVELS = [(0.3, 1, "niskie"), (0.6, 2, "średnie"), (1.0001, 3, "wysokie")]  # = engine/README.md cut-offs
 RELEVANT_SCORE = LEVELS[0][0]  # below this a threat is "not relevant now"
 
 

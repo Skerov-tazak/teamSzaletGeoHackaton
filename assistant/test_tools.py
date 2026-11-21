@@ -121,7 +121,8 @@ class ObservationToolTests(ToolTestCase):
                     note="brunatne plamy z czarnymi kropkami", idempotency_key=key)
         return call("record_observation", **(args | kw))
 
-    def test_idempotent_and_engine_unavailable(self):
+    @mock.patch("assistant.tools.observations.engine_predict", return_value=None)
+    def test_idempotent_and_engine_unavailable(self, _):
         r1 = self._call()
         self.assertTrue(r1["created"])
         self.assertEqual(r1["draft"]["date"], "2024-05-15")
@@ -147,7 +148,8 @@ class ObservationToolTests(ToolTestCase):
         self.assertEqual(r["reassessment"]["status"], "failed")
         self.assertTrue(Observation.objects.filter(idempotency_key="key-00000003").exists())
 
-    def test_future_date_rejected_and_listed(self):
+    @mock.patch("assistant.tools.observations.engine_predict", return_value=None)
+    def test_future_date_rejected_and_listed(self, _):
         with self.assertRaises(ToolError):
             self._call(key="key-00000004", date="2024-05-20")
         self._call(key="key-00000005")
