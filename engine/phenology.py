@@ -67,7 +67,7 @@ def _interp(table, x):
     return np.interp(x, xs, ys)
 
 
-def bbch_series(crop: int, daily_temp: pd.Series, season: int) -> pd.DataFrame:
+def bbch_series(crop: int, daily_temp: pd.Series, season: int, sowing: date | None = None) -> pd.DataFrame:
     """
     daily_temp: avg temperature (°C) indexed by date, covering the season (gaps are filled).
     Returns a frame indexed by date with columns bbch, gdd, sowing (trailing sums only: no look-ahead).
@@ -77,8 +77,9 @@ def bbch_series(crop: int, daily_temp: pd.Series, season: int) -> pd.DataFrame:
     base = GDD_BASE.get(crop, 0.0)
     month, day = DEFAULT_SOWING.get(crop, (4, 25))
     out = pd.DataFrame(index=t.index)
+    given = sowing is not None
     if crop == WHEAT:
-        sowing = pd.Timestamp(season - 1, month, day)
+        sowing = pd.Timestamp(sowing) if given else pd.Timestamp(season - 1, month, day)
         gdd_day = (t - base).clip(lower=0)
         autumn = gdd_day.where((t.index >= sowing) & (t.index < pd.Timestamp(season, 1, 1)), 0).cumsum()
         spring = gdd_day.where(t.index >= pd.Timestamp(season, 1, 1), 0).cumsum()
@@ -89,12 +90,14 @@ def bbch_series(crop: int, daily_temp: pd.Series, season: int) -> pd.DataFrame:
         out.loc[t.index < sowing, "bbch"] = -1
         out["gdd"] = np.where(in_spring, spring.values, autumn.values)
     else:
-        sowing = pd.Timestamp(season, month, day)
+        sowing = pd.Timestamp(sowing) if given else pd.Timestamp(season, month, day)
         gdd = (t - base).clip(lower=0).where(t.index >= sowing, 0).cumsum()
         out["bbch"] = _interp(MAIZE_TABLE, gdd.values)
         out.loc[t.index < sowing, "bbch"] = -1
         out["gdd"] = gdd.values
     out["sowing"] = sowing.date()
+    out["method"] = "degree days, sowing date from the farmer" if given else "degree days, typical sowing date"
+    out["confidence"] = 0.85 if given else STAGE_CONFIDENCE_GDD
     return out
 
 

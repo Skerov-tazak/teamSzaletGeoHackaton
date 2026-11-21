@@ -21,7 +21,8 @@ from django.utils import timezone
 from core import clock
 from core.models import Field, Risk, Threat, WeatherForecastDaily
 from engine import features as F
-from engine.catalog import MAIZE, RULES, rules_for_crop
+from engine import observations as OBS
+from engine.catalog import CARRYOVER, MAIZE, RULES, rules_for_crop
 from engine.phenology import bbch_series, degree_days_base10
 from engine.satellite.season import season_bounds, season_of
 from engine.scoring import FieldContext, score_rule, spray_window
@@ -29,7 +30,12 @@ from engine.scoring import FieldContext, score_rule, spray_window
 log = logging.getLogger(__name__)
 
 
-def predict(field_ids: list[int] | None = None, start: date | None = None, end: date | None = None) -> int:
+def predict(field_ids: list[int] | None = None, start: date | None = None, end: date | None = None,
+            observations: list | None = None) -> int:
+    """
+    `observations`: optional farmer reports (engine.observations.Report) to use instead of the
+    Observation table, e.g. in tests or a scripted demo. Each report affects days >= its date only.
+    """
     today = clock.today()
     end = end or today + timedelta(days=clock.FORECAST_DAYS)
     start = start or season_bounds(season_of(today))[0]
@@ -42,7 +48,8 @@ def predict(field_ids: list[int] | None = None, start: date | None = None, end: 
     rows: list[Risk] = []
     now = timezone.now()
     for field in fields:
-        rows += _field_rows(field, threats, start, end, now)
+        reports = OBS.for_field(observations, field.id) if observations is not None else OBS.load(field.id, start, end)
+        rows += _field_rows(field, threats, start, end, now, reports)
     with transaction.atomic():
         Risk.objects.bulk_create(
             rows, batch_size=2000, update_conflicts=True,
@@ -81,21 +88,33 @@ def field_context(field: Field, season: int, crop_code: int | None = None, crop_
                         previous_crop_name=names.get(season - 1), maize_years_in_row=in_row, soil=soil)
 
 
-def _field_rows(field: Field, threats: dict, start: date, end: date, now) -> list[Risk]:
-    rules = [r for r in rules_for_crop(field.crop_id) if r.code in threats]
-    if not rules:
-        return []
+def season_crop(field: Field, season: int) -> tuple[int | None, str]:
+    """
+    The crop of a field in a season. Field.crop is the crop of the current season (the clock's); for
+    earlier seasons the crop map says what grew there (largest share), so last season is scored with
+    last season's crop.
+    """
+    if season >= season_of(clock.today()):
+        return field.crop_id, "field"
+    best = field.crop_years.filter(year=season).order_by("-share").values_list("crop_class_id", flat=True).first()
+    return best, "crop map"
+
+
+def _field_rows(field: Field, threats: dict, start: date, end: date, now, reports=()) -> list[Risk]:
     out: list[Risk] = []
     s = start
     while s <= end:  # a range may cross 1 September: score each season separately
         season = season_of(s)
         s_end = min(end, season_bounds(season)[1])
-        out += _season_rows(field, threats, rules, season, s, s_end, now)
+        crop, source = season_crop(field, season)
+        rules = [r for r in rules_for_crop(crop) if r.code in threats] if crop else []
+        if rules:
+            out += _season_rows(field, threats, rules, season, s, s_end, now, reports, crop, source)
         s = s_end + timedelta(days=1)
     return out
 
 
-def _season_rows(field, threats, rules, season, start, end, now) -> list[Risk]:
+def _season_rows(field, threats, rules, season, start, end, now, reports=(), crop=None, crop_source="field") -> list[Risk]:
     grid = field.weather_grid_id
     load_start = min(start, season_bounds(season)[0])
     daily = F.load_daily(grid, load_start, end)
@@ -106,13 +125,20 @@ def _season_rows(field, threats, rules, season, start, end, now) -> list[Risk]:
     days = pd.date_range(max(pd.Timestamp(start), daily.index.min()), min(pd.Timestamp(end), daily.index.max()), freq="D")
     if len(days) == 0:
         return []
-    ctx = field_context(field, season)
+    ctx = field_context(field, season, crop_code=crop, crop_source=crop_source)
+    ctx.last_season = last_season_peaks(field, season)
     stages = bbch_series(ctx.crop, daily["avg_temperature"], season)
+    sow = OBS.sowing_override([r for r in reports if r.observed_on <= end])
+    if sow:  # the farmer's sowing date replaces the assumed one from the day it was reported
+        told = bbch_series(ctx.crop, daily["avg_temperature"], season, sowing=sow[0])
+        use = told.index >= pd.Timestamp(sow[1])
+        stages = stages.copy()
+        stages.loc[use] = told.loc[use]
     dd10 = degree_days_base10(daily["avg_temperature"], season)
     out = []
     forecast_cache: dict[date, pd.DataFrame] = {}
     for rule in rules:
-        for res in score_rule(rule, ctx, daily, hourly, stages, dd10, days):
+        for res in score_rule(rule, ctx, daily, hourly, stages, dd10, days, reports):
             if res.explanation["action"]["type"] == "treat":
                 fc = forecast_cache.get(res.day)
                 if fc is None:
@@ -122,6 +148,24 @@ def _season_rows(field, threats, rules, season, start, end, now) -> list[Risk]:
             out.append(Risk(field=field, threat=threats[rule.code], date=res.day, score=res.score,
                             explanation=res.explanation, computed_at=now))
     return out
+
+
+def last_season_peaks(field: Field, season: int) -> dict:
+    """Peak risk per threat on this field in the previous season (from earlier predict() runs)."""
+    from django.db.models import Max
+
+    s0, s1 = season_bounds(season - 1)
+    peaks = {}
+    rows = (Risk.objects.filter(field=field, date__range=(s0, s1)).values("threat__code", "threat__name")
+            .annotate(peak=Max("score")))
+    by_code = {r["threat__code"]: r for r in rows}
+    for code, sources in CARRYOVER.items():
+        best = max((by_code[c] for c in sources if c in by_code), key=lambda r: r["peak"], default=None)
+        if best:
+            day = Risk.objects.filter(field=field, threat__code=best["threat__code"], date__range=(s0, s1),
+                                      score=best["peak"]).values_list("date", flat=True).first()
+            peaks[code] = {"peak": best["peak"], "date": day.isoformat() if day else None, "threat": best["threat__name"]}
+    return peaks
 
 
 def _forecast(grid: str, day: date) -> pd.DataFrame:

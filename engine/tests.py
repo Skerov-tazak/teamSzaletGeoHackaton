@@ -144,3 +144,64 @@ class NoLookAheadTests(EngineTestBase):
         predict(start=date(2025, 6, 1), end=date(2025, 6, 14))
         after = {(r.field_id, r.threat_id): r.score for r in Risk.objects.filter(date=date(2025, 6, 8))}
         self.assertEqual(before, after)
+
+
+class ObservationTests(EngineTestBase):
+    """Farmer reports change risks from their date on, and show up in the explanation."""
+    wet_days = {date(2025, 6, d) for d in range(18, 24)}
+
+    def run_day(self, code, day, field, reports):
+        from engine.observations import Report  # noqa: F401  (import check)
+        predict(field_ids=[field.id], start=day - timedelta(days=10), end=day, observations=reports)
+        return Risk.objects.get(field=field, threat__code=code, date=day)
+
+    def test_symptoms_floor_and_confidence(self):
+        from engine.observations import Report
+        day = date(2025, 6, 10)  # dry, so rules alone give a low score
+        base = self.run_day("wheat.septoria_leaf_blotch", day, self.wheat, [])
+        rep = Report(observed_on=date(2025, 6, 8), kind="symptoms", threat_code="wheat.septoria_leaf_blotch", severity=0.8, field_id=self.wheat.id)
+        seen = self.run_day("wheat.septoria_leaf_blotch", day, self.wheat, [rep])
+        self.assertLess(base.score, 0.3)
+        self.assertGreaterEqual(seen.score, 0.8)
+        self.assertEqual(seen.explanation["confidence"], 1.0)
+        fr = [d for d in seen.explanation["drivers"] if d["factor"] == "farmer_report"]
+        self.assertEqual(len(fr), 1)
+        self.assertGreater(fr[0]["effect"], 0.5)
+        self.assertIn("farmer reported septoria leaf blotch", seen.explanation["summary"].lower())
+
+    def test_report_does_not_change_earlier_days(self):
+        from engine.observations import Report
+        rep = Report(observed_on=date(2025, 6, 9), kind="symptoms", threat_code="wheat.septoria_leaf_blotch", severity=1.0, field_id=self.wheat.id)
+        before = self.run_day("wheat.septoria_leaf_blotch", date(2025, 6, 8), self.wheat, [rep])
+        self.assertLess(before.score, 0.3)
+        self.assertFalse([d for d in before.explanation["drivers"] if d["factor"] == "farmer_report"])
+
+    def test_neighbour_raises_treatment_lowers_absence_lowers(self):
+        from engine.observations import Report
+        code, day = "wheat.fusarium_head_blight", date(2025, 6, 23)
+        f = self.wheat_after_wheat  # no previous-maize multiplier, so there is room to move
+        base = self.run_day(code, day, f, []).score
+        nb = self.run_day(code, day, f, [Report(observed_on=date(2025, 6, 20), kind="neighbour", threat_code=code, distance_m=300)]).score
+        tr = self.run_day(code, day, f, [Report(observed_on=date(2025, 6, 21), kind="treatment", threat_code=code, field_id=f.id)])
+        ab = self.run_day(code, day, f, [Report(observed_on=date(2025, 6, 22), kind="absence", field_id=f.id)]).score
+        self.assertGreater(base, 0)
+        self.assertGreaterEqual(nb, base)
+        self.assertLess(tr.score, base)
+        self.assertEqual(tr.explanation["action"]["type"], "wait")
+        self.assertLess(ab, base)
+
+    def test_reports_for_other_fields_are_ignored(self):
+        from engine.observations import Report
+        rep = Report(observed_on=date(2025, 6, 8), kind="symptoms", threat_code="wheat.septoria_leaf_blotch", severity=1.0, field_id=self.wheat_after_wheat.id)
+        r = self.run_day("wheat.septoria_leaf_blotch", date(2025, 6, 10), self.wheat, [rep])
+        self.assertLess(r.score, 0.3)
+
+    def test_farmer_sowing_date_changes_stage(self):
+        from engine.observations import Report
+        day = date(2025, 6, 1)
+        late = Report(observed_on=date(2025, 5, 1), kind="field_fact", details={"sowing_date": "2025-05-20"}, field_id=self.maize.id)
+        r0 = self.run_day("maize.frit_fly", day, self.maize, [])
+        r1 = self.run_day("maize.frit_fly", day, self.maize, [late])
+        self.assertLess(r1.explanation["growth_stage"]["bbch"], r0.explanation["growth_stage"]["bbch"])
+        self.assertEqual(r1.explanation["growth_stage"]["sowing_assumed"], "2025-05-20")
+        self.assertIn("farmer", r1.explanation["growth_stage"]["method"])

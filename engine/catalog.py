@@ -245,6 +245,18 @@ _add(Rule(
 
 CEREALS = {1110, 1120, 1150}
 
+# Last season's risk on the same field that carries over in residue / soil (same pathogen or pest).
+# Fusarium spp. infect both maize and wheat, so a bad maize year raises next year's head blight.
+CARRYOVER = {
+    "wheat.fusarium_head_blight": ("wheat.fusarium_head_blight", "maize.fusarium_ear_rot", "maize.fusarium_stalk_rot"),
+    "maize.fusarium_ear_rot": ("maize.fusarium_ear_rot", "maize.fusarium_stalk_rot", "wheat.fusarium_head_blight"),
+    "maize.fusarium_stalk_rot": ("maize.fusarium_stalk_rot", "maize.fusarium_ear_rot", "wheat.fusarium_head_blight"),
+    "wheat.septoria_leaf_blotch": ("wheat.septoria_leaf_blotch",),
+    "wheat.tan_spot": ("wheat.tan_spot",),
+    "wheat.take_all": ("wheat.take_all",),
+    "maize.european_corn_borer": ("maize.european_corn_borer",),
+}
+
 
 def rules_for_crop(crop_code: int) -> list[Rule]:
     return [r for r in RULES.values() if r.crop == crop_code]

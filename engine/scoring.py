@@ -16,6 +16,7 @@ import pandas as pd
 
 from engine import features as F
 from engine.catalog import CEREALS, MAIZE, WHEAT, Rule
+from engine import observations as OBS
 from engine.phenology import STAGE_CONFIDENCE_GDD, stage_name
 
 MODEL_VERSION = "0.1.0"
@@ -43,6 +44,7 @@ class FieldContext:
     previous_crop_name: str | None
     maize_years_in_row: int          # consecutive maize seasons including this one
     soil: dict = field(default_factory=dict)  # averaged root-zone values: clay, sand, ph
+    last_season: dict = field(default_factory=dict)  # threat code -> {"peak", "date", "threat"} from last season's risks
 
 
 def stage_weight(bbch: np.ndarray, rule: Rule) -> np.ndarray:
@@ -68,6 +70,10 @@ def multipliers(rule: Rule, ctx: FieldContext) -> list[dict]:
     if rule.maize_monoculture != 1.0 and ctx.maize_years_in_row >= 2:
         out.append({"factor": "maize_monoculture", "label": f"Maize monoculture ({ctx.maize_years_in_row} seasons in a row)",
                     "value": ctx.maize_years_in_row, "unit": "seasons", "multiplier": rule.maize_monoculture})
+    carry = ctx.last_season.get(rule.code)
+    if carry and carry["peak"] >= 0.6:
+        out.append({"factor": "last_season", "label": f"High {carry['threat']} pressure on this field last season (peak {carry['peak']:.2f} on {carry['date']}): infected residue",
+                    "value": round(carry["peak"], 2), "unit": "0-1", "multiplier": 1.2})
     clay = ctx.soil.get("clay")
     if rule.heavy_soil != 1.0 and clay is not None and clay >= 30:
         out.append({"factor": "heavy_soil", "label": f"Heavy soil (clay {clay:.0f} %) holds water",
@@ -83,7 +89,7 @@ class DayResult:
 
 
 def score_rule(rule: Rule, ctx: FieldContext, daily: pd.DataFrame, hourly: pd.DataFrame,
-               stages: pd.DataFrame, dd10: pd.Series, days: pd.DatetimeIndex) -> list[DayResult]:
+               stages: pd.DataFrame, dd10: pd.Series, days: pd.DatetimeIndex, reports=None) -> list[DayResult]:
     """Scores one rule for the given days (all inside one season)."""
     d = daily
     bbch = stages["bbch"].reindex(days).fillna(0).to_numpy()
@@ -170,12 +176,20 @@ def score_rule(rule: Rule, ctx: FieldContext, daily: pd.DataFrame, hourly: pd.Da
     m_total = float(np.prod([m["multiplier"] for m in mults])) if mults else 1.0
     base = np.asarray(base, dtype=float)
     final = np.clip(base * sw * m_total, 0, 1)
+    effs = OBS.effects(rule, reports or [], days)
+    loo = []
+    if effs:
+        rules_only = final
+        final = OBS.combine(rules_only, effs)
+        loo = [OBS.combine(rules_only, effs, skip=j) for j in range(len(effs))]
 
     results = []
     for i, day in enumerate(days):
+        active = [(e, float(final[i] - loo[j][i])) for j, e in enumerate(effs)
+                  if e.mult[i] != 1 or e.floor[i] > 0 or e.after[i] != 1]
         results.append(DayResult(day.date(), round(float(final[i]), 3), _explain(
             rule, ctx, day, float(final[i]), float(base[i]), float(sw[i]), float(bbch[i]), m_total, mults, main, i,
-            stages, extra, bool(estimated.iloc[i]) if len(estimated) else False)))
+            stages, extra, bool(estimated.iloc[i]) if len(estimated) else False, active)))
     return results
 
 
@@ -184,7 +198,7 @@ def _moisture_text(kind: str) -> str:
             "mild": "humid but not rainy air (RH 50-95 %)"}[kind]
 
 
-def _explain(rule, ctx, day, final, base, sw, bbch, m_total, mults, main, i, stages, extra, estimated) -> dict:
+def _explain(rule, ctx, day, final, base, sw, bbch, m_total, mults, main, i, stages, extra, estimated, active=()) -> dict:
     level = level_of(final)
     value = main["values"].iloc[i] if hasattr(main["values"], "iloc") else main["values"][i]
     value = None if pd.isna(value) else round(float(value), 1)
@@ -202,6 +216,10 @@ def _explain(rule, ctx, day, final, base, sw, bbch, m_total, mults, main, i, sta
     for m in mults:
         without = min(1.0, base * sw * m_total / m["multiplier"])
         drivers.append({**{k: v for k, v in m.items()}, "effect": round(final - without, 3)})
+    for e, eff in active:
+        r = e.report
+        drivers.append({"factor": "farmer_report", "kind": r.kind, "label": r.label(), "observed_on": r.observed_on.isoformat(),
+                        "threat_code": r.threat_code, "text": r.text or None, "report_id": r.id, "effect": round(eff, 3)})
     pressure_reason = extra.get("_pressure_reason")
     for k, s in extra.items():
         if k.startswith("_"):
@@ -227,9 +245,15 @@ def _explain(rule, ctx, day, final, base, sw, bbch, m_total, mults, main, i, sta
         reasons += [lc(m["label"]) for m in mults]
         if pressure_reason:
             reasons.append(pressure_reason)
+    reasons += [lc(e.report.label()) for e, _ in active]
     summary = f"{level.capitalize()} risk of {rule.name_en} ({rule.name_pl}): " + "; ".join(reasons) + "."
 
-    confidence = STAGE_CONFIDENCE_GDD * (0.7 if estimated else 1.0)
+    st_conf = float(st["confidence"]) if st is not None and "confidence" in st else STAGE_CONFIDENCE_GDD
+    st_method = str(st["method"]) if st is not None and "method" in st else "degree days, typical sowing date"
+    confidence = st_conf * (0.7 if estimated else 1.0)
+    if any(e.report.kind == "symptoms" for e, _ in active):
+        confidence = 1.0  # seen in the field
+    treated = [e.report for e, _ in active if e.after[i] < 1]
     return {
         "version": 1,
         "summary": summary,
@@ -238,10 +262,10 @@ def _explain(rule, ctx, day, final, base, sw, bbch, m_total, mults, main, i, sta
         "threat": {"code": rule.code, "name_pl": rule.name_pl, "name_en": rule.name_en, "category": rule.category},
         "as_of": day.date().isoformat(),
         "crop": {"code": ctx.crop, "source": ctx.crop_source},
-        "growth_stage": {"bbch": int(round(bbch)), "name": stage_name(bbch), "method": "degree days, typical sowing date",
-                         "sowing_assumed": str(st["sowing"]) if st is not None else None, "confidence": STAGE_CONFIDENCE_GDD},
+        "growth_stage": {"bbch": int(round(bbch)), "name": stage_name(bbch), "method": st_method,
+                         "sowing_assumed": str(st["sowing"]) if st is not None else None, "confidence": st_conf},
         "drivers": drivers,
-        "action": _action(rule, level, sw),
+        "action": _action(rule, level, sw, treated),
         "severity": rule.severity,
         "expected_loss": round(final * rule.severity, 4),
         "confidence": round(confidence, 2),
@@ -260,7 +284,11 @@ _EXTRA_LABELS = {"rain_days": "Days with >= 1 mm rain in the window (rain splash
 _EXTRA_UNITS = {"rain_days": "days", "mean_temperature_7d": "°C", "water_balance_30d": "mm", "local_pressure": "0-1", "degree_days_10": "°C·days"}
 
 
-def _action(rule: Rule, level: str, sw: float) -> dict:
+def _action(rule: Rule, level: str, sw: float, treated=()) -> dict:
+    if treated:
+        t = max(treated, key=lambda r: r.observed_on)
+        return {"type": "wait", "text": f"Protected by the treatment on {t.observed_on.isoformat()}; inspect again when the protection ends (about 14-21 days).",
+                "threshold": rule.action_threshold or None, "spray_window": None}
     if sw == 0 or level == "low":
         return {"type": "wait", "text": "No action needed now.", "threshold": rule.action_threshold or None, "spray_window": None}
     if level == "medium":

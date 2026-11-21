@@ -116,3 +116,22 @@ Threats (16): wheat — fusarium head blight, septoria leaf blotch, brown rust, 
 Reading: **wheat vs maize is reliable from late May; wheat vs other winter cereals (barley, triticale, rye) and maize vs other summer crops (sugar beet, potato) are not** from NDVI alone. So the satellite *proposes* the crop and the farmer confirms it. Next steps for accuracy: red-edge / SWIR bands, timing normalised by degree days, field-level averaging (pixel numbers above are a lower bound).
 
 **Data problem:** the organisers' 2021 crop map is pixel-identical to the 2022 map (the 2021 package holds the 2022 data; its labels fit the 2022 imagery). Season 2021 is excluded from training; `FieldCropYear` rows for 2021 are wrong too.
+
+### Farmer reports and field history (v0.2)
+
+[`observations.py`](observations.py). Reports from the chat change risks **from the day they were observed on** (never earlier days) and each one is a driver in the explanation, with its effect:
+
+| `kind` | Example | Effect | For how long |
+|---|---|---|---|
+| `symptoms` | "I see brown rust on the north field" | score at least 0.6 + 0.3 × severity; confidence 1 | full 10 days, gone by day 21 |
+| `absence` | "Inspected, clean" (`threat_code` empty = all) | × 0.5 | back to normal by day 10 |
+| `neighbour` | "My neighbour has head blight" | × (1 + 0.5 × closeness), closeness 1 up to 500 m, 0 at 3 km | full 7 days, gone by day 21 |
+| `treatment` | "Sprayed against septoria on 10 May" (empty = all fungal) | × 0.3, action becomes "wait" | full 14 days, gone by day 21 |
+| `field_fact` | `{"sowing_date": "2024-09-25"}`, `{"tillage": "reduced"}`, `{"resistant_to": [codes]}` | real sowing date replaces the assumed one (stage confidence 0.85); reduced tillage × 1.3 for residue diseases; resistant variety × 0.6 | rest of the season |
+| `event` | `{"type": "hail" / "lodging" / "flood"}` | hail: fungal × 1.3; lodging: fungal × 1.2; flood: crazy top at least 0.7 | 14-28 days |
+
+Until the `Observation` table exists, `observations.load()` returns nothing; `predict(..., observations=[Report(...)])` takes reports directly (tests, scripted demo). **Proposed `Observation` columns** (Jan, Szymek, Ola): `field` (FK, null = whole farm), `observed_on` (date), `recorded_at`, `kind` (one of the above), `threat_code` (null), `severity` (0-1, null), `distance_m` (null), `details` (JSON), `text` (the farmer's words). The engine reads them through `observations.load()`, so column names can still change in one place.
+
+**Field history:**
+- Previous crop and maize monoculture (crop maps) - multipliers per threat.
+- **Carry-over from last season:** if the same pathogen peaked >= 0.6 on this field last season, × 1.2 (infected residue). Fusarium is shared by maize and wheat, so a bad maize year raises next year's head blight. Last season is scored with last season's crop from the crop map, not with `Field.crop`.
