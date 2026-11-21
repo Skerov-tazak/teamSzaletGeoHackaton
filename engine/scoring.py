@@ -15,14 +15,17 @@ import numpy as np
 import pandas as pd
 
 from engine import features as F
-from engine.catalog import CEREALS, MAIZE, WHEAT, Rule
+from engine.catalog import CEREALS, CROP_NAMES, MAIZE, WHEAT, WINTER_CROPS, Rule
 from engine import observations as OBS
 from engine.phenology import STAGE_CONFIDENCE_GDD, stage_name
 
 MODEL_VERSION = "0.1.0"
 LEVELS = ((0.6, "high"), (0.3, "medium"), (0.0, "low"))  # team assumption, to agree with the map
 NO_IN_SEASON_TREATMENT = {"wheat.take_all", "wheat.snow_mould", "maize.seedling_blight", "maize.crazy_top",
-                          "maize.fusarium_stalk_rot", "maize.fusarium_ear_rot"}
+                          "maize.fusarium_stalk_rot", "maize.fusarium_ear_rot",
+                          "barley.take_all", "barley.snow_mould", "other_cereals.snow_mould", "rapeseed.clubroot",
+                          "sugar_beet.seedling_damping_off", "sugar_beet.rhizoctonia_root_rot", "sugar_beet.beet_cyst_nematode",
+                          "potato.rhizoctonia", "potato.cyst_nematode"}
 # Spraying conditions: 1-25 °C, no rain, wind <= 4 m/s.
 SPRAY = {"max_temperature": 25.0, "min_temperature": 1.0, "total_precipitation": 1.0, "avg_wind_speed": 14.4}
 
@@ -43,6 +46,8 @@ class FieldContext:
     maize_years_in_row: int          # consecutive maize seasons including this one
     soil: dict = field(default_factory=dict)  # averaged root-zone values: clay, sand, ph
     last_season: dict = field(default_factory=dict)  # threat code -> {"peak", "date", "threat"} from last season's risks
+    history: dict = field(default_factory=dict)  # season -> dominant crop code (crop map), for rotation pests
+    season: int | None = None
 
 
 def stage_weight(bbch: np.ndarray, rule: Rule) -> np.ndarray:
@@ -68,6 +73,20 @@ def multipliers(rule: Rule, ctx: FieldContext) -> list[dict]:
     if rule.maize_monoculture != 1.0 and ctx.maize_years_in_row >= 2:
         out.append({"factor": "maize_monoculture", "label": f"Maize monoculture ({ctx.maize_years_in_row} seasons in a row)",
                     "value": ctx.maize_years_in_row, "unit": "seasons", "multiplier": rule.maize_monoculture})
+    if rule.same_crop != 1.0 and ctx.previous_crop is not None and ctx.previous_crop == rule.crop:
+        name = CROP_NAMES.get(rule.crop, "the same crop").lower()
+        out.append({"factor": "previous_crop", "label": f"Same crop last season ({name} after {name}): the pathogen or pest stays in the field",
+                    "value": ctx.previous_crop, "unit": "crop code", "display": ctx.previous_crop_name, "multiplier": rule.same_crop})
+    for code, mult, why in rule.after_crops:
+        if ctx.previous_crop == code:
+            out.append({"factor": "previous_crop", "label": why, "value": code, "unit": "crop code",
+                        "display": ctx.previous_crop_name, "multiplier": mult})
+    ph = ctx.soil.get("ph")
+    if ph is not None and ph > 14:  # pH x 10 in raw SoilGrids units
+        ph = ph / 10
+    if rule.acid_soil != 1.0 and ph is not None and ph < 6.5:
+        out.append({"factor": "acid_soil", "label": f"Acid soil (pH {ph:.1f}) favours it",
+                    "value": round(ph, 1), "unit": "pH", "multiplier": rule.acid_soil})
     carry = ctx.last_season.get(rule.code)
     if carry and carry["peak"] >= 0.6:
         out.append({"factor": "last_season", "label": f"High {carry['threat']} pressure on this field last season (peak {carry['peak']:.2f} on {carry['date']}): infected residue",
@@ -109,7 +128,7 @@ def score_rule(rule: Rule, ctx: FieldContext, daily: pd.DataFrame, hourly: pd.Da
             rain_factor = np.clip(rain_days / rule.needs_rain_days, 0.0, 1.0)
             base = base * rain_factor
             extra["rain_days"] = rain_days
-        if rule.crop == WHEAT:  # winter dormancy: leaf diseases do not develop in cold weather
+        if rule.crop in WINTER_CROPS:  # winter dormancy: leaf diseases do not develop in cold weather
             mean7 = F.trailing_mean(d["avg_temperature"], 7).reindex(days)
             active = ramp(mean7.to_numpy(), 3, 8)
             base = base * active
@@ -120,11 +139,15 @@ def score_rule(rule: Rule, ctx: FieldContext, daily: pd.DataFrame, hourly: pd.Da
             base = np.maximum(base, 0.8 * drought)
             extra["water_balance_30d"] = balance
     elif rule.kind == "soil_days":
-        cond = ((d["avg_soil_temperature_level_1"] < 12) & (d["avg_soil_moisture_level_1"] >= 0.30)).astype(float)
+        lo, hi = rule.soil_temp
+        st = d["avg_soil_temperature_level_1"]
+        in_t = (st < hi) if lo is None else st.between(lo, hi)
+        cond = (in_t & (d["avg_soil_moisture_level_1"] >= rule.soil_wet)).astype(float)
         win = F.trailing_sum(cond, rule.window_days).reindex(days).fillna(0)
         base = ramp(win, rule.hours_low, rule.hours_high)
-        main = {"factor": "cold_wet_soil_days", "values": win, "unit": "days",
-                "label": f"Days with cold (< 12 °C) and wet (>= 0.30 m³/m³) topsoil in the last {rule.window_days} days",
+        t_txt = f"cold (< {hi:g} °C)" if lo is None else f"warm ({lo:g}-{hi:g} °C)"
+        main = {"factor": "cold_wet_soil_days" if lo is None else "warm_wet_soil_days", "values": win, "unit": "days",
+                "label": f"Days with {t_txt} and wet (>= {rule.soil_wet:.2f} m³/m³) topsoil in the last {rule.window_days} days",
                 "threshold": f"{rule.hours_low:g} days starts the risk, {rule.hours_high:g} days = full risk"}
     elif rule.kind == "snow_days":
         cond = (d["avg_temperature"].between(rule.temp_min - 2, rule.temp_max)
@@ -144,11 +167,12 @@ def score_rule(rule: Rule, ctx: FieldContext, daily: pd.DataFrame, hourly: pd.Da
                 "threshold": f"{rule.hours_low:g} day starts the risk, {rule.hours_high:g} days = full risk"}
     elif rule.kind == "vector_days":
         emerged = (stages["bbch"].reindex(d.index).fillna(-1) >= 10).astype(float)
-        flight = ((d["max_temperature"] >= 12).astype(float) * emerged)
+        flight = ((d["max_temperature"] >= rule.flight_c).astype(float) * emerged)
         win = F.trailing_sum(flight, rule.window_days).reindex(days).fillna(0)
         base = ramp(win, rule.hours_low, rule.hours_high)
-        main = {"factor": "aphid_flight_days", "values": win, "unit": "days",
-                "label": f"Days warm enough for aphids to fly (max >= 12 °C) since emergence, last {rule.window_days} days",
+        insect = "aphids" if "aphid" in rule.name_en.lower() or rule.category == "viral" else "the pest"
+        main = {"factor": "aphid_flight_days" if insect == "aphids" else "flight_days", "values": win, "unit": "days",
+                "label": f"Days warm enough for {insect} to fly (max >= {rule.flight_c:g} °C) since emergence, last {rule.window_days} days",
                 "threshold": f"{rule.hours_low:g} days starts the risk, {rule.hours_high:g} days = full risk"}
     elif rule.kind == "pest_activity":
         mean7 = F.trailing_mean(d["avg_temperature"], 7).reindex(days)
@@ -161,7 +185,14 @@ def score_rule(rule: Rule, ctx: FieldContext, daily: pd.DataFrame, hourly: pd.Da
             p0, p1 = rule.dd10_peak
             act = np.minimum(ramp(x, rule.dd10_start, p0), 1 - ramp(x, p1, rule.dd10_end))
             pressure = 0.6
-            pressure_why = "typical for maize in the region (assumption)"
+            pressure_why = f"typical for {CROP_NAMES.get(rule.crop, 'the crop').lower()} in the region (assumption)"
+            if rule.rotation_hosts:
+                seasons = [ctx.season - k for k in range(1, rule.rotation_years + 1)] if ctx.season else []
+                hosts = [(s, ctx.history.get(s)) for s in seasons if ctx.history.get(s) in rule.rotation_hosts]
+                pressure = 1.0 if hosts else 0.1
+                pressure_why = ("host crop on this field in the last {} seasons ({}): the population stays in the soil".format(
+                    rule.rotation_years, ", ".join(f"{CROP_NAMES.get(c, c)} {s}" for s, c in hosts)) if hosts
+                    else f"no host crop on this field in the last {rule.rotation_years} seasons")
             if rule.code == "maize.western_corn_rootworm":
                 pressure = 1.0 if ctx.maize_years_in_row >= 2 else 0.05
                 pressure_why = (f"maize on this field {ctx.maize_years_in_row} seasons in a row: eggs overwinter in the soil"
@@ -204,7 +235,7 @@ def score_rule(rule: Rule, ctx: FieldContext, daily: pd.DataFrame, hourly: pd.Da
 
 def _moisture_text(kind: str) -> str:
     return {"wet": "wet leaves (RH >= 95 % or rain)", "humid": "humid air (RH >= 85 % or rain)",
-            "mild": "humid but not rainy air (RH 50-95 %)"}[kind]
+            "mild": "humid but not rainy air (RH 50-95 %)", "rh90": "air humidity >= 90 % or rain"}[kind]
 
 
 def _explain(rule, ctx, day, final, base, sw, bbch, m_total, mults, main, i, stages, extra, estimated, active=()) -> dict:

@@ -3,14 +3,14 @@ python manage.py engine_load_threats
 
 Upserts the Threat rows the engine has rules for (engine/catalog.py), by code. Safe to run on top of
 the platform's own Threat fixture: existing rows with the same code are updated, others are untouched.
-Needs the CropClass rows 1110 (Wheat) and 1130 (Maize).
+Creates the CropClass rows of the engine's crops if they are missing.
 """
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
 from core.models import CropClass, Threat
-from engine.catalog import RULES
+from engine.catalog import CROP_NAMES, RULES
 
 
 class Command(BaseCommand):
@@ -18,7 +18,7 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **opts):
-        for code, name in ((1110, "Wheat"), (1130, "Maize")):
+        for code, name in CROP_NAMES.items():
             CropClass.objects.get_or_create(code=code, defaults={"name": name})
         n = 0
         for rule in RULES.values():

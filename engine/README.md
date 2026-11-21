@@ -113,7 +113,7 @@ Report(observed_on: date, kind: str, threat_code: str | None = None, severity: f
 | Command | What |
 |---|---|
 | `predict [--fields 1 2] [--start D] [--end D]` | `predict()` from the shell. |
-| `engine_load_threats` | Create / update the `Threat` rows of all 25 rules (by `code`; other rows untouched). |
+| `engine_load_threats` | Create / update the `Threat` rows of all 76 rules (by `code`; other rows untouched) and the engine's `CropClass` rows if missing. |
 | `engine_fetch_ndvi [--season Y] [--fields ...]` | Download and cache each field's Sentinel-2 NDVI series (network). |
 | `engine_summary [--date D] [--json]` | Print the field ranking. |
 | `engine_check_data [--season Y]` | Check that every table / file the engine needs is loaded; lists what is missing per field. |
@@ -163,7 +163,7 @@ The engine reads only through the Django ORM and the platform helpers (`.observe
 ### Which rows: scope and dates
 
 - **Cells:** weather only for the grid cells the fields point to (`Field.weather_grid`), soil only for the fields' H3 cells (`Field.h3_cells`). One weather cell usually serves the whole farm.
-- **Dates** (season = harvest year; wheat 1 Sep – 31 Aug, maize to 31 Dec):
+- **Dates** (season = harvest year; winter crops 1 Sep – 31 Aug, maize to 31 Dec, sugar beet to 30 Nov, potato to 31 Oct):
 
 | Data | From | To |
 |---|---|---|
@@ -180,9 +180,9 @@ The engine reads only through the Django ORM and the platform helpers (`.observe
 |---|---|---|---|---|
 | `Clock` | **yes** | 1 | `today` (date) | set by the seed: the demo date, e.g. 2025-06-15 |
 | `CropClass` | **yes** | all 21 legend codes (at least every code in `FieldCropYear`) | `code`, `name` | cropland legend (`data/cropland.md`): 0 No cropland, 1110 Wheat, 1120 Barley, 1130 Maize, … |
-| `Threat` | **yes** | 25 | `code` = the codes in [Threats](#threats), `crop` | `python manage.py engine_load_threats` (or a fixture with **the same codes**) |
+| `Threat` | **yes** | 76 | `code` = the codes in [Threats](#threats), `crop` | `python manage.py engine_load_threats` (or a fixture with **the same codes**) |
 | `WeatherGrid` | **yes** | the fields' cells | `grid_id`, `lat`, `lon` (floats) | `weather_data/weather_grids.zip` → `weather_grids.parquet` (`grid_id`, `lat`, `lon` are **decimals → cast to float**, `l1_name` = voivodeship) |
-| `Field` | **yes** | the farm's fields | `geometry` (GeoJSON Polygon/MultiPolygon, EPSG:4326, **[lon, lat]**, non-empty), `centroid_lat/lon`, `area_ha` (EPSG:2180), `weather_grid` (**nearest grid point to the centroid**), `h3_cells` (**H3 level 10 cells whose centre is inside the polygon** — `h3.geo_to_cells(polygon, 10)`; the centroid's cell if none), `crop` (**this season's crop**: 1110 or 1130 get risks, other codes get none) | polygons drawn by us; crop from the farmer or the crop model (`field_day()["crop_check"]`) |
+| `Field` | **yes** | the farm's fields | `geometry` (GeoJSON Polygon/MultiPolygon, EPSG:4326, **[lon, lat]**, non-empty), `centroid_lat/lon`, `area_ha` (EPSG:2180), `weather_grid` (**nearest grid point to the centroid**), `h3_cells` (**H3 level 10 cells whose centre is inside the polygon** — `h3.geo_to_cells(polygon, 10)`; the centroid's cell if none), `crop` (**this season's crop**: 1110 wheat, 1120 barley, 1130 maize, 1150 other cereals, 1310 potato, 1320 sugar beet, 1430 rapeseed get risks; other codes get none) | polygons drawn by us; crop from the farmer or the crop model (`field_day()["crop_check"]`) |
 | `FieldCropYear` | **yes** | per field × year × class | `year`, `crop_class`, `share` (0–1, shares of a year sum to 1) | `cropland/cropland_pl_4326_<year>.zip` (48 GeoTIFF tiles, EPSG:4326, uint16 codes): pixels of each class inside the polygon ÷ all pixels. **2021 is a copy of 2022** in the package — store it but expect it to be wrong |
 | `WeatherDaily` | **yes** | per cell × day | `avg_temperature`, `min_temperature`, `max_temperature` (°C), `avg_relative_humidity` (%), `eto` (mm/day), `avg_wind_speed` (km/h), `avg_soil_temperature_level_1`, `min_soil_temperature_level_1` (°C), `avg_soil_moisture_level_1` (m³/m³, 0–1), `avg_snow_depth` (mm w.e.), **precipitation: `total_precipitation` or `imerg_total_precipitation`** (mm/day) | `weather_data/daily/<year>/weather_daily_<year>_<Region>.zip` (same column names; **no precipitation in it**) + `weather_data/imerg_precipitation_daily.zip` → `daily/<year>/precip_daily_<year>_<Region>.zip` (nested zip) → `total_precipitation` **stored as `imerg_total_precipitation`**, joined on `grid_id` + `date` |
 | `WeatherHourly` | recommended | per cell × hour | `utc_time` (aware, UTC), `date` (local Europe/Warsaw date), `temperature` (°C), `relative_humidity` (%), **`precipitation` or `imerg_precipitation`** (mm/h) | `weather_data/hourly/<year>/weather_hourly_<year>_<Region>.zip` (`utc_time` is naive UTC → make aware; drop `local_time`; year files **overlap by one hour** at New Year → ignore duplicates) + `imerg_precipitation_hourly.zip` → `hourly/<year>/precip_hourly_<year>_<Region>.zip` → `precipitation` stored as `imerg_precipitation`, joined on `grid_id` + `utc_time`. Without it infection hours are estimated from daily values (confidence × 0.7) |
@@ -327,26 +327,36 @@ Every feature for day D is a **trailing** value over days ≤ D (sums or means o
 
 ### Growth stage
 
-- **Degree days** (base 0 °C for wheat, 6 °C for maize) from a typical sowing date (wheat 1 Oct, maize 25 Apr). Confidence 0.6.
-- **Satellite anchors** from the field's NDVI curve: wheat — spring peak (May–June, ≥ 0.7) = heading BBCH 55, NDVI < 0.5 afterwards = ripening BBCH 83; maize — rise from bare soil after sowing = BBCH 13, summer peak = flowering BBCH 65. The degree-day curve is shifted through the anchor from the day it is confirmed. Confidence 0.8.
+- **Degree days** from a typical sowing date (`engine.phenology.PROFILES`, confidence 0.6):
+
+| Crop | Sown (typical) | GDD base | Curve |
+|---|---|---|---|
+| Wheat | 1 Oct | 0 °C | autumn since sowing, spring since 1 Jan (satellite-calibrated) |
+| Barley | 20 Sep | 0 °C | wheat curve reached with 82 % of the degree days (heading ~ mid May, harvest early July) |
+| Other cereals | 25 Sep | 0 °C | wheat curve, 95 % of the degree days |
+| Rapeseed | 25 Aug (before the season starts) | 5 °C | rosette (BBCH 18–19) before winter; spring: buds early April, flowering mid April – early May, harvest early/mid July |
+| Maize | 25 Apr | 6 °C | since sowing |
+| Sugar beet | 5 Apr | 3 °C | emergence ~ 20 Apr, canopy closing mid June, root growth to harvest |
+| Potato | 20 Apr | 6 °C | emergence mid May, rows closing mid June, flowering early July, haulm senescence late August |
+- **Satellite anchors** (wheat and maize only) from the field's NDVI curve: wheat — spring peak (May–June, ≥ 0.7) = heading BBCH 55, NDVI < 0.5 afterwards = ripening BBCH 83; maize — rise from bare soil after sowing = BBCH 13, summer peak = flowering BBCH 65. The degree-day curve is shifted through the anchor from the day it is confirmed. Confidence 0.8.
 - **Farmer's sowing date** replaces the typical one. Confidence 0.85.
 - The wheat table was calibrated to the satellite: heading ~1060, ripening ~2135 degree days since 1 January.
-- Maize seasons run to 31 December (harvest Sep–Nov); wheat seasons 1 Sep – 31 Aug. Seasons after the current one are not computed (crop unknown).
+- Maize seasons run to 31 December, sugar beet to 30 November, potato to 31 October; winter crops 1 Sep – 31 Aug. Seasons after the current one are not computed (crop unknown).
 
 ### Rule kinds
 
 | Kind | Weather / activity term | Example |
 |---|---|---|
-| `infection_hours` | Hours in the last N days with temperature in the rule's range **and** wet leaves (RH ≥ 95 % or rain) / humid air (RH ≥ 85 % or rain) / humid but dry (RH 50–95 %, no rain); ramp from `hours_low` to `hours_high`. Rain-splash diseases also need rain days. Wheat leaf diseases switch off in cold weather (7-day mean < 3–8 °C). Maize fusarioses also rise with drought (30-day rain − evapotranspiration). | head blight, septoria, rusts |
-| `soil_days` | Days with cold (< 12 °C) and wet (≥ 0.30 m³/m³) topsoil | maize seedling blight |
+| `infection_hours` | Hours in the last N days with temperature in the rule's range **and** wet leaves (RH ≥ 95 % or rain) / humid air (RH ≥ 85 % or rain) / RH ≥ 90 % or rain (potato late blight, Smith-type periods) / humid but dry (RH 50–95 %, no rain); ramp from `hours_low` to `hours_high`. Rain-splash diseases also need rain days. Leaf diseases of winter crops switch off in cold weather (7-day mean < 3–8 °C). Maize fusarioses also rise with drought (30-day rain − evapotranspiration). | head blight, septoria, rusts |
+| `soil_days` | Days with topsoil in the rule's temperature range (cold, e.g. < 12 °C, or warm, e.g. 20–30 °C) and wet (≥ 0.30 m³/m³) | seedling blights, beet Rhizoctonia, clubroot |
 | `snow_days` | Days at ~0–5 °C, wet or under snow, soil not frozen | snow mould |
 | `flood` | Days with saturated topsoil or ≥ 30 mm rain | crazy top |
-| `vector_days` | Autumn days warm enough for aphids to fly (max ≥ 12 °C) since emergence | barley yellow dwarf virus |
-| `pest_activity` | Activity window from degree days (base 10 °C) or the crop stage, × warmth, × local pressure from the field's history | corn borer, rootworm, aphids |
+| `vector_days` | Days warm enough for the insect to fly (max ≥ `flight_c`, 12–18 °C) since emergence, in the susceptible stage | aphid-borne viruses, rapeseed pests, beet flea beetle |
+| `pest_activity` | Activity window from degree days (base 10 °C) or the crop stage, × warmth, × local pressure from the field's history (rotation pests: 1.0 with a host crop in the last 3 seasons, else 0.1) | corn borer, rootworm, Colorado beetle, cyst nematodes |
 
 **Growth-stage weight:** 1 inside the threat's susceptible BBCH range, ramping to 0 outside it; 0 before sowing.
 
-**Multipliers (from the field):** previous crop maize (head blight ×1.5, foot rot ×1.3), cereal after cereal (take-all ×1.5, eyespot ×1.5, tan spot ×1.3), maize monoculture (fusarioses ×1.3, corn borer ×1.4; rootworm only from the 2nd maize year), heavy soil (crazy top ×1.3), **last season's peak of the same pathogen ≥ 0.6** (×1.2; Fusarium is shared by maize and wheat).
+**Multipliers (from the field):** previous crop maize (head blight ×1.5, foot rot ×1.3), cereal after cereal (take-all ×1.5, eyespot ×1.5, tan spot ×1.3), maize monoculture (fusarioses ×1.3, corn borer ×1.4; rootworm only from the 2nd maize year), heavy soil (crazy top, beet damping-off and Rhizoctonia ×1.3), same crop last season (e.g. rapeseed after rapeseed: Sclerotinia ×1.5, Phoma ×1.4, clubroot ×1.5; beet after beet: Cercospora ×1.5; potato after potato: Colorado beetle ×1.4), other previous crops (beet after maize: Rhizoctonia ×1.4; rapeseed after sunflower / soybean: Sclerotinia ×1.3), acid soil pH < 6.5 (clubroot ×1.5), **last season's peak of the same pathogen ≥ 0.6** (×1.2; Fusarium is shared by maize and wheat).
 
 ### Farmer reports
 
@@ -377,15 +387,34 @@ The engine uses `Field.crop`. The crop model ([`cropmodel.py`](cropmodel.py)) ch
 
 ## Threats
 
-25 rules in [`catalog.py`](catalog.py), each with its numbers and the team's assumptions marked.
+76 rules for 7 crops in [`catalog.py`](catalog.py), each with its numbers and the team's assumptions marked.
+Together these crops cover about 96 % of the arable land in Opolskie (2024 crop map: wheat 32 %, maize 25 %,
+rapeseed 14 %, barley 10 %, other cereals 10 %, sugar beet 3 %, potatoes 1.5 %). Other crop codes get no risks.
+Rules shared by several cereals (same pathogen) are variants of the wheat rule with their own code.
+Rapeseed numbers are general agronomy (no rapeseed guide in the package), all listed under `assumptions`.
 
-| Crop | Category | Threats (`code`) |
+| Crop (code) | Category | Threats (`code`) |
 |---|---|---|
-| Wheat | fungal | `wheat.fusarium_head_blight`, `wheat.septoria_leaf_blotch`, `wheat.glume_blotch`, `wheat.brown_rust`, `wheat.yellow_rust`, `wheat.powdery_mildew`, `wheat.tan_spot`, `wheat.eyespot`, `wheat.fusarium_foot_rot`, `wheat.take_all`, `wheat.snow_mould` |
-| Wheat | pest | `wheat.aphids`, `wheat.cereal_leaf_beetle` |
-| Wheat | viral | `wheat.barley_yellow_dwarf` |
-| Maize | fungal | `maize.seedling_blight`, `maize.fusarium_ear_rot`, `maize.fusarium_stalk_rot`, `maize.northern_leaf_blight`, `maize.eyespot`, `maize.common_rust`, `maize.crazy_top` |
-| Maize | pest | `maize.european_corn_borer`, `maize.western_corn_rootworm`, `maize.aphids`, `maize.frit_fly` |
+| Wheat (1110) | fungal | `wheat.fusarium_head_blight`, `wheat.septoria_leaf_blotch`, `wheat.brown_rust`, `wheat.powdery_mildew`, `wheat.yellow_rust`, `wheat.tan_spot`, `wheat.take_all`, `wheat.snow_mould`, `wheat.eyespot`, `wheat.fusarium_foot_rot`, `wheat.glume_blotch` |
+| Wheat (1110) | viral | `wheat.barley_yellow_dwarf` |
+| Wheat (1110) | pest | `wheat.aphids`, `wheat.cereal_leaf_beetle` |
+| Barley (1120) | fungal | `barley.powdery_mildew`, `barley.fusarium_head_blight`, `barley.eyespot`, `barley.fusarium_foot_rot`, `barley.take_all`, `barley.snow_mould`, `barley.net_blotch`, `barley.scald`, `barley.brown_rust` |
+| Barley (1120) | viral | `barley.barley_yellow_dwarf` |
+| Barley (1120) | pest | `barley.aphids`, `barley.cereal_leaf_beetle` |
+| Maize (1130) | fungal | `maize.seedling_blight`, `maize.fusarium_ear_rot`, `maize.fusarium_stalk_rot`, `maize.crazy_top`, `maize.northern_leaf_blight`, `maize.eyespot`, `maize.common_rust` |
+| Maize (1130) | pest | `maize.european_corn_borer`, `maize.western_corn_rootworm`, `maize.aphids`, `maize.frit_fly` |
+| Other cereals (1150) | fungal | `other_cereals.powdery_mildew`, `other_cereals.fusarium_head_blight`, `other_cereals.glume_blotch`, `other_cereals.yellow_rust`, `other_cereals.tan_spot`, `other_cereals.eyespot`, `other_cereals.fusarium_foot_rot`, `other_cereals.snow_mould`, `other_cereals.brown_rust`, `other_cereals.scald` |
+| Other cereals (1150) | viral | `other_cereals.barley_yellow_dwarf` |
+| Other cereals (1150) | pest | `other_cereals.aphids`, `other_cereals.cereal_leaf_beetle` |
+| Potatoes (1310) | fungal | `potato.late_blight`, `potato.early_blight`, `potato.rhizoctonia` |
+| Potatoes (1310) | viral | `potato.aphids` |
+| Potatoes (1310) | pest | `potato.colorado_potato_beetle`, `potato.cyst_nematode` |
+| Sugar beet (1320) | fungal | `sugar_beet.cercospora_leaf_spot`, `sugar_beet.ramularia_leaf_spot`, `sugar_beet.powdery_mildew`, `sugar_beet.downy_mildew`, `sugar_beet.seedling_damping_off`, `sugar_beet.rhizoctonia_root_rot` |
+| Sugar beet (1320) | viral | `sugar_beet.aphids_virus_yellows` |
+| Sugar beet (1320) | pest | `sugar_beet.flea_beetle`, `sugar_beet.beet_leaf_miner`, `sugar_beet.beet_cyst_nematode` |
+| Rapeseed (1430) | fungal | `rapeseed.phoma_stem_canker`, `rapeseed.light_leaf_spot`, `rapeseed.sclerotinia_stem_rot`, `rapeseed.alternaria_black_spot`, `rapeseed.clubroot` |
+| Rapeseed (1430) | viral | `rapeseed.aphids_tuyv` |
+| Rapeseed (1430) | pest | `rapeseed.cabbage_stem_flea_beetle`, `rapeseed.stem_weevils`, `rapeseed.pollen_beetle`, `rapeseed.seed_weevil_pod_midge` |
 
 ## Assumptions, limits, validation
 

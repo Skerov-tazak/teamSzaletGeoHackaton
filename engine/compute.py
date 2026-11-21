@@ -23,7 +23,7 @@ from core.models import Field, Risk, Threat, WeatherForecastDaily
 from engine import features as F
 from engine import observations as OBS
 from engine.catalog import CARRYOVER, MAIZE, RULES, rules_for_crop
-from engine.phenology import bbch_series, calibrate, degree_days_base10
+from engine.phenology import bbch_series, calibrate, degree_days_base10, season_end
 from engine.satellite.season import season_bounds, season_of
 from engine.scoring import FieldContext, score_rule, spray_window
 
@@ -150,7 +150,8 @@ def field_context(field: Field, season: int, crop_code: int | None = None, crop_
         if key in soil and soil[key] <= 1.0:
             soil[key] *= 100
     return FieldContext(crop=crop, crop_source=crop_source, previous_crop=prev[0] if prev else None,
-                        previous_crop_name=names.get(season - 1), maize_years_in_row=in_row, soil=soil)
+                        previous_crop_name=names.get(season - 1), maize_years_in_row=in_row, soil=soil,
+                        history={y: c for y, (c, _) in history.items()}, season=season)
 
 
 def season_crop(field: Field, season: int) -> tuple[int | None, str]:
@@ -169,9 +170,9 @@ def crop_season_segments(field: Field, start: date, end: date) -> list[tuple[int
     """
     Splits [start, end] into (season, from, to, crop, crop source) pieces.
 
-    Seasons are named by harvest year and run 1 Sep - 31 Aug (winter wheat). Maize is sown in April and
-    harvested in Sep-Nov, so a maize season stays open until 31 Dec of its year. Seasons after the
-    current one are skipped: their crop is not known yet.
+    Seasons are named by harvest year and run 1 Sep - 31 Aug (winter crops). Spring crops harvested
+    after 1 September stay open longer (maize to 31 Dec, sugar beet to 30 Nov, potato to 31 Oct;
+    engine.phenology.PROFILES). Seasons after the current one are skipped: their crop is not known yet.
     """
     current = season_of(clock.today())
     out = []
@@ -180,9 +181,10 @@ def crop_season_segments(field: Field, start: date, end: date) -> list[tuple[int
         season = season_of(s)
         s_end = min(end, season_bounds(season)[1])
         if season > current:
-            if field.crop_id == MAIZE and s.year == current:  # maize harvest after 1 September
-                s_end = min(end, date(current, 12, 31))
-                out.append((current, s, s_end, MAIZE, "field"))
+            late = season_end(field.crop_id, current) if field.crop_id else None
+            if late and late.month >= 9 and s.year == current and s <= late:  # spring crop harvested after 1 September
+                s_end = min(end, late)
+                out.append((current, s, s_end, field.crop_id, "field"))
             s = s_end + timedelta(days=1)
             continue
         crop, source = season_crop(field, season)

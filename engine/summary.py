@@ -104,7 +104,8 @@ def _crop_check(field: Field, day: date) -> dict | None:
     from engine.satellite import fieldndvi
     from engine.satellite.season import season_of
 
-    season = season_of(day) if field.crop_id != 1130 or day.month < 9 else day.year
+    from engine.phenology import crop_season
+    season = crop_season(field.crop_id, day) if field.crop_id else season_of(day)
     out = fieldndvi.crop_check(fieldndvi.load(field, season), field.crop_id, season, day)
     try:
         from engine.cropmodel import CLASS_CODE, predict_field

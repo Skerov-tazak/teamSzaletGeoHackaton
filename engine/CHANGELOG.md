@@ -2,6 +2,18 @@
 
 History of the engine's versions and the findings behind them. The reference documentation is [README.md](README.md).
 
+## v0.7: more crops
+
+- **76 rules for 7 crops**: wheat, maize, plus barley (12), other cereals (13), rapeseed (10), sugar beet (10),
+  potatoes (6); about 96 % of the arable land in Opolskie. Numbers from the integrated protection guides for barley,
+  triticale, rye, sugar beet and potato; rapeseed from general agronomy (marked as assumptions).
+- Growth-stage profiles per crop (`phenology.PROFILES`): sowing date, GDD base, curve, end of season (beet to 30 Nov,
+  potato to 31 Oct). Checked on 2025 near Krapkowice: rapeseed flowering 14 Apr – 2 May, harvest ~9 Jul; barley heading
+  ~14 May; potato rows closing mid June.
+- New rule options: same crop last season, specific previous crops, acid soil, rotation pests (host crop in the last
+  N seasons), soil temperature range for `soil_days`, flight temperature for `vector_days`, moisture `rh90` (late blight).
+- `engine_load_threats` creates the engine's `CropClass` rows if missing.
+
 ## v0.6: no document citations
 
 - Rules stay in `catalog.py`; removed every reference to the guide files (`Rule.sources`, `explanation.sources`,

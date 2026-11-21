@@ -6,6 +6,7 @@ Engine tests on synthetic weather (no downloaded data needed).
 
 from datetime import date, datetime, timedelta, timezone as dt_tz
 
+import pandas as pd
 from django.test import TestCase
 
 from core.models import (Clock, CropClass, Field, FieldCropYear, Risk, Threat, WeatherDaily, WeatherGrid,
@@ -31,7 +32,8 @@ class EngineTestBase(TestCase):
 
     @classmethod
     def setUpTestData(cls):
-        for code, name in ((0, "No cropland"), (1110, "Wheat"), (1120, "Barley"), (1130, "Maize")):
+        from engine.catalog import CROP_NAMES
+        for code, name in ((0, "No cropland"), *CROP_NAMES.items()):
             CropClass.objects.create(code=code, name=name)
         for rule in RULES.values():
             Threat.objects.create(code=rule.code, crop_id=rule.crop, name=rule.name_pl, category=rule.category, source="test")
@@ -249,6 +251,67 @@ class AssistantObservationTests(EngineTestBase):
         days = pd.date_range("2025-06-01", "2025-06-05")
         self.assertTrue(effects(RULES["wheat.brown_rust"], [rep], days))
         self.assertFalse(effects(RULES["wheat.aphids"], [rep], days))
+
+
+class OtherCropTests(EngineTestBase):
+    """Barley, other cereals, rapeseed, sugar beet and potatoes get their own rules and growth stages."""
+    wet_days = {date(2025, 6, d) for d in range(18, 24)}
+
+    def test_every_engine_crop_gets_risks(self):
+        from engine.catalog import CROP_NAMES, rules_for_crop
+        day = date(2025, 6, 20)
+        for crop in CROP_NAMES:
+            f = self.make_field(f"f{crop}", crop, prev=1110)
+            n = predict(field_ids=[f.id], start=day, end=day)
+            self.assertEqual(n, len(rules_for_crop(crop)), crop)
+            r = Risk.objects.filter(field=f, date=day).first()
+            self.assertTrue(r.explanation["summary"])
+            self.assertGreaterEqual(r.explanation["growth_stage"]["bbch"], 0, crop)
+
+    def test_stage_calendars(self):
+        from engine.catalog import BARLEY, POTATO, RAPESEED, SUGAR_BEET
+        from engine.phenology import bbch_series
+        idx = pd.date_range("2024-07-01", "2025-11-30")
+        temps = pd.Series([seasonal_temp(d.date()) for d in idx], index=idx)
+
+        def first(crop, bbch):
+            s = bbch_series(crop, temps, 2025)["bbch"]
+            return s[s >= bbch].index[0].date()
+
+        self.assertTrue(date(2025, 4, 10) <= first(RAPESEED, 60) <= date(2025, 5, 10))   # rapeseed flowering
+        self.assertTrue(date(2025, 6, 25) <= first(RAPESEED, 89) <= date(2025, 7, 31))   # rapeseed harvest
+        self.assertLess(first(BARLEY, 55), first(1110, 55))                              # barley heads before wheat
+        self.assertTrue(date(2025, 4, 15) <= first(SUGAR_BEET, 10) <= date(2025, 5, 20))
+        self.assertTrue(date(2025, 6, 1) <= first(POTATO, 31) <= date(2025, 7, 15))      # potato rows closing
+        s = bbch_series(RAPESEED, temps, 2025)["bbch"]
+        self.assertGreaterEqual(s[pd.Timestamp("2024-11-15")], 14)                       # rosette before winter
+
+    def test_potato_late_blight_follows_wet_warm_days(self):
+        f = self.make_field("potato", 1310, prev=1110)
+        predict(field_ids=[f.id], start=date(2025, 6, 10), end=date(2025, 6, 24))
+        dry = Risk.objects.get(field=f, threat__code="potato.late_blight", date=date(2025, 6, 12)).score
+        wet = Risk.objects.get(field=f, threat__code="potato.late_blight", date=date(2025, 6, 22))
+        self.assertLess(dry, 0.3)
+        self.assertGreaterEqual(wet.score, 0.6)
+        self.assertIn("late blight", wet.explanation["summary"].lower())
+
+    def test_rotation_pest_needs_a_host_in_the_last_seasons(self):
+        day = date(2025, 7, 1)
+        after_beet = self.make_field("beet_after_beet", 1320, prev=1320)
+        after_wheat = self.make_field("beet_after_wheat", 1320, prev=1110)
+        predict(field_ids=[after_beet.id, after_wheat.id], start=day, end=day)
+        hi = Risk.objects.get(field=after_beet, threat__code="sugar_beet.beet_cyst_nematode", date=day)
+        lo = Risk.objects.get(field=after_wheat, threat__code="sugar_beet.beet_cyst_nematode", date=day)
+        self.assertGreater(hi.score, lo.score * 5)
+        self.assertIn("host crop", hi.explanation["summary"])
+
+    def test_beet_season_runs_into_autumn(self):
+        from engine.compute import crop_season_segments
+        f = self.make_field("beet_autumn", 1320, prev=1110)
+        segs = crop_season_segments(f, date(2025, 8, 1), date(2025, 12, 31))
+        self.assertIn((2025, date(2025, 9, 1), date(2025, 11, 30), 1320, "field"), segs)   # beet to 30 Nov
+        w = self.make_field("wheat_autumn", 1110, prev=1130)
+        self.assertEqual([s[0] for s in crop_season_segments(w, date(2025, 8, 1), date(2025, 12, 31))], [2025])
 
 
 class PureFunctionTests(TestCase):
