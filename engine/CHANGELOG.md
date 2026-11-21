@@ -2,6 +2,14 @@
 
 History of the engine's versions and the findings behind them. The reference documentation is [README.md](README.md).
 
+## v0.8: cross-component consistency
+
+- **Levels = the map's and the assistant's:** low < 0.33 ≤ medium < 0.66 ≤ high (was 0.3 / 0.6). A farmer-seen symptom is always high (floor 0.66 + 0.3 × severity).
+- **Observation reader** accepts both table shapes (`observed_on`/`date`, `threat_code`/`threat` FK, numeric or Polish severity, `text`/`note`); a row without a recognisable kind is skipped and logged instead of being read as symptoms. Damage without a type counts as "crop damage" (fungal × 1.1) and is explained.
+- **`engine_load_threats`** no longer overwrites existing Threat rows (platform fixture) unless `--overwrite`; lists Threat codes without a rule. `predict()` logs skipped engine codes.
+- **Forecast lead follows the clock:** saving `Clock` re-measures `forecast_lead_days`, the confidence discount and the "Day +N" note of rows already written.
+- docs/interfaces.md and docs/database.md point to explanation v1 in engine/README.md.
+
 ## v0.7: more crops
 
 - **76 rules for 7 crops**: wheat, maize, plus barley (12), other cereals (13), rapeseed (10), sugar beet (10),

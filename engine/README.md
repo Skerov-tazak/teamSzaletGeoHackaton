@@ -22,7 +22,7 @@ It is a **rule-based (expert) system** whose rules are stored in [`catalog.py`](
 
 ```bash
 # prerequisites: the data in "Data to load" (check: python manage.py engine_check_data)
-python manage.py engine_load_threats                 # Threat rows for every rule (upsert by code)
+python manage.py engine_load_threats                 # Threat rows for every rule (creates missing codes; keeps existing rows)
 python manage.py engine_fetch_ndvi --season 2025     # optional: satellite curves per field (needs network)
 python manage.py predict                             # all fields, 1 September .. today + 7
 python manage.py engine_summary --date 2025-06-05    # fields ranked by urgency, with reasons
@@ -113,7 +113,7 @@ Report(observed_on: date, kind: str, threat_code: str | None = None, severity: f
 | Command | What |
 |---|---|
 | `predict [--fields 1 2] [--start D] [--end D]` | `predict()` from the shell. |
-| `engine_load_threats` | Create / update the `Threat` rows of all 76 rules (by `code`; other rows untouched) and the engine's `CropClass` rows if missing. |
+| `engine_load_threats [--overwrite]` | Create the missing `Threat` rows of all 76 rules (existing rows kept unless `--overwrite`; rows without a rule listed) and the engine's `CropClass` rows if missing. |
 | `engine_fetch_ndvi [--season Y] [--fields ...]` | Download and cache each field's Sentinel-2 NDVI series (network). |
 | `engine_summary [--date D] [--json]` | Print the field ranking. |
 | `engine_check_data [--season Y]` | Check that every table / file the engine needs is loaded; lists what is missing per field. |
@@ -132,7 +132,7 @@ Report(observed_on: date, kind: str, threat_code: str | None = None, severity: f
 | **After `engine_fetch_ndvi`** (new satellite scenes) | `predict(field_ids=..., start=season start)` | daily job / by hand |
 | **After threats, rules or imported data change** | `predict()` | by hand |
 
-**Moving the demo date does not need a recompute:** the season is precomputed and the API hides days after today + 7. Only the forecast confidence of coming days refers to the clock at compute time (`forecast_lead_days`); `adjust_for_lead()` can refresh it when serving.
+**Moving the demo date does not need a recompute:** the season is precomputed and the API hides days after today + 7. Saving the `Clock` row (admin, seed, a daily job) re-measures the "days ahead" of rows already written (`compute.refresh_forecast_confidence`, a `post_save` signal in `engine/apps.py`): `forecast_lead_days`, the forecast discount of `confidence` and the "Day +N" note follow the new date; scores stay. `Clock.objects.update(...)` skips signals: call `refresh_forecast_confidence()` after it.
 
 **Order of a fresh setup:**
 
@@ -180,7 +180,7 @@ The engine reads only through the Django ORM and the platform helpers (`.observe
 |---|---|---|---|---|
 | `Clock` | **yes** | 1 | `today` (date) | set by the seed: the demo date, e.g. 2025-06-15 |
 | `CropClass` | **yes** | all 21 legend codes (at least every code in `FieldCropYear`) | `code`, `name` | cropland legend (`data/cropland.md`): 0 No cropland, 1110 Wheat, 1120 Barley, 1130 Maize, … |
-| `Threat` | **yes** | 76 | `code` = the codes in [Threats](#threats), `crop` | `python manage.py engine_load_threats` (or a fixture with **the same codes**) |
+| `Threat` | **yes** | 76 | `code` = the codes in [Threats](#threats), `crop` | `python manage.py engine_load_threats`: creates the missing engine codes and **keeps existing rows** (a platform fixture's names and texts stay; `--overwrite` rewrites them). Fixture codes without an engine rule get no risks (the command lists them). A missing engine code is skipped by `predict()` with a warning, not a crash |
 | `WeatherGrid` | **yes** | the fields' cells | `grid_id`, `lat`, `lon` (floats) | `weather_data/weather_grids.zip` → `weather_grids.parquet` (`grid_id`, `lat`, `lon` are **decimals → cast to float**, `l1_name` = voivodeship) |
 | `Field` | **yes** | the farm's fields | `geometry` (GeoJSON Polygon/MultiPolygon, EPSG:4326, **[lon, lat]**, non-empty), `centroid_lat/lon`, `area_ha` (EPSG:2180), `weather_grid` (**nearest grid point to the centroid**), `h3_cells` (**H3 level 10 cells whose centre is inside the polygon** — `h3.geo_to_cells(polygon, 10)`; the centroid's cell if none), `crop` (**this season's crop**: 1110 wheat, 1120 barley, 1130 maize, 1150 other cereals, 1310 potato, 1320 sugar beet, 1430 rapeseed get risks; other codes get none) | polygons drawn by us; crop from the farmer or the crop model (`field_day()["crop_check"]`) |
 | `FieldCropYear` | **yes** | per field × year × class | `year`, `crop_class`, `share` (0–1, shares of a year sum to 1) | `cropland/cropland_pl_4326_<year>.zip` (48 GeoTIFF tiles, EPSG:4326, uint16 codes): pixels of each class inside the polygon ÷ all pixels. **2021 is a copy of 2022** in the package — store it but expect it to be wrong |
@@ -226,12 +226,12 @@ rust on 12 June"). After storing a row the writer calls `predict(field_ids=[fiel
 |---|---|---|---|
 | field | which field; none = the whole farm / "nearby" | `field` (FK, required) | – (farm-wide reports: pick any field, set `details.scope = "farm"`) |
 | date seen | the day the farmer **saw** it, not the day they wrote | `date` | – |
-| **kind** | `symptoms`, `absence`, `neighbour`, `treatment`, `field_fact`, `event` | only `category` (choroba / szkodnik / chwasty / uszkodzenie / inne) | **Ola: write `details.kind`** (top level or inside `details.draft`) for anything that is not "I see it on my field". Without it: choroba / szkodnik → `symptoms`, uszkodzenie → `event`, chwasty / inne → ignored |
+| **kind** | `symptoms`, `absence`, `neighbour`, `treatment`, `field_fact`, `event` | only `category` (choroba / szkodnik / chwasty / uszkodzenie / inne) | **Ola: write `details.kind`** (top level or inside `details.draft`) for anything that is not "I see it on my field". Without it: choroba / szkodnik → `symptoms`, uszkodzenie → `event`, chwasty / inne → **skipped and logged** (never guessed as symptoms; the same for a `core.Observation` row without `kind`) |
 | threat | threat code, e.g. `wheat.brown_rust`; empty: `symptoms` → every disease (choroba) or pest (szkodnik) × (1 + 0.3 × severity), `absence` → all threats, `treatment` → all fungal | `threat` (FK Threat, optional) | – (the code is read through the FK) |
-| severity | how bad, 0–1 | `severity` niskie / srednie / wysokie | – (mapped to 0.3 / 0.6 / 0.9; empty = 0.5) |
+| severity | how bad, 0–1 | `severity` niskie / srednie / wysokie | – (mapped to 0.3 / 0.6 / 0.9; a number 0–1 is used as is; empty = 0.5) |
 | distance | `neighbour` only: metres to the reported case | – | **Ola: `details.distance_m`** (number; "next door" ≈ 300, "in the village" ≈ 1500; empty = 1000) |
 | fact | `field_fact` only | – | **Ola: `details`** = `{"sowing_date": "2024-09-25"}`, `{"tillage": "reduced"}` or `"plough"`, `{"resistant_to": ["wheat.brown_rust"]}` |
-| event type | `event` only | – | **Ola: `details.type`** = `hail`, `lodging` or `flood` (without it the engine looks for grad / wyległ / zalan in `note`) |
+| event type | `event` only | – | **Ola: `details.type`** = `hail`, `lodging` or `flood` (without it the engine looks for grad / wyległ / zalan in `note`; otherwise it counts as crop damage of unknown type: fungal × 1.1 for 14 days, shown as "Crop damage (type not given)") |
 | text | the farmer's own words (quoted in the explanation) | `note` | – |
 | id | stable id for drivers and logs | `id` | – |
 
@@ -246,6 +246,8 @@ rust on 12 June"). After storing a row the writer calls `predict(field_ids=[fiel
 | "I sowed on 25 September" | inne | – | – | `{"kind": "field_fact", "sowing_date": "2024-09-25"}` |
 | "I don't plough, I leave the stubble" | inne | – | – | `{"kind": "field_fact", "tillage": "reduced"}` |
 | "Hail yesterday" | uszkodzenie | – | – | `{"kind": "event", "type": "hail"}` |
+
+**The reader accepts either shape** for both tables: date `observed_on` or `date`; threat `threat_code` (text) or `threat` (FK); severity a number 0–1 or niskie / srednie / wysokie; text `text` or `note`; kind `kind`, `details.kind` or the category. A row whose kind cannot be told is skipped with a log warning.
 
 **Later `core.Observation`** (Jan + Szymek): the same information as plain columns: `field` (FK, null =
 farm), `observed_on` (date), `recorded_at` (datetime), `kind` (text, values above), `threat_code` (text,
@@ -272,7 +274,7 @@ Units stay the dataset's (wind km/h, RH %, radiation MJ/m²); the engine convert
 
 One `Risk` row per **field × threat × day**: `score` (0–1), `explanation` (JSON below), `computed_at`.
 
-**Score** = how favourable the recent days were for this threat on this field: **weather or pest activity × growth-stage weight × field multipliers**, adjusted by farmer reports, capped at 1. An index, not a probability. **Levels:** low < 0.3 ≤ medium < 0.6 ≤ high (to agree with the map).
+**Score** = how favourable the recent days were for this threat on this field: **weather or pest activity × growth-stage weight × field multipliers**, adjusted by farmer reports, capped at 1. An index, not a probability. **Levels:** low < 0.33 ≤ medium < 0.66 ≤ high — the same cut-offs as the map (`frontend/src/risk.ts`) and the assistant (`assistant/domain.py`). Every explanation carries `level`; readers should show it rather than recompute it.
 
 **`explanation` (version 1):**
 
@@ -370,18 +372,18 @@ Every feature for day D is a **trailing** value over days ≤ D (sums or means o
 
 **Growth-stage weight:** 1 inside the threat's susceptible BBCH range, ramping to 0 outside it; 0 before sowing.
 
-**Multipliers (from the field):** previous crop maize (head blight ×1.5, foot rot ×1.3), cereal after cereal (take-all ×1.5, eyespot ×1.5, tan spot ×1.3), maize monoculture (fusarioses ×1.3, corn borer ×1.4; rootworm only from the 2nd maize year), heavy soil (crazy top, beet damping-off and Rhizoctonia ×1.3), same crop last season (e.g. rapeseed after rapeseed: Sclerotinia ×1.5, Phoma ×1.4, clubroot ×1.5; beet after beet: Cercospora ×1.5; potato after potato: Colorado beetle ×1.4), other previous crops (beet after maize: Rhizoctonia ×1.4; rapeseed after sunflower / soybean: Sclerotinia ×1.3), acid soil pH < 6.5 (clubroot ×1.5), **last season's peak of the same pathogen ≥ 0.6** (×1.2; Fusarium is shared by maize and wheat).
+**Multipliers (from the field):** previous crop maize (head blight ×1.5, foot rot ×1.3), cereal after cereal (take-all ×1.5, eyespot ×1.5, tan spot ×1.3), maize monoculture (fusarioses ×1.3, corn borer ×1.4; rootworm only from the 2nd maize year), heavy soil (crazy top, beet damping-off and Rhizoctonia ×1.3), same crop last season (e.g. rapeseed after rapeseed: Sclerotinia ×1.5, Phoma ×1.4, clubroot ×1.5; beet after beet: Cercospora ×1.5; potato after potato: Colorado beetle ×1.4), other previous crops (beet after maize: Rhizoctonia ×1.4; rapeseed after sunflower / soybean: Sclerotinia ×1.3), acid soil pH < 6.5 (clubroot ×1.5), **last season's peak of the same pathogen ≥ 0.66** (×1.2; Fusarium is shared by maize and wheat).
 
 ### Farmer reports
 
 | `kind` | Example from the chat | Effect | Duration |
 |---|---|---|---|
-| `symptoms` | "I see brown rust on the north field" | score at least 0.6 + 0.3 × severity; confidence 1; spreads to same-crop fields within 3 km as `neighbour` | full 10 days, gone by day 21 |
+| `symptoms` | "I see brown rust on the north field" | score at least 0.66 + 0.3 × severity (always high); confidence 1; spreads to same-crop fields within 3 km as `neighbour` | full 10 days, gone by day 21 |
 | `absence` | "Inspected, clean" (`threat_code` empty = all) | × 0.5 | back to normal by day 10 |
 | `neighbour` | "My neighbour has head blight" | × (1 + 0.5 × closeness), closeness 1 up to 500 m, 0 at 3 km | full 7 days, gone by day 21 |
 | `treatment` | "Sprayed against septoria on 10 May" (empty = all fungal) | × 0.3; action becomes "wait" | full 14 days, gone by day 21 |
 | `field_fact` | `{"sowing_date": "2024-09-25"}`, `{"tillage": "reduced"}`, `{"resistant_to": [codes]}` | real sowing date; reduced tillage × 1.3 for residue diseases; resistant variety × 0.6 | rest of the season |
-| `event` | `{"type": "hail" / "lodging" / "flood"}` | hail: fungal × 1.3; lodging: fungal × 1.2; flood: crazy top at least 0.7 | 14–28 days |
+| `event` | `{"type": "hail" / "lodging" / "flood"}` (no type: guessed from the text, else "damage") | hail: fungal × 1.3; lodging: fungal × 1.2; flood: crazy top at least 0.7; damage of unknown type: fungal × 1.1 | 14–28 days |
 
 Every applied report is a driver with its `effect`, and its label is added to the summary. The numbers are team assumptions.
 
@@ -448,7 +450,7 @@ Rapeseed numbers are general agronomy (no rapeseed guide in the package), all li
 | **Farmer reports** — `details.kind` / `distance_m` / facts in `assistant.Observation` ([Observation rows](#observation-rows)); later `core.Observation` | Ola (writes), Jan + Szymek (`core` schema) | reads `core.Observation` and `assistant.Observation` |
 | **Facts on the field** — `Field.sowing_date`, `Field.tillage`, `Field.resistant_to`, `FieldCropYear.source`; the chat writes confirmed facts there ([Farmer input](#farmer-input-facts-on-the-field-events-in-observation)) | Jan + Szymek (columns), Ola (tool) | reads them if present |
 | Assistant tools: record a report → `predict(field_ids=[...], start=observed_on)`; "what if" → `what_if()`; "which field first" → `farm_ranking()` | Ola | ready |
-| Map: colour by `level` (cut-offs 0.3 / 0.6), "why" panel from `summary` + `drivers`, crop check from `field_day()["crop_check"]` | Kuba | ready |
+| Map: colour by `explanation.level` (cut-offs 0.33 / 0.66, the same as `frontend/src/risk.ts`), "why" panel from `summary` + `drivers`, crop check from `field_day()["crop_check"]` | Kuba | ready |
 | Threat codes: use `engine_load_threats`, or a fixture with the same codes | Jan + Szymek | ready |
 | New categories `weather` / `soil` / `harvest` for frost, drought, harvest risks | Jan + Szymek | rules would follow |
 | **Data issues found:** the weather packages have **no precipitation** (only IMERG); soil `clay`/`sand` are fractions, `BAND_*` are text; grid lat/lon are decimals; hourly year files overlap by one hour; **the 2021 crop map is identical to 2022** (`FieldCropYear` 2021 is wrong) | Jan + Szymek, organisers | handled in the engine |

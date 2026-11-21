@@ -386,7 +386,7 @@ The wheat sheet lists diseases only, no pests. Wheat pests would have to come fr
 | `threat` | `ForeignKey(Threat)` | – | |
 | `date` | `DateField` | local date | The day this risk applies to |
 | `score` | `FloatField` | 0–1, no unit | Database check: 0 ≤ score ≤ 1 |
-| `explanation` | `JSONField` | – | **Open** format, see below |
+| `explanation` | `JSONField` | – | **Open** format, see below. The engine writes version 1: [engine/README.md](../engine/README.md#what-it-writes-risk-and-the-explanation) |
 | `computed_at` | `DateTimeField` | UTC | Set on every write |
 
 - Key: `field` + `threat` + `date`, unique. Index on `field` + `date`.

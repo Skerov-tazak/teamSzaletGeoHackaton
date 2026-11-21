@@ -16,6 +16,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from core import clock
@@ -198,6 +199,10 @@ def _field_rows(field: Field, threats: dict, start: date, end: date, now, report
     out: list[Risk] = []
     for season, s, s_end, crop, source in crop_season_segments(field, start, end):
         rules = [r for r in rules_for_crop(crop) if r.code in threats] if crop else []
+        missing = [r.code for r in rules_for_crop(crop) if r.code not in threats] if crop else []
+        if missing:
+            log.warning("predict: %d engine threat codes have no Threat row and are skipped (run engine_load_threats): %s",
+                        len(missing), ", ".join(missing[:5]))
         if rules:
             out += _season_rows(field, threats, rules, season, s, s_end, now, reports, crop, source)
     return out
@@ -248,6 +253,40 @@ def _season_rows(field, threats, rules, season, start, end, now, reports=(), cro
 
 
 FORECAST_CONFIDENCE_DROP = 0.06  # per day ahead (team assumption): day +7 keeps 58 % of the confidence
+
+
+def clear_lead(expl: dict) -> dict:
+    """The day is no longer in the future: confidence back to the observed value, forecast note removed."""
+    if "confidence_observed" in expl:
+        expl["confidence"] = expl.pop("confidence_observed")
+    expl.pop("forecast_lead_days", None)
+    expl["notes"] = [n for n in expl.get("notes", []) if not n.startswith("Day +")]
+    return expl
+
+
+def refresh_forecast_confidence(today: date | None = None) -> int:
+    """
+    Re-measures "days ahead" from the current demo date for rows already written: rows computed when the
+    clock was earlier keep their score, but their forecast discount and "Day +N" note follow the new
+    date. Runs automatically when the Clock row is saved (engine/apps.py). Returns the rows changed.
+    """
+    today = today or clock.today()
+    rows = list(Risk.objects.filter(Q(date__gt=today) | Q(explanation__has_key="forecast_lead_days")).only("id", "date", "explanation"))
+    changed = []
+    for r in rows:
+        e = r.explanation or {}
+        if "confidence" not in e:
+            continue
+        lead = (r.date - today).days
+        if lead > 0:
+            if e.get("forecast_lead_days") == lead:
+                continue
+            adjust_for_lead(e, lead)
+        else:
+            clear_lead(e)
+        changed.append(r)
+    Risk.objects.bulk_update(changed, ["explanation"], batch_size=2000)
+    return len(changed)
 
 
 def adjust_for_lead(expl: dict, lead: int) -> dict:

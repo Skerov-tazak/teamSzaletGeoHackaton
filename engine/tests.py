@@ -331,6 +331,52 @@ class FieldRecordTests(TestCase):
         self.assertEqual(from_field(SimpleNamespace(id=1)), [])                           # columns absent: nothing
 
 
+class ConsistencyTests(EngineTestBase):
+    """Fixes from the cross-component review: readers, levels, threat loader, forecast lead."""
+
+    def test_reader_never_guesses_symptoms(self):
+        from types import SimpleNamespace as NS
+        from engine.observations import _to_report
+        core_like = NS(pk=1, observed_on=date(2025, 6, 1), kind="treatment", threat_code=None, severity=None, distance_m=None,
+                       details={}, text="sprayed", field_id=3)
+        self.assertEqual(_to_report(core_like, "observed_on").kind, "treatment")
+        no_kind = NS(pk=2, observed_on=date(2025, 6, 1), details={}, text="?", field_id=3)
+        self.assertIsNone(_to_report(no_kind, "observed_on"))                      # skipped, not "symptoms"
+        dmg = NS(pk=3, date=date(2025, 6, 1), category="uszkodzenie", details={}, note="coś połamało", field_id=3, threat_id=None)
+        rep = _to_report(dmg, "date")
+        self.assertEqual((rep.kind, rep.details["type"]), ("event", "damage"))
+        self.assertIn("Crop damage", rep.label())
+        num = NS(pk=4, date=date(2025, 6, 1), category="choroba", severity=0.8, details={}, note="", field_id=3, threat_id=None)
+        self.assertEqual(_to_report(num, "date").severity, 0.8)
+
+    def test_levels_match_the_map(self):
+        from engine.scoring import level_of
+        self.assertEqual([level_of(s) for s in (0.32, 0.33, 0.65, 0.66)], ["low", "medium", "medium", "high"])
+
+    def test_load_threats_keeps_platform_rows(self):
+        from django.core.management import call_command
+        import io
+        Threat.objects.filter(code="wheat.brown_rust").update(name="rdza brunatna (fixture)", source="fixture")
+        call_command("engine_load_threats", stdout=io.StringIO())
+        self.assertEqual(Threat.objects.get(code="wheat.brown_rust").source, "fixture")
+        call_command("engine_load_threats", "--overwrite", stdout=io.StringIO())
+        self.assertEqual(Threat.objects.get(code="wheat.brown_rust").source, "engine rules")
+
+    def test_forecast_lead_follows_the_clock(self):
+        day = date(2025, 6, 18)  # clock 2025-06-15 -> day +3
+        predict(field_ids=[self.wheat.id], start=day, end=day)
+        r = Risk.objects.filter(field=self.wheat, date=day).first()
+        self.assertEqual(r.explanation["forecast_lead_days"], 3)
+        c = Clock.objects.get(); c.today = date(2025, 6, 17); c.save()      # signal: day +1
+        r.refresh_from_db()
+        self.assertEqual(r.explanation["forecast_lead_days"], 1)
+        c.today = date(2025, 6, 20); c.save()                               # now in the past
+        r.refresh_from_db()
+        self.assertNotIn("forecast_lead_days", r.explanation)
+        self.assertFalse([n for n in r.explanation["notes"] if n.startswith("Day +")])
+        c.today = date(2025, 6, 15); c.save()
+
+
 class PureFunctionTests(TestCase):
     def test_safe_storage_days_matches_table_37(self):
         from engine.harvest import safe_storage_days

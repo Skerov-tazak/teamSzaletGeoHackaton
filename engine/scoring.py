@@ -20,7 +20,10 @@ from engine import observations as OBS
 from engine.phenology import STAGE_CONFIDENCE_GDD, stage_name
 
 MODEL_VERSION = "0.1.0"
-LEVELS = ((0.6, "high"), (0.3, "medium"), (0.0, "low"))  # team assumption, to agree with the map
+# Same cut-offs as the map (frontend/src/risk.ts) and the assistant (assistant/domain.py): < 0.33 low,
+# 0.33-0.66 medium, >= 0.66 high. The engine writes `level` into every explanation; readers should use it.
+HIGH, MEDIUM = 0.66, 0.33
+LEVELS = ((HIGH, "high"), (MEDIUM, "medium"), (0.0, "low"))
 NO_IN_SEASON_TREATMENT = {"wheat.take_all", "wheat.snow_mould", "maize.seedling_blight", "maize.crazy_top",
                           "maize.fusarium_stalk_rot", "maize.fusarium_ear_rot",
                           "barley.take_all", "barley.snow_mould", "other_cereals.snow_mould", "rapeseed.clubroot",
@@ -88,7 +91,7 @@ def multipliers(rule: Rule, ctx: FieldContext) -> list[dict]:
         out.append({"factor": "acid_soil", "label": f"Acid soil (pH {ph:.1f}) favours it",
                     "value": round(ph, 1), "unit": "pH", "multiplier": rule.acid_soil})
     carry = ctx.last_season.get(rule.code)
-    if carry and carry["peak"] >= 0.6:
+    if carry and carry["peak"] >= HIGH:
         out.append({"factor": "last_season", "label": f"High {carry['threat']} pressure on this field last season (peak {carry['peak']:.2f} on {carry['date']}): infected residue",
                     "value": round(carry["peak"], 2), "unit": "0-1", "multiplier": 1.2})
     clay = ctx.soil.get("clay")
