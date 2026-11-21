@@ -81,7 +81,7 @@ Some gaps come from **our** contract being ambiguous; those are marked, and we w
    - The forecast has no precipitation (IMERG rain isn't forecast), but the coming days get **satellite rain**, which drives the rain-days, waterlogging and maize-drought rules.
    - Only the confidence number is lowered; the score itself uses information a farmer couldn't have. So even in the demo, the coming days look more precise than they could be.
 2. **Live mode produces nothing.** With real data `WeatherDaily` has no rows after today, and the days are clipped to the last day with weather (`compute.py:219`). So `predict()` silently stops at today and there are no coming-day risks at all.
-3. **It goes against the helper's rule.** `as_of` is documented as being for assessing *past* days (`core/models.py`, `observed()`; AGENTS.md rule 2). Here it gets a future date.
+3. **It goes against the helper's rule.** `as_of` is documented as being for assessing *past* days (`core/models.py`, `observed()`). Here it gets a future date.
 
 **Why it was built this way** (`engine/README.md:135`): if row D depends only on data up to D, the whole season is computed once and moving the demo date needs no recompute. Using the forecast properly makes the coming-day rows depend on the day the forecast was issued, so they must be recomputed whenever the date moves. That turns out to be cheap ([4](#4-moving-the-demo-date-rewrites-the-rest-of-the-season)).
 
