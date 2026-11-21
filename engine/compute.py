@@ -177,7 +177,7 @@ def farm_spread(reports, fields) -> list:
             d = math.hypot(dx, dy)
             if d <= SPREAD_RADIUS_M:
                 out.append(OBS.Report(observed_on=r.observed_on, kind="neighbour", threat_code=r.threat_code, distance_m=round(d),
-                                      field_id=f.id, text=f"Symptoms reported on {src.name}",
+                                      field_id=f.id, text=f"Objawy zgłoszone na polu {src.name}",
                                       details={"derived_from_field": src.id, "derived_from_report": r.id}))
     return out
 
@@ -360,6 +360,7 @@ def _score(field, threats, rules, ctx, daily, hourly, stages, season, days, repo
     return out
 
 
+LEAD_NOTE = "Dzień +"  # prefix of the forecast note on coming days
 FORECAST_CONFIDENCE_DROP = 0.06  # per day ahead (team assumption): day +7 keeps 58 % of the confidence
 
 
@@ -371,9 +372,9 @@ def adjust_for_lead(expl: dict, lead: int, issued_on: date | None = None) -> dic
     if issued_on is not None:
         expl["forecast_issued_on"] = issued_on.isoformat()
     expl["confidence"] = round(base * max(0.4, 1 - FORECAST_CONFIDENCE_DROP * lead), 2)
-    note = (f"Day +{lead}: weather after today is the forecast issued today (daily values only), "
-            "so the risk is a projection and less certain.")
-    expl["notes"] = [n for n in expl.get("notes", []) if not n.startswith("Day +")] + [note]
+    note = (f"{LEAD_NOTE}{lead}: pogoda po dzisiejszym dniu pochodzi z prognozy wydanej dziś (wartości dobowe), "
+            "więc ryzyko to projekcja i jest mniej pewne.")
+    expl["notes"] = [n for n in expl.get("notes", []) if not n.startswith(LEAD_NOTE)] + [note]
     return expl
 
 

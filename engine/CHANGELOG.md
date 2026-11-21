@@ -2,6 +2,15 @@
 
 History of the engine's versions and the findings behind them. The reference documentation is [README.md](README.md).
 
+## v0.11: explanations in Polish
+
+Every text that reaches the farmer is Polish, as explanation v1 requires (docs/database.md → "Text language"):
+`summary` ("Wysokie ryzyko – mątwik burakowy: …"), driver labels, units and thresholds, `action.text`,
+`action.threshold` and the stage thresholds, `notes`, growth-stage names and methods, farmer-report labels, the
+spraying-window rule and notes, harvest texts, satellite anchors and crop checks, field summaries. Dates in texts are
+DD.MM.YYYY; keys, codes, numbers and `threat.name_en` are unchanged. The forecast note on coming days starts with
+"Dzień +N". `catalog.CROP_NAMES_PL` / `crop_pl()` give Polish crop names (CropClass rows keep the English legend).
+
 ## v0.10: demo farm 2024 and a stand-in API for the map
 
 - `engine_dev_seed --crop-from-map`: parcels of all seven engine crops, crop from the crop map of the season itself

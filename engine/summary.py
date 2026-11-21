@@ -18,6 +18,8 @@ from datetime import date, timedelta
 from core.models import Field, Risk
 from engine.scoring import MEDIUM, level_of
 
+LEVEL_WORD = {"high": "wysokie", "medium": "średnie", "low": "niskie"}
+
 TOP_N = 3
 
 
@@ -41,11 +43,11 @@ def _summarise(field: Field, day: date, rows: list[Risk]) -> dict:
                for it in items if it["action"] and it["action"]["type"] in ("treat", "monitor")]
     top = items[:TOP_N]
     if not items:
-        why = "No risks computed for this day."
+        why = "Brak ocen ryzyka na ten dzień."
     elif max_score < MEDIUM:
-        why = "All threats low."
+        why = "Wszystkie zagrożenia niskie."
     else:
-        why = "; ".join(f"{it['name_en'] or it['name_pl']} {it['level']} ({it['score']:.2f})" for it in top if it["score"] >= MEDIUM)
+        why = "; ".join(f"{it['name_pl']}: {LEVEL_WORD[it['level']]} ({it['score']:.2f})" for it in top if it["score"] >= MEDIUM)
     bbch = next((((r.explanation or {}).get("growth_stage") or {}).get("bbch") for r in rows), None)
     return {
         "harvest": _harvest(field, day, bbch),
@@ -122,6 +124,6 @@ def _crop_check(field: Field, day: date) -> dict | None:
         out["model"] = model
         name = model.get("label")
         out["text"] = (out["text"] + " " if out["text"] else "") + (
-            f"Crop model: {name} ({model['confidence']:.0%})" + ("." if agrees else f" - not the field's crop; please confirm."))
+            f"Model upraw: {name} ({model['confidence']:.0%})" + ("." if agrees else " – inna niż uprawa pola; potwierdź uprawę."))
         out["consistent"] = out["consistent"] and (agrees or model["confidence"] < 0.6)
     return out
