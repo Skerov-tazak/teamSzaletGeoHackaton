@@ -105,4 +105,19 @@ def _crop_check(field: Field, day: date) -> dict | None:
     from engine.satellite.season import season_of
 
     season = season_of(day) if field.crop_id != 1130 or day.month < 9 else day.year
-    return fieldndvi.crop_check(fieldndvi.load(field.id, season), field.crop_id, season, day)
+    out = fieldndvi.crop_check(fieldndvi.load(field.id, season), field.crop_id, season, day)
+    try:
+        from engine.cropmodel import CLASS_CODE, predict_field
+        model = predict_field(field, season, day)
+    except Exception as exc:  # the model is optional (not trained, no cache)
+        model = {"error": str(exc)}
+    if model and "crop" in model:
+        agrees = model["crop"] == field.crop_id
+        if out is None:
+            out = {"consistent": agrees, "issues": [], "scenes_used": None, "text": ""}
+        out["model"] = model
+        name = model.get("label")
+        out["text"] = (out["text"] + " " if out["text"] else "") + (
+            f"Crop model: {name} ({model['confidence']:.0%})" + ("." if agrees else f" - not the field's crop; please confirm."))
+        out["consistent"] = out["consistent"] and (agrees or model["confidence"] < 0.6)
+    return out

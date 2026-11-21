@@ -161,3 +161,20 @@ Engine features:
 - **Stage anchors from the curve:** wheat - spring NDVI peak in May-June (>= 0.7) = heading (BBCH 55), NDVI below 0.5 afterwards = ripening (BBCH 83); maize - the rise from bare soil after sowing = young plants (BBCH 13), summer peak = flowering (BBCH 65). From the day an anchor is confirmed the degree-day curve is shifted through it (confidence 0.6 -> 0.8); earlier days keep the old estimate (no look-ahead).
 - **Finding:** on 7 wheat field-seasons near Krapkowice the degree-day model matched heading well (BBCH 53-60 vs 55 in 5 of 7) but ran **1-2 weeks early at ripening** (BBCH 92 where the satellite shows ~83). The wheat table was re-calibrated: heading ~1060, ripening ~2135 degree days since 1 January.
 - **Crop check** (`summary.field_day(...)["crop_check"]`): explainable mismatches between the curve and the crop ("bare in spring: winter wheat is green then") so the farmer is asked to confirm.
+
+
+### v0.5: crop model with crop history and degree-day timing; realistic dev farm
+
+- Crop model features: **last season's crop** (crop map at the pixel; not for 2021/2022 because of the broken 2021 map) and **NDVI read at fixed degree-day points** (300 ... 2100 since 1 January) so early and late years line up. Pixel-level gain is modest (wheat precision 0.60 -> 0.64 at season end, 0.51 -> 0.58 at end of May).
+- **Field-level evaluation** (`engine/scripts/eval_crop_fields.py`, 534 fields of >= 1 ha in 6 windows never seen in training, season 2024):
+
+| As of | wheat / maize / other | "wheat" correct | "maize" correct | wheat vs maize |
+|---|---|---|---|---|
+| 30 Apr | 0.68 | 0.68 | 0.69 | 0.92 |
+| 31 May | 0.74 | 0.71 | 0.86 | 0.99 |
+| 30 Jun | 0.74 | 0.78 | 0.84 | 1.00 |
+| 31 Aug | 0.77 | 0.80 | 0.97 | 1.00 |
+
+  When the model is confident (>= 0.7, about half of the fields) wheat / maize / other is right 82-84 %.
+- `summary.field_day(...)["crop_check"]["model"]`: the model's crop and probabilities for the field as of the day, from the cached NDVI.
+- **Dev farm fixed:** fields were whole patches of one crop on the 2024 map (up to 233 ha, several farmers' parcels with different 2025 crops). Now: 5-40 ha, one class in both 2023 and 2024, 2025 crop from the crop model (>= 60 %). Result near Krapkowice: 3 wheat (one after maize -> head blight), 2 maize (one in its 5th year of maize -> rootworm).

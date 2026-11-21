@@ -24,8 +24,11 @@ import h3
 import numpy as np
 import pandas as pd
 import rasterio
+import rasterio.enums
 import rasterio.features
 import rasterio.mask
+import rasterio.warp
+import rasterio.windows
 from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
@@ -68,13 +71,15 @@ class Command(BaseCommand):
         self.stdout.write(f"data dir: {D}")
         for code, name in LEGEND.items():
             CropClass.objects.update_or_create(code=code, defaults={"name": name})
-        parcels = self.parcels(D, bbox, season - 1, fields_per_crop * 3)
+        parcels = self.parcels(D, bbox, season - 1, fields_per_crop * 6)
         self.stdout.write(f"{len(parcels)} candidate parcels from the {season - 1} crop map")
         crops = self.crop_this_season(parcels, season, today)
         grids = pd.read_parquet(D / "weather" / "weather_grids.parquet", columns=["grid_id", "lat", "lon"])
         grids[["lat", "lon"]] = grids[["lat", "lon"]].astype(float)  # stored as decimals in the source
         chosen = {1110: [], 1130: []}
         for p, crop in zip(parcels, crops):
+            if p.get("crop_model"):
+                self.stdout.write(f"  parcel ({p['crop_prev']} last year): model says {p['crop_model'].get('label')} {p['crop_model'].get('confidence', 0):.0%}")
             if crop in chosen and len(chosen[crop]) < fields_per_crop:
                 chosen[crop].append(p | {"crop": crop})
         with transaction.atomic():
@@ -94,19 +99,34 @@ class Command(BaseCommand):
 
     # --- fields ---------------------------------------------------------------------------------
     def parcels(self, D: Path, bbox, year: int, n: int) -> list[dict]:
+        """
+        Candidate parcels: pixels of one class in BOTH `year` and `year - 1` (parcel borders persist, so
+        neighbouring parcels with the same crop in one year are split by the other year), 5-40 ha.
+        Patches of one crop in a single year merge several farmers' parcels into one huge "field".
+        """
         with rasterio.open(D / "cropland" / f"cropland_{year}.tif") as src:
             win = rasterio.windows.from_bounds(*bbox, transform=src.transform).round_offsets().round_lengths()
             a = src.read(1, window=win)
             t = rasterio.windows.transform(win, src.transform)
-        px_ha = 0.01  # 10 m pixels
+        with rasterio.open(D / "cropland" / f"cropland_{year - 1}.tif") as src:
+            wb = rasterio.windows.from_bounds(*bbox, transform=src.transform).round_offsets().round_lengths()
+            b = np.zeros_like(a)
+            rasterio.warp.reproject(src.read(1, window=wb, boundless=True, fill_value=65535), b,
+                                    src_transform=rasterio.windows.transform(wb, src.transform), src_crs=src.crs,
+                                    dst_transform=t, dst_crs=src.crs, resampling=rasterio.enums.Resampling.nearest)
+        px_ha = 0.0134  # pixel area in this EPSG:4326 grid at ~50.4° N (≈ 10.6 m x 12.6 m)
         out = []
         for code in (1110, 1130):
-            mask = ndimage.binary_opening(a == code, iterations=2)
-            lab, k = ndimage.label(mask)
-            sizes = ndimage.sum(mask, lab, range(1, k + 1))
-            for idx in np.argsort(-sizes)[: n]:
-                if sizes[idx] * px_ha < 3:
-                    continue
+            stable = (a == code) & (b != 65535) & (b != 0)
+            mask = ndimage.binary_opening(stable, iterations=2)
+            # split by last year's class: a parcel is one class this year AND one class last year
+            lab = np.zeros(a.shape, dtype=np.int32); k = 0
+            for prev_code in np.unique(b[mask]):
+                l2, k2 = ndimage.label(ndimage.binary_opening(mask & (b == prev_code), iterations=1))
+                lab[l2 > 0] = l2[l2 > 0] + k; k += k2
+            sizes = ndimage.sum(lab > 0, lab, range(1, k + 1))
+            order = [i for i in np.argsort(-sizes) if 5 <= sizes[i] * px_ha <= 40][: n]
+            for idx in order:
                 comp = (lab == idx + 1).astype("uint8")
                 geoms = [shape(g) for g, v in rasterio.features.shapes(comp, mask=comp == 1, transform=t) if v == 1]
                 poly = max(geoms, key=lambda g: g.area).simplify(0.00008).buffer(-0.00005)
@@ -141,9 +161,14 @@ class Command(BaseCommand):
             m = rasterio.features.geometry_mask([mapping(g)], out_shape=comp.shape[1:], transform=scenes.transform, invert=True)
             curve = np.nanmedian(comp[:, m], axis=1) if m.any() else np.full(comp.shape[0], np.nan)
             crop = None
-            if predict_pixels is not None:
-                crop = predict_pixels(comp[:, m].T, season, today).get("crop")
-            else:  # simple rule on the median curve: green in spring -> winter cereal, bare in spring -> maize
+            if predict_pixels is not None and m.any():
+                try:
+                    res = predict_pixels(comp[:, m].T, season, today)
+                    crop = res.get("crop") if res.get("confidence", 0) >= 0.6 else None
+                    p["crop_model"] = res
+                except FileNotFoundError:
+                    predict_pixels = None
+            if predict_pixels is None:  # simple rule on the median curve: green in spring -> winter cereal, bare in spring -> maize
                 spring = np.nanmean(curve[13:16])  # Mar b .. Apr b
                 if np.isfinite(spring):
                     crop = 1110 if spring > 0.6 else (1130 if spring < 0.4 else None)
