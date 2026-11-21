@@ -5,9 +5,9 @@ code: each item says what the assistant does **until** it is accepted. For Jan, 
 
 | # | Proposal | For | Status |
 |---|----------|-----|--------|
-| 1 | `core.Observation` table | Jan + Szymek (schema), Bartek (reads) | proposed |
+| 1 | `core.Observation` table | Jan + Szymek (schema), Bartek (reads) | done: the assistant writes it; interim rows moved (table kept empty for the engine's adapter) |
 | 2 | Read-only database role + `readonly` connection | Jan + Szymek | proposed (needed before the SQL tool is enabled) |
-| 3 | Risk levels (cut-offs of the 0–1 score) | Bartek, Kuba | assistant uses provisional cut-offs |
+| 3 | Risk levels (cut-offs of the 0–1 score) | Bartek, Kuba | agreed: engine `level` / 0.33–0.66; engine README to fix |
 | 4 | `Risk.explanation` format | Bartek, Kuba | assistant reads the starting-point format defensively |
 | 5 | Guide citation: extra keys `printed_page`, `section`; spreadsheet citations | Jan + Szymek (chat UI) | proposed |
 | 6 | `Reply` extensions: `chart`, `pending_action`, `meta` | Jan + Szymek (chat endpoint/UI) | proposed |
@@ -16,31 +16,17 @@ code: each item says what the assistant does **until** it is accepted. For Jan, 
 
 ---
 
-## 1. `core.Observation`
+## 1. `core.Observation` — done
 
-Agreed in docs/database.md ("Farmer reports go into an `Observation` table in `core`"), columns open.
-Proposal (what the assistant's `record_observation` tool writes):
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `field` | FK Field, CASCADE | |
-| `date` | DateField | the day the farmer saw it (demo calendar), ≤ today |
-| `category` | Char: `choroba` / `szkodnik` / `chwasty` / `uszkodzenie` / `inne` | |
-| `threat` | FK Threat, nullable, SET_NULL | when the farmer named a known threat of the field's crop |
-| `severity` | Char: `niskie` / `srednie` / `wysokie`, blank | |
-| `note` | Text | the farmer's words |
-| `details` | JSON | the extracted draft, anything else |
-| `source` | Char, e.g. `assistant` | who recorded it |
-| `idempotency_key` | Char(64), unique | a repeated "yes" in the chat must not create a duplicate |
-| `created_at` | DateTime auto | UTC |
-
-**Until it exists:** the assistant writes the same columns into an interim table
-`assistant.Observation` (owned by Ola, migration `assistant/0002`). Moving the rows later is a
-plain copy. After saving, the tool calls `engine.predict(field_ids=[id], start=date)` when the
-engine exists; until then it reports `reassessment.status = "unavailable"`.
-
-**Question for Bartek:** which of these columns does the engine need, and should observations
-change the risk directly (e.g. a confirmed disease sets a floor on its score)?
+`core.Observation` exists (docs/database.md -> Observation). The assistant's `record_observation`
+writes it: `kind` from the farmer's words (rules in code), `category` disease / pest / weeds / damage /
+other, `severity` 0.3 / 0.6 / 0.9, `distance_m` for neighbour reports, engine facts in `details`
+(`sowing_date`, `tillage`, `resistant_to`, `type`, `scope`) plus `source`, the chat draft and the
+reassessment status. The interim `assistant.Observation` rows were moved in one migration
+(`assistant/0003`) and nothing writes there any more, so no report counts twice. The empty table
+stays because the engine's adapter and its tests still read it: **Bartek**, drop the adapter when
+convenient and the assistant will drop the table. `predict()` is called with `end` = the last
+precomputed day of the field (the known gap with the default end).
 
 ## 2. Read-only role and `connections["readonly"]`
 
@@ -57,13 +43,13 @@ ORM helpers (`season_so_far()`, `coming_days()`, `observed()`, `current()`) on `
 The SQL tool itself also validates queries (one SELECT, allowlisted `core_*` tables, no system
 functions) and runs them in a read-only transaction with a 3 s timeout and a row cap.
 
-## 3. Risk levels (cut-offs of `Risk.score`)
+## 3. Risk levels (cut-offs of `Risk.score`) — agreed
 
-Open in docs/database.md ("what are the cut-offs for the map colours?"). The assistant needs words
-("wysokie") that match the map colours. **Provisional, in one place (`assistant/domain.py` `LEVELS`):**
-`< 0.33` niskie, `< 0.66` średnie, `≥ 0.66` wysokie. Please decide the real cut-offs (Bartek, Kuba);
-ideally the platform exposes them (e.g. in `GET /api/threats/` or a constant in `core`) so the map
-and the assistant read the same values.
+The engine writes `level` (low / medium / high) into every explanation; the assistant uses it, and
+falls back to the same cut-offs as `engine/scoring.py` and the map (`frontend/src/risk.ts`):
+`< 0.33` low, `< 0.66` medium, `≥ 0.66` high (`assistant/domain.py`).
+**For Bartek:** `engine/README.md` still says "low < 0.3 ≤ medium < 0.6 ≤ high" — the code and
+`docs/interfaces.md` say 0.33 / 0.66; please fix the README.
 
 ## 4. `Risk.explanation` format
 

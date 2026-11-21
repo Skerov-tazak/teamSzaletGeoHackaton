@@ -173,8 +173,10 @@ def observation(route: Route, question: str, history, llm: LLM, state, selected_
         category = "inne"
     elif kind == "event":
         category = "uszkodzenie"
-    elif kind == "absence" and category is None:
-        category = "choroba"
+    elif kind in ("absence", "treatment", "neighbour") and category is None:
+        category = "choroba"  # the engine: absence -> all threats, treatment -> all fungal, neighbour -> disease group
+    elif kind == "symptoms" and category in ("chwasty", "inne"):
+        kind = None  # weeds / other notes: stored, but not a disease or pest report for the engine (it skips them)
 
     missing = []
     if field_id is None:
@@ -236,8 +238,12 @@ def confirmation(route: Route, question: str, state, conv_id=None) -> FlowResult
         updated = r.get("recomputed_field_ids") or [draft["field_id"]]
         ch = r.get("changed", {})
         if ch:
-            parts = [f"{(v['after'] or {}).get('threat', c)}: {(v['before'] or {}).get('level', '—')} → {v['after']['level']}"
-                     for c, v in list(ch.items())[:3]]
+            def _change(c, v):
+                b, a = v["before"] or {}, v["after"]
+                if b.get("level") == a["level"]:  # same level: show the score change
+                    return f"{a.get('threat', c)}: {a['level']} ({b.get('score', 0):.2f} → {a['score']:.2f})".replace(".", ",")
+                return f"{a.get('threat', c)}: {b.get('level', '—')} → {a['level']}"
+            parts = [_change(c, v) for c, v in list(ch.items())[:3]]
             text += " Silnik przeliczył ryzyko pola: " + "; ".join(parts) + "."
         else:
             text += " Silnik przeliczył ryzyko pola — poziomy zagrożeń na dziś się nie zmieniły."

@@ -2,8 +2,9 @@
 Shared domain helpers for the assistant's tools and orchestrator (no LLM here).
 
 * crop names (platform CropClass code -> Polish / RAG crop id)
-* PROVISIONAL risk levels from the engine's 0-1 score (cut-offs are still open for Bartek/Kuba,
-  docs/database.md "Open questions"); one place to change them
+* risk levels: the engine writes `level` (low/medium/high) into every explanation — use it
+  (level_from_explanation); the cut-offs below are the same as engine/scoring.py and the map
+  (frontend/src/risk.ts): < 0.33 low, < 0.66 medium, else high — only a fallback
 * trend of a risk series, computed in code
 * threat resolution: free text (inflected, colloquial) -> core.Threat, keyed by Threat.code,
   matched by name + aliases with the same folding/prefix approach as rag.get_risk_conditions
@@ -27,7 +28,7 @@ def crop_pl(code: int | None) -> str:
 
 # --- risk levels (the engine's cut-offs) ----------------------------------------------------------------
 # (upper bound exclusive, level number, Polish label). Proposed in INTERFACE_PROPOSALS.md.
-LEVELS = [(0.3, 1, "niskie"), (0.6, 2, "średnie"), (1.0001, 3, "wysokie")]  # = engine/README.md cut-offs
+LEVELS = [(0.33, 1, "niskie"), (0.66, 2, "średnie"), (1.0001, 3, "wysokie")]  # = engine/scoring.py + frontend/src/risk.ts
 RELEVANT_SCORE = LEVELS[0][0]  # below this a threat is "not relevant now"
 
 
@@ -38,6 +39,16 @@ def level(score: float | None) -> tuple[int, str]:
         if score < upper:
             return n, label
     return 3, "wysokie"
+
+
+LEVEL_PL = {"low": (1, "niskie"), "medium": (2, "średnie"), "mid": (2, "średnie"), "high": (3, "wysokie")}
+
+
+def level_from_explanation(explanation, score: float | None) -> tuple[int, str]:
+    """The engine's own level when the explanation has one, else computed from the score."""
+    if isinstance(explanation, dict) and explanation.get("level") in LEVEL_PL:
+        return LEVEL_PL[explanation["level"]]
+    return level(score)
 
 
 def trend(scores: list[float], min_delta: float = 0.05) -> str:

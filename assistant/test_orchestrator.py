@@ -11,7 +11,8 @@ from django.test import SimpleTestCase, TestCase
 
 from assistant import devdata
 from assistant.answer import Reply, answer
-from assistant.models import Conversation, Message, Observation
+from assistant.models import Conversation, Message
+from core.models import Observation
 from assistant.orchestrator import citations, guard, prompts, router
 from assistant.orchestrator.llm import FakeLLM, LLMError
 from assistant.orchestrator.state import State
@@ -380,3 +381,24 @@ class EmptyReasoningAnswerTests(SimpleTestCase):
         self.assertEqual(r.text, "Odpowiedź.")
         self.assertEqual([c["max_tokens"] for c in calls], [700, 1400])
         self.assertEqual(calls[0]["reasoning_effort"], "low")
+
+
+class EngineAlignmentTests(WorldTestCase):
+    def test_level_comes_from_the_engine_explanation(self):
+        from assistant import domain
+        self.assertEqual(domain.level_from_explanation({"level": "high"}, 0.4), (3, "wysokie"))
+        self.assertEqual(domain.level_from_explanation({}, 0.4), (2, "średnie"))
+        self.assertEqual(domain.level(0.32)[1], "niskie")   # same cut-offs as engine/scoring.py and the map
+        self.assertEqual(domain.level(0.65)[1], "średnie")
+        self.assertEqual(domain.level(0.66)[1], "wysokie")
+
+    def _draft(self, msg, category):
+        llm = FakeLLM(json.dumps({"category": category, "note": msg}, ensure_ascii=False))
+        return answer(self.conv(), msg, self.wheat, llm=llm).pending_action["draft"]
+
+    def test_report_kinds_the_engine_can_use(self):
+        self.assertIsNone(self._draft("Widzę dużo chwastów przy miedzy", "chwasty")["kind"])
+        d = self._draft("Opryskałem to pole 5 czerwca", None)
+        self.assertEqual((d["kind"], d["category"]), ("treatment", "choroba"))
+        d = self._draft("Sąsiad za drogą ma fuzariozę kłosów", None)
+        self.assertEqual((d["kind"], d["category"], d["facts"]), ("neighbour", "choroba", {"distance_m": 300}))

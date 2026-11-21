@@ -134,7 +134,7 @@ def field_question(route: Route, question: str, history, llm: LLM, conv_id=None)
 # ----------------------------------------------------------------------------- farm overview
 def farm_summary(route: Route, question: str, history, llm: LLM, conv_id=None) -> FlowResult:
     s = call("get_farm_risk_summary")
-    lines = ctx.season_lines() + ["Najpilniejsze pary pole × zagrożenie (silnik; poziomy tymczasowe):"]
+    lines = ctx.season_lines() + ["Najpilniejsze pary pole × zagrożenie (silnik; poziomy silnika):"]
     picked, used_fields = [], set()
     for p in s["most_urgent"]:  # prefer one pair per field
         if p["field_id"] not in used_fields:

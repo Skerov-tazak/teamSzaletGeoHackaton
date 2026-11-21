@@ -79,7 +79,7 @@ def chart_risk_timeline(field_ids: list[int], threat: str, date_from=None, date_
         raise ToolError(f"Brak danych ryzyka „{t.name}” dla wybranych pól w zakresie {a} – {b}.")
     spec = {
         "$schema": VEGA, "width": "container", "height": 260,
-        "title": {"text": f"Ryzyko: {t.name}", "subtitle": f"{a:%d.%m} – {b:%d.%m.%Y}; poziomy: niskie < 0,3 ≤ średnie < 0,6 ≤ wysokie"},
+        "title": {"text": f"Ryzyko: {t.name}", "subtitle": f"{a:%d.%m} – {b:%d.%m.%Y}; poziomy: niskie < 0,33 ≤ średnie < 0,66 ≤ wysokie"},
         "data": {"values": values},
         "layer": [
             {"mark": {"type": "line", "point": True},
