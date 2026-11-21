@@ -24,7 +24,8 @@ It is a **rule-based (expert) system** whose rules are stored in [`catalog.py`](
 # prerequisites: the data in "Data to load" (check: python manage.py engine_check_data)
 python manage.py engine_load_threats                 # Threat rows for every rule (creates missing codes; keeps existing rows)
 python manage.py engine_fetch_ndvi --season 2025     # optional: satellite curves per field (needs network)
-python manage.py predict                             # all fields, 1 September .. today + 7
+python manage.py predict --season                    # demo: previous season, then this one to its end
+python manage.py engine_set_date 2025-06-20          # move the demo date (recomputes the days that change)
 python manage.py engine_summary --date 2025-06-05    # fields ranked by urgency, with reasons
 python manage.py test engine                         # synthetic data, no downloads needed
 ```
@@ -40,20 +41,51 @@ Everything other components call. All functions use `core.clock.today()`, never 
 ```python
 from engine import predict
 
-n = predict(field_ids=None, start=None, end=None, observations=None)  # -> number of Risk rows written
+n = predict(field_ids=None, start=None, end=None, observations=None)
+int(n)        # Risk rows written (n is a PredictResult: an int, so counting callers keep working)
+n.field_ids   # every field rewritten, incl. nearby fields a symptoms report spread to -> updated_field_ids
 ```
 
 | Argument | Default | Meaning |
 |---|---|---|
 | `field_ids` | all fields | Fields to recompute. Fields of the same crop within 3 km are added when a symptoms report on one of them spreads ([below](#farmer-reports)). |
 | `start` | 1 September of the current season | First day to compute. |
-| `end` | today + 7 | Last day to compute. |
+| `end` | the later of today + 7 and the last day already stored for these fields | Last day to compute, so a recompute after a report or a crop change also replaces the precomputed days. Clipped to the last day with weather (observed, or in today's forecast): days without weather keep their rows. |
 | `observations` | the `Observation` table | Farmer reports to use instead of the table (tests, scripted demos). |
 
 - Writes in **one transaction**: deletes this range's rows for these fields, then bulk-inserts the new ones. Re-running is safe and gives the same result.
-- **Each day is computed as of that day:** only weather up to that day, reports dated up to that day, satellite stages confirmed up to that day. Later data never changes an earlier day ([details](#as-of-every-day)).
-- Days after `today` get lower confidence (forecast, [details](#confidence)).
+- **Which weather each day uses** ([details](#as-of-every-day)):
+
+  | Day | Weather |
+  |---|---|
+  | ≤ today | observed up to that day ("as of that day") |
+  | today + 1 … today + 7 (coming days) | observed up to **today**, then the **forecast issued today** (daily only: infection hours from daily estimates). No forecast issued today → no coming-day rows |
+  | > today + 7 (demo precompute only) | observed up to that day; hidden by the API, and recomputed as coming days by `clock_moved()` when the date gets within 7 days |
+
+- Reports count from their `observed_on`; satellite stages from the scene that confirmed them (coming days: scenes up to today).
+- Coming days get lower confidence and `forecast_lead_days` / `forecast_issued_on` ([details](#confidence)).
 - Speed: a full season for 5 fields takes a few seconds.
+
+### `clock_moved()` — after the demo date moves
+
+```python
+from engine import clock_moved
+
+clock.save()                      # the platform saves the new date (PUT /api/clock/, the admin's clock page)
+clock_moved(old_today, new_today) # -> PredictResult; recomputes (min(old, new), max(old, new) + 7]
+```
+
+There is **no signal**: whoever moves the date calls it, whether with `clock.save()` or `Clock.objects.update()`. Days that were coming days and are now past go back to "as of that day"; the new coming days follow the forecast issued on the new date; nothing else is rewritten. About 0.2 s per field. From the shell: `python manage.py engine_set_date 2025-06-20`.
+
+### `precompute_season()` — the demo seed
+
+```python
+from engine import precompute_season
+
+precompute_season(season=None)    # default: the clock's season -> PredictResult
+```
+
+Computes the previous season first (this season's carry-over reads its peaks from `Risk`), then this season to its end (maize to 31 December, clipped to the last day with weather). The seed calls only this. From the shell: `python manage.py predict --season`.
 
 ### `what_if()` — dry run for the assistant
 
@@ -106,13 +138,14 @@ Report(observed_on: date, kind: str, threat_code: str | None = None, severity: f
 |---|---|
 | `engine.cropmodel.predict_field(field, season, today)` | Crop model for one field as of a day: `{"crop", "label", "confidence", "probabilities", ...}`. |
 | `engine.harvest.safe_storage_days(moisture_pct, grain_temp_c)` | Maize grain storage table. |
-| `engine.compute.adjust_for_lead(explanation, days_ahead)` | Recompute the forecast confidence of a stored row after the clock moved. |
+| `engine.compute.adjust_for_lead(explanation, days_ahead, issued_on=None)` | The forecast discount of a coming day's confidence (used inside `predict()`). |
 
 ### Management commands
 
 | Command | What |
 |---|---|
-| `predict [--fields 1 2] [--start D] [--end D]` | `predict()` from the shell. |
+| `predict [--fields 1 2] [--start D] [--end D] [--season]` | `predict()` from the shell; `--season` = `precompute_season()`. Prints the rows and the field ids. |
+| `engine_set_date D` | Save the Clock and call `clock_moved()`. |
 | `engine_load_threats [--overwrite]` | Create the missing `Threat` rows of all 76 rules (existing rows kept unless `--overwrite`; rows without a rule listed) and the engine's `CropClass` rows if missing. |
 | `engine_fetch_ndvi [--season Y] [--fields ...]` | Download and cache each field's Sentinel-2 NDVI series (network). |
 | `engine_summary [--date D] [--json]` | Print the field ranking. |
@@ -125,14 +158,15 @@ Report(observed_on: date, kind: str, threat_code: str | None = None, severity: f
 
 | When | Call | Who |
 |---|---|---|
-| **After the seed / import** (historical demo) | `predict()` for the **previous season first**, then the current one (whole season, including the maize harvest): `predict(start=date(2024, 1, 15), end=date(2024, 8, 31))`, then `predict(start=date(2024, 9, 1), end=date(2025, 10, 31))` | platform seed |
+| **After the seed / import** (historical demo) | `precompute_season()` (previous season, then this one to its end) | platform seed |
+| **After the demo date moves** | `clock_moved(old, new)`, right after saving the Clock | platform (`PUT /api/clock/`, admin clock page) |
 | **Daily, in live mode** (after the new forecast is stored) | `predict(start=today - 30 days)` | daily job |
-| **After the assistant records a report** | `predict(field_ids=[field.id], start=report.observed_on)`; return that field (and nearby fields it spread to) in `updated_field_ids` | assistant tool |
+| **After the assistant records a report** | `n = predict(field_ids=[field.id], start=report.observed_on)`; return `n.field_ids` (the field and nearby fields it spread to) in `updated_field_ids` | assistant tool |
 | **After the farmer changes a field's crop** (`Field.crop`) | `predict(field_ids=[field.id], start=season start)` | platform (API) |
 | **After `engine_fetch_ndvi`** (new satellite scenes) | `predict(field_ids=..., start=season start)` | daily job / by hand |
 | **After threats, rules or imported data change** | `predict()` | by hand |
 
-**Moving the demo date does not need a recompute:** the season is precomputed and the API hides days after today + 7. Saving the `Clock` row (admin, seed, a daily job) re-measures the "days ahead" of rows already written (`compute.refresh_forecast_confidence`, a `post_save` signal in `engine/apps.py`): `forecast_lead_days`, the forecast discount of `confidence` and the "Day +N" note follow the new date; scores stay. `Clock.objects.update(...)` skips signals: call `refresh_forecast_confidence()` after it.
+**Moving the demo date recomputes one window:** coming days depend on the forecast issued today, so after a move `clock_moved(old, new)` rewrites `(min(old, new), max(old, new) + 7]` and nothing else (about 0.2 s per field; most of it is loading the season's weather). There is no signal on `Clock`: the caller does it. With the default `end`, every other call above already reaches the precomputed days.
 
 **Order of a fresh setup:**
 
@@ -144,8 +178,7 @@ python manage.py engine_load_threats            # or the platform's Threat fixtu
 python manage.py engine_fetch_ndvi --season 2024
 python manage.py engine_fetch_ndvi --season 2025   # both optional (network)
 python manage.py engine_check_data              # must end with "Everything the engine requires is present."
-python manage.py predict --start 2024-01-15 --end 2024-08-31   # last season first (carry-over)
-python manage.py predict --start 2024-09-01 --end 2025-10-31   # this season, including the maize harvest
+python manage.py predict --season               # last season first (carry-over), then this one to its end
 ```
 
 Last season goes first because this season reads last season's risks: a pathogen that peaked on the field carries over in the residue.
@@ -205,7 +238,7 @@ What the farmer tells the chat is of two kinds, stored in two places (proposal f
 - The assistant writes both through **one validated tool** after the farmer confirms (like `record_observation`: idempotency key, threat resolved to a code), never with raw SQL from MCP (the MCP role stays read-only).
 - A changed fact is also logged as an Observation (`kind = field_fact`), so it is clear who changed what and when.
 - After the write: `predict(field_ids=[field.id], start=...)` — the day seen for an event, the season start (1 Sep; sowing date for spring crops) for a changed crop or sowing date.
-- **Engine side (ready):** it reads `Field.crop` and `FieldCropYear` already; `Field.sowing_date`, `Field.tillage` and `Field.resistant_to` are read **if the columns exist** (`observations.from_field`) and explained as "Field record: …". A sowing date applies only to its own season. Until the columns exist, `field_fact` observations do the same job.
+- **Engine side (ready):** it reads `Field.crop` and `FieldCropYear` already; `Field.sowing_date`, `Field.tillage` and `Field.resistant_to` are read **if the columns exist** (`observations.from_field`) and explained as "Field record: …". A sowing date applies only to its own season; tillage and resistance (no date on the field) apply from the start of the current season, so they never rewrite last season. Until the columns exist, `field_fact` observations do the same job.
 
 ### Observation rows
 
@@ -341,6 +374,8 @@ write all rows (replace the range)                               (compute.py)
 
 Every feature for day D is a **trailing** value over days ≤ D (sums or means over the last N days), so a whole season is computed in one pass without look-ahead. Reports affect days ≥ their `observed_on`; satellite stage anchors apply from the scene that confirmed them; the spraying window uses the forecast issued on D. A test changes the weather after D and checks that D's risks stay the same.
 
+**Coming days** (today + 1 … + 7) are a projection: the trailing windows are filled with the weather observed up to today and then the forecast issued today (`features.load_forecast`), the stage curve continues on the forecast temperatures, satellite anchors stop at today, and the spraying window reads today's forecast for the days after D. The forecast is daily only, so hourly rules use the daily estimate (confidence × 0.7). In live mode, with nothing observed after today, the coming days still exist as long as a forecast is stored. Contract tests: `engine/test_predict_contract.py` (from the platform's review, `docs/engine-predict-review.md`).
+
 ### Growth stage
 
 - **Degree days** from a typical sowing date (`engine.phenology.PROFILES`, confidence 0.6):
@@ -395,7 +430,7 @@ Every applied report is a driver with its `effect`, and its label is added to th
 
 ### Confidence
 
-`confidence` = stage confidence (0.6 degree days / 0.8 satellite / 0.85 farmer's sowing date) × 0.7 if hourly weather was missing × (1 − 0.06 × days ahead, at least 0.4) for coming days; 1.0 when the farmer reported symptoms.
+`confidence` = stage confidence (0.6 degree days / 0.8 satellite / 0.85 farmer's sowing date) × 0.7 if hourly weather was missing × (1 − 0.06 × days ahead, at least 0.4) for coming days (`confidence_observed` keeps the value before the discount, `forecast_lead_days` and `forecast_issued_on` say which forecast); 1.0 when the farmer reported symptoms.
 
 ### Crop
 
@@ -436,8 +471,8 @@ Rapeseed numbers are general agronomy (no rapeseed guide in the package), all li
 
 - **Not validated against real outbreaks**: the data has none. Ranges and stages follow integrated pest management practice; *how many hours make a risk high* is the team's choice, calibrated on 2025 near Krapkowice (a dry April, a wet June). Each explanation lists these numbers under `assumptions`.
 - Severities (yield loss if a threat materialises) are team assumptions; they only rank fields.
-- **The forecast has no precipitation** (the weather data has none; IMERG is not forecast), so the spraying window cannot check rain — the window says so.
-- In the historical demo the forecast is the observed weather (a perfect forecast); live forecasts are less certain, hence the lower confidence of coming days.
+- **The weather packages have no precipitation** (only IMERG): the demo seed fills the forecast's `total_precipitation` from the observed day's IMERG value. Without it the spraying window cannot check rain — the window says so.
+- In the historical demo the forecast is a copy of the observed days, but daily only: coming days use daily estimates instead of hourly humidity, so they are less precise than past days, as with a real forecast.
 - Weather is one 4 km cell: fields of one farm share it; they differ by crop, stage, history, soil and reports.
 - **Crop model on 534 fields never seen in training (2024):** wheat / maize / other right 74 % by end of May, 77 % by end of August; "wheat" correct 71–80 %, "maize" 86–97 %; wheat vs maize 99–100 % from end of May. Wheat vs other winter cereals is the weak spot, hence the farmer's confirmation.
 - Weather risks without a disease (frost, drought, heat) are not threats yet: `Threat.Category` has no such category.
@@ -447,10 +482,11 @@ Rapeseed numbers are general agronomy (no rapeseed guide in the package), all li
 | Item | Who | Engine side |
 |---|---|---|
 | **API endpoints for risks** (`/api/risks/?date=`, `/api/fields/{id}/risks/`, `/api/fields/{id}/risks/{date}/`), optionally `field_day` / `farm_ranking` | Jan + Szymek | ready: `Risk` rows, `engine.summary` |
-| **Farmer reports** — `details.kind` / `distance_m` / facts in `assistant.Observation` ([Observation rows](#observation-rows)); later `core.Observation` | Ola (writes), Jan + Szymek (`core` schema) | reads `core.Observation` and `assistant.Observation` |
+| **Farmer reports** — `details.kind` / `distance_m` / facts in `assistant.Observation` ([Observation rows](#observation-rows)); later `core.Observation` | Ola (writes), Jan + Szymek (`core` schema) | reads `core.Observation` and `assistant.Observation`; an interim row whose `idempotency_key` is already in `core.Observation` counts once. Remove the interim reader once Ola has switched |
 | **Facts on the field** — `Field.sowing_date`, `Field.tillage`, `Field.resistant_to`, `FieldCropYear.source`; the chat writes confirmed facts there ([Farmer input](#farmer-input-facts-on-the-field-events-in-observation)) | Jan + Szymek (columns), Ola (tool) | reads them if present |
-| Assistant tools: record a report → `predict(field_ids=[...], start=observed_on)`; "what if" → `what_if()`; "which field first" → `farm_ranking()` | Ola | ready |
+| Assistant tools: record a report → `predict(field_ids=[...], start=observed_on)`, return its `.field_ids` as `updated_field_ids`; "what if" → `what_if()`; "which field first" → `farm_ranking()` | Ola | ready |
 | Map: colour by `explanation.level` (cut-offs 0.33 / 0.66, the same as `frontend/src/risk.ts`), "why" panel from `summary` + `drivers`, crop check from `field_day()["crop_check"]` | Kuba | ready |
 | Threat codes: use `engine_load_threats`, or a fixture with the same codes | Jan + Szymek | ready |
+| **Demo date:** `PUT /api/clock/` and `ClockAdmin.save_model` call `engine.clock_moved(old, new)` after saving; the seed calls `engine.precompute_season()` and fills forecast rain from IMERG | Jan + Szymek | ready |
 | New categories `weather` / `soil` / `harvest` for frost, drought, harvest risks | Jan + Szymek | rules would follow |
 | **Data issues found:** the weather packages have **no precipitation** (only IMERG); soil `clay`/`sand` are fractions, `BAND_*` are text; grid lat/lon are decimals; hourly year files overlap by one hour; **the 2021 crop map is identical to 2022** (`FieldCropYear` 2021 is wrong) | Jan + Szymek, organisers | handled in the engine |

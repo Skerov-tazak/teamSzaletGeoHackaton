@@ -93,7 +93,10 @@ def _harvest(field: Field, day: date, bbch) -> dict | None:
     recent = F.load_daily(field.weather_grid_id, day - timedelta(days=14), day)
     recent = recent[recent.index >= pd.Timestamp(day - timedelta(days=14))] if not recent.empty else recent
     cols = ["date", "max_temperature", "min_temperature", "total_precipitation", "avg_relative_humidity"]
-    fc = pd.DataFrame.from_records(WeatherForecastDaily.objects.current(as_of=day).filter(grid_id=field.weather_grid_id)
+    from core import clock
+    issued = min(day, clock.today())  # a day after today: the forecast known today, not one issued later
+    fc = pd.DataFrame.from_records(WeatherForecastDaily.objects.current(as_of=issued)
+                                   .filter(grid_id=field.weather_grid_id, date__gt=day)
                                    .order_by("date").values(*cols), columns=cols)
     fc = fc.set_index("date") if not fc.empty else None
     return harvest_outlook(field.crop_id, float(bbch), recent, fc)

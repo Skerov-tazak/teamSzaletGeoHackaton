@@ -29,6 +29,7 @@ def seasonal_temp(day: date) -> float:
 
 class EngineTestBase(TestCase):
     wet_days: set[date] = set()
+    today = date(2025, 6, 15)  # the demo date; rule tests that score days after it set a later one (no forecast in the fixture)
 
     @classmethod
     def setUpTestData(cls):
@@ -38,7 +39,7 @@ class EngineTestBase(TestCase):
         for rule in RULES.values():
             Threat.objects.create(code=rule.code, crop_id=rule.crop, name=rule.name_pl, category=rule.category, source="test")
         cls.grid = WeatherGrid.objects.create(grid_id="g1", lat=50.35, lon=17.7)
-        Clock(today=date(2025, 6, 15)).save()
+        Clock(today=cls.today).save()
         cls.make_weather(cls.wet_days)
         cls.wheat = cls.make_field("wheat", 1110, prev=1130)
         cls.wheat_after_wheat = cls.make_field("wheat2", 1110, prev=1110)
@@ -72,6 +73,24 @@ class EngineTestBase(TestCase):
         return f
 
 
+def copy_forecast(grid, first_issue: date, last_issue: date):
+    """The platform's demo forecast: for each issue day D, the observed days D+1..D+7 (rain included)."""
+    from core.models import WeatherForecastDaily
+    cols = ["max_temperature", "min_temperature", "avg_temperature", "avg_relative_humidity", "total_precipitation",
+            "avg_wind_speed", "eto", "avg_soil_temperature_level_1", "min_soil_temperature_level_1",
+            "avg_soil_moisture_level_1", "avg_snow_depth"]
+    obs = {d["date"]: d for d in WeatherDaily.objects.filter(grid=grid).values("date", *cols)}
+    rows = []
+    d = first_issue
+    while d <= last_issue:
+        for k in range(1, 8):
+            o = obs.get(d + timedelta(days=k))
+            if o:
+                rows.append(WeatherForecastDaily(grid=grid, issued_on=d, **o))
+        d += timedelta(days=1)
+    WeatherForecastDaily.objects.bulk_create(rows)
+
+
 class SeasonGridTests(TestCase):
     def test_season_and_slots(self):
         self.assertEqual(season_of(date(2024, 9, 1)), 2025)
@@ -83,6 +102,7 @@ class SeasonGridTests(TestCase):
 
 
 class PredictTests(EngineTestBase):
+    today = date(2025, 7, 31)  # every scored day is in the past: assessed as of that day
     # warm and wet around wheat flowering (the synthetic, cool season flowers ~20-25 June)
     wet_days = {date(2025, 6, d) for d in range(18, 24)}
 
@@ -255,6 +275,7 @@ class AssistantObservationTests(EngineTestBase):
 
 class OtherCropTests(EngineTestBase):
     """Barley, other cereals, rapeseed, sugar beet and potatoes get their own rules and growth stages."""
+    today = date(2025, 7, 31)
     wet_days = {date(2025, 6, d) for d in range(18, 24)}
 
     def test_every_engine_crop_gets_risks(self):
@@ -319,6 +340,7 @@ class FieldRecordTests(TestCase):
 
     def test_from_field_and_sowing_window(self):
         from types import SimpleNamespace
+        Clock(today=date(2025, 6, 15)).save()
         from engine.observations import from_field, sowing_override
         f = SimpleNamespace(id=7, sowing_date=date(2024, 9, 25), tillage="reduced", resistant_to=["wheat.brown_rust"])
         reps = from_field(f)
@@ -363,18 +385,94 @@ class ConsistencyTests(EngineTestBase):
         self.assertEqual(Threat.objects.get(code="wheat.brown_rust").source, "engine rules")
 
     def test_forecast_lead_follows_the_clock(self):
+        from engine import clock_moved
+        copy_forecast(self.grid, date(2025, 6, 10), date(2025, 6, 25))
         day = date(2025, 6, 18)  # clock 2025-06-15 -> day +3
         predict(field_ids=[self.wheat.id], start=day, end=day)
         r = Risk.objects.filter(field=self.wheat, date=day).first()
         self.assertEqual(r.explanation["forecast_lead_days"], 3)
-        c = Clock.objects.get(); c.today = date(2025, 6, 17); c.save()      # signal: day +1
-        r.refresh_from_db()
+        self.assertEqual(r.explanation["forecast_issued_on"], "2025-06-15")
+        c = Clock.objects.get(); c.today = date(2025, 6, 17); c.save()
+        clock_moved(date(2025, 6, 15), date(2025, 6, 17))                   # day +1
+        r = Risk.objects.get(field=self.wheat, threat=r.threat, date=day)
         self.assertEqual(r.explanation["forecast_lead_days"], 1)
-        c.today = date(2025, 6, 20); c.save()                               # now in the past
-        r.refresh_from_db()
+        self.assertEqual(r.explanation["forecast_issued_on"], "2025-06-17")
+        c.today = date(2025, 6, 20); c.save()
+        clock_moved(date(2025, 6, 17), date(2025, 6, 20))                   # now in the past
+        r = Risk.objects.get(field=self.wheat, threat=r.threat, date=day)
         self.assertNotIn("forecast_lead_days", r.explanation)
         self.assertFalse([n for n in r.explanation["notes"] if n.startswith("Day +")])
         c.today = date(2025, 6, 15); c.save()
+
+    def test_clock_save_has_no_side_effects(self):
+        predict(field_ids=[self.wheat.id], start=date(2025, 6, 10), end=date(2025, 6, 14))
+        before = list(Risk.objects.order_by("id").values_list("id", "computed_at"))
+        c = Clock.objects.get(); c.today = date(2025, 6, 16); c.save()      # no signal: nothing recomputed
+        self.assertEqual(list(Risk.objects.order_by("id").values_list("id", "computed_at")), before)
+        c.today = date(2025, 6, 15); c.save()
+
+
+class ContractExtrasTests(EngineTestBase):
+    """docs/engine-predict-review.md: clock_moved, precompute_season, result field ids, guards."""
+    wet_days = {date(2025, 6, d) for d in range(18, 24)}
+
+    def test_clock_moved_rewrites_only_the_window_and_fixes_coming_days(self):
+        from engine import clock_moved
+        copy_forecast(self.grid, date(2025, 6, 10), date(2025, 6, 30))
+        predict(start=date(2025, 6, 1), end=date(2025, 7, 31))
+        stamp = {r.id: r.computed_at for r in Risk.objects.all()}
+        c = Clock.objects.get(); c.today = date(2025, 6, 18); c.save()
+        res = clock_moved(date(2025, 6, 15), date(2025, 6, 18))
+        self.assertGreater(int(res), 0)
+        lo, hi = date(2025, 6, 16), date(2025, 6, 25)
+        outside = Risk.objects.exclude(date__range=(lo, hi))
+        self.assertTrue(all(stamp.get(r.id) == r.computed_at for r in outside))      # untouched
+        inside = Risk.objects.filter(date__range=(lo, hi))
+        self.assertTrue(all(r.id not in stamp for r in inside))                       # recomputed
+        coming = Risk.objects.filter(date__gt=date(2025, 6, 18), date__lte=date(2025, 6, 25))
+        self.assertTrue(all(r.explanation["forecast_lead_days"] == (r.date - date(2025, 6, 18)).days for r in coming))
+        past = Risk.objects.filter(date__range=(date(2025, 6, 16), date(2025, 6, 18)))
+        self.assertTrue(all("forecast_lead_days" not in r.explanation for r in past))
+        c.today = date(2025, 6, 15); c.save()
+
+    def test_precompute_season_covers_both_seasons_in_order(self):
+        from engine import precompute_season
+        copy_forecast(self.grid, date(2025, 6, 15), date(2025, 6, 15))
+        res = precompute_season()
+        self.assertEqual(sorted(res.field_ids), sorted([self.wheat.id, self.wheat_after_wheat.id, self.maize.id]))
+        last = Risk.objects.order_by("-date").values_list("date", flat=True).first()
+        self.assertEqual(last, date(2025, 7, 31))                                     # season end (last weather day)
+        self.assertTrue(Risk.objects.filter(date__lt=date(2024, 9, 1)).exists())      # previous season too
+        self.assertEqual(int(res), Risk.objects.filter(date__gte=date(2024, 6, 1)).count())
+
+    def test_result_is_an_int_with_field_ids(self):
+        res = predict(field_ids=[self.maize.id], start=date(2025, 6, 10), end=date(2025, 6, 12))
+        self.assertIsInstance(res, int)
+        self.assertEqual(res.field_ids, [self.maize.id])
+        self.assertEqual(int(res + res), 2 * int(res))
+
+    def test_days_without_weather_keep_their_rows(self):
+        predict(field_ids=[self.wheat.id], start=date(2025, 7, 25), end=date(2025, 7, 31))
+        n = Risk.objects.filter(field=self.wheat).count()
+        predict(field_ids=[self.wheat.id], start=date(2025, 7, 25), end=date(2025, 8, 15))  # no weather after 31 July
+        self.assertEqual(Risk.objects.filter(field=self.wheat).count(), n)
+
+    def test_no_forecast_no_coming_days(self):
+        predict(start=date(2025, 6, 10), end=date(2025, 6, 22))
+        self.assertFalse(Risk.objects.filter(date__gt=date(2025, 6, 15)).exists())
+        self.assertTrue(Risk.objects.filter(date=date(2025, 6, 15)).exists())
+
+    def test_coming_days_spray_window_uses_todays_forecast(self):
+        from engine.compute import _forecast
+        copy_forecast(self.grid, date(2025, 6, 15), date(2025, 6, 20))
+        fc = _forecast("g1", date(2025, 6, 18), today=date(2025, 6, 15))
+        self.assertEqual([d for d in fc.index], [date(2025, 6, 19), date(2025, 6, 20), date(2025, 6, 21), date(2025, 6, 22)])
+
+    def test_field_facts_hold_from_this_season_only(self):
+        from types import SimpleNamespace
+        from engine.observations import from_field
+        rep = from_field(SimpleNamespace(id=1, resistant_to=["wheat.brown_rust"]))[0]
+        self.assertEqual(rep.observed_on, date(2024, 9, 1))
 
 
 class PureFunctionTests(TestCase):
@@ -441,6 +539,7 @@ class FarmFeatureTests(EngineTestBase):
         self.assertEqual(Risk.objects.get(field=self.wheat, threat__code=code, date=date(2025, 6, 23)).score, stored)
 
     def test_coming_days_have_lower_confidence(self):
+        copy_forecast(self.grid, date(2025, 6, 15), date(2025, 6, 15))
         predict(start=date(2025, 6, 14), end=date(2025, 6, 20))  # clock: 15 June
         today_row = Risk.objects.filter(field=self.wheat, date=date(2025, 6, 15)).first()
         ahead = Risk.objects.get(field=self.wheat, threat=today_row.threat, date=date(2025, 6, 20))
