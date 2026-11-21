@@ -30,3 +30,73 @@ def predict(field_ids: list[int] | None = None, start: date | None = None, end: 
 - **Units are the dataset's** (wind in km/h, radiation in MJ/m², humidity in %). Convert in your code when a rule from the guides uses another unit.
 - **Output: the `Risk` table, which only the engine writes.** One row per field, threat and day, with a score from 0 to 1 and an explanation. Write in bulk with `bulk_create(..., update_conflicts=True, ...)` (example in the database doc). The database rejects scores outside 0–1.
 - *Still open, and yours to propose* (see the [database doc's open questions](../docs/database.md#open-questions)): what the score means, the explanation format (the map and the assistant both show it), and which extra field data you need (sowing date, growth stage, the columns of `Observation`).
+
+## What is built (v0.1, rules from the guides)
+
+```bash
+python manage.py engine_load_threats   # Threat rows for every rule in engine/catalog.py (upsert by code)
+python manage.py predict               # all fields, 1 September .. today + 7
+python manage.py predict --fields 3 --start 2025-05-01 --end 2025-06-30
+python manage.py test engine           # synthetic weather, no data needed
+```
+
+From Python (the assistant after recording an observation): `from engine import predict; predict(field_ids=[3], start=day)`.
+
+| File | What |
+|------|------|
+| [`catalog.py`](catalog.py) | Every threat rule: temperature / humidity ranges, susceptible growth stages, multipliers, the guide's thresholds, **sources with page numbers**. Numbers the guides don't give are marked as team assumptions. |
+| [`phenology.py`](phenology.py) | Growth stage (BBCH) per day from degree days and a typical sowing date (wheat 1 Oct, maize 25 Apr). |
+| [`features.py`](features.py) | Weather features per day, all trailing windows (a day never sees later weather). |
+| [`scoring.py`](scoring.py) | Score + explanation per field, threat and day; spraying window from the forecast. |
+| [`compute.py`](compute.py) | `predict()`: loads, scores, bulk-overwrites `Risk`. |
+| [`satellite/`](satellite/) | Sentinel-2 NDVI from Earth Search (only the needed window), season calendar grid. For the crop model. |
+| [`management/commands/engine_dev_seed.py`](management/commands/engine_dev_seed.py) | **Dev only:** a 6-field farm near Krapkowice (Opolskie) with weather, soil and crop history, until the platform import exists. |
+
+Threats (16): wheat — fusarium head blight, septoria leaf blotch, brown rust, yellow rust, powdery mildew, tan spot, take-all, snow mould; maize — seedling blight, fusarium ear rot, fusarium stalk rot, crazy top, European corn borer, western corn rootworm, aphids, frit fly. Codes like `wheat.fusarium_head_blight`.
+
+### What the score means (proposal)
+
+`score` (0–1) = how favourable the last days were for this threat on this field: **weather (or pest activity) × growth-stage weight × field multipliers** (previous crop, monoculture, heavy soil), capped at 1. It is an index, not a probability. Levels (proposal, to agree with Kuba): **low < 0.3 ≤ medium < 0.6 ≤ high**.
+
+### `Risk.explanation` format (proposal, version 1)
+
+```jsonc
+{
+  "version": 1,
+  "summary": "High risk of Fusarium head blight (fuzarioza kłosów): hours at 15-25 °C with wet leaves (RH >= 95 % or rain) in the last 5 days: 16 h; crop at flowering, BBCH 63.",
+  "level": "high",                     // low / medium / high
+  "score": 1.0,
+  "threat": {"code": "wheat.fusarium_head_blight", "name_pl": "fuzarioza kłosów", "name_en": "Fusarium head blight", "category": "fungal"},
+  "as_of": "2025-06-07",               // assessed with weather up to this day
+  "crop": {"code": 1110, "source": "field"},
+  "growth_stage": {"bbch": 63, "name": "flowering", "method": "degree days, typical sowing date", "sowing_assumed": "2024-10-01", "confidence": 0.6},
+  "drivers": [                         // why: one entry per factor, biggest first
+    {"factor": "condition_hours", "label": "Hours at 15-25 °C with wet leaves ...", "value": 16, "unit": "h",
+     "threshold": "4 h starts the risk, 16 h = full risk", "effect": 1.0},
+    {"factor": "growth_stage", "label": "Growth stage BBCH 63 (flowering); susceptible BBCH 61-69", "value": 63, "unit": "BBCH", "effect": 0.0},
+    {"factor": "previous_crop", "label": "Previous crop was maize (residue carries the fungus)", "multiplier": 1.5, "effect": 0.33},
+    {"factor": "rain_days", "label": "Days with >= 1 mm rain in the window", "value": 2, "unit": "days", "effect": null}
+  ],
+  "action": {"type": "treat",          // wait / monitor / treat
+             "text": "High risk: inspect the field now; if the threshold is exceeded, a treatment is justified.",
+             "threshold": "Infection happens at flowering (BBCH 61-69) ...",   // quoted from the guide
+             "spray_window": {"date": "2025-06-08", "rule": "1-25 °C, no rain, wind <= 14.4 km/h (4 m/s)", "conditions": {...}, "source": {...}}},
+  "severity": 0.15,                    // potential yield loss if it happens (assumption)
+  "expected_loss": 0.15,               // score x severity, for ranking fields
+  "confidence": 0.6,                   // lower when the stage is estimated or hourly data is missing
+  "sources": [{"document": "metodyka_-_PSZENICA_-_www.pdf", "page": 74, "note": "Tabela 26: ..."}],  // same shape as the chat's guide citations
+  "notes": ["Maize residue ... raises the risk"],
+  "assumptions": {"hours_low": 4, "hours_high": 16, ...},
+  "model": "rules", "model_version": "0.1.0"
+}
+```
+
+`effect` = how much the score would drop without that factor (`null` for context-only values). The map can show `summary` + the drivers; the assistant can cite `sources` directly. No product or dose advice anywhere.
+
+### Data findings (for Jan + Szymek)
+
+- **The weather packages contain no precipitation** (daily or hourly): `total_precipitation` / `precipitation` stay empty. Rain only comes from IMERG. The engine uses the weather value if present, else IMERG. The forecast (seeded from daily weather) therefore has no rain either.
+- **Soil `clay`, `sand` are fractions (0.18), not % as in the doc;** `om` is 2.5–12 (looks like %). `BAND_om` / `BAND_pH` / `BAND_cec` are text (`"low"`, `"moderate"`, `"high"`), but the model columns are floats; the source names are upper-case (`BAND_*`, `soilTexture`).
+- **Grid `lat` / `lon` are decimals** in `weather_grids.parquet` (cast to float).
+- **Hourly year files overlap** by one UTC hour at New Year (unique constraint).
+- Weather 2025 is complete (1 Jan – 31 Dec) for daily and hourly; IMERG covers 2020–2025.
