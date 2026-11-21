@@ -75,7 +75,16 @@ clock.save()                      # the platform saves the new date (PUT /api/cl
 clock_moved(old_today, new_today) # -> PredictResult; recomputes (min(old, new), max(old, new) + 7]
 ```
 
-There is **no signal**: whoever moves the date calls it, whether with `clock.save()` or `Clock.objects.update()`. Days that were coming days and are now past go back to "as of that day"; the new coming days follow the forecast issued on the new date; nothing else is rewritten. About 0.2 s per field. From the shell: `python manage.py engine_set_date 2025-06-20`.
+There is **no signal**: whoever moves the date calls it, whether with `clock.save()` or `Clock.objects.update()`. Days that were coming days and are now past go back to "as of that day"; the new coming days follow the forecast issued on the new date; nothing else is rewritten. From the shell: `python manage.py engine_set_date 2025-06-20`.
+
+**Precomputed, so a move is a copy.** Every row the engine computes is also kept in its own cache table,
+`engine.RiskSnapshot` (engine/models.py; one bundle per field and day: "as of that day", or "coming day of demo date
+D"). `clock_moved()` copies the bundles it needs into `Risk` and computes only fields with a gap (then keeps those
+too). `precompute_dates(first=None, last=None)` / `python manage.py engine_precompute_dates [--from D] [--to D]` fills
+the cache ahead for a range of demo dates (default: the Clock's date - 7 … + 30; about 50 s for 8 fields), so the date
+control's arrows take about 0.3 s instead of 1–4 s. `predict()` drops the bundles a report or a crop change makes
+stale (that field, from `start` on). The cache is valid within one season; a move to another season computes. Copies
+equal a full recompute row for row (`engine.tests.SnapshotTests`).
 
 ### `precompute_season()` — the demo seed
 
@@ -146,6 +155,7 @@ Report(observed_on: date, kind: str, threat_code: str | None = None, severity: f
 |---|---|
 | `predict [--fields 1 2] [--start D] [--end D] [--season]` | `predict()` from the shell; `--season` = `precompute_season()`. Prints the rows and the field ids. |
 | `engine_set_date D` | Save the Clock and call `clock_moved()`. |
+| `engine_precompute_dates [--from D] [--to D]` | `precompute_dates()`: fill the cache so date moves copy instead of compute (default: Clock - 7 … + 30). |
 | `engine_load_threats [--overwrite]` | Create the missing `Threat` rows of all 76 rules (existing rows kept unless `--overwrite`; rows without a rule listed) and the engine's `CropClass` rows if missing. |
 | `engine_fetch_ndvi [--season Y] [--fields ...]` | Download and cache each field's Sentinel-2 NDVI series (network). |
 | `engine_summary [--date D] [--json]` | Print the field ranking. |
@@ -162,13 +172,14 @@ Report(observed_on: date, kind: str, threat_code: str | None = None, severity: f
 |---|---|---|
 | **After the seed / import** (historical demo) | `precompute_season()` (previous season, then this one to its end) | platform seed |
 | **After the demo date moves** | `clock_moved(old, new)`, right after saving the Clock | platform (`PUT /api/clock/`, admin clock page) |
+| **After the seed, optional** (fast date moves) | `precompute_dates()` or `python manage.py engine_precompute_dates` | seed / by hand |
 | **Daily, in live mode** (after the new forecast is stored) | `predict(start=today - 30 days)` | daily job |
 | **After the assistant records a report** | `n = predict(field_ids=[field.id], start=report.observed_on)`; return `n.field_ids` (the field and nearby fields it spread to) in `updated_field_ids` | assistant tool |
 | **After the farmer changes a field's crop** (`Field.crop`) | `predict(field_ids=[field.id], start=season start)` | platform (API) |
 | **After `engine_fetch_ndvi`** (new satellite scenes) | `predict(field_ids=..., start=season start)` | daily job / by hand |
 | **After threats, rules or imported data change** | `predict()` | by hand |
 
-**Moving the demo date recomputes one window:** coming days depend on the forecast issued today, so after a move `clock_moved(old, new)` rewrites `(min(old, new), max(old, new) + 7]` and nothing else (about 0.2 s per field; most of it is loading the season's weather). There is no signal on `Clock`: the caller does it. With the default `end`, every other call above already reaches the precomputed days.
+**Moving the demo date rewrites one window:** coming days depend on the forecast issued today, so after a move `clock_moved(old, new)` rewrites `(min(old, new), max(old, new) + 7]` and nothing else, copied from the precomputed cache where it can (see `clock_moved()` above) and computed otherwise (about 0.2 s per field). There is no signal on `Clock`: the caller does it. With the default `end`, every other call above already reaches the precomputed days.
 
 **Order of a fresh setup:**
 

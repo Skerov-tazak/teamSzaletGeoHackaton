@@ -9,8 +9,8 @@ from datetime import date, datetime, timedelta, timezone as dt_tz
 import pandas as pd
 from django.test import TestCase
 
-from core.models import (Clock, CropClass, Field, FieldCropYear, Risk, Threat, WeatherDaily, WeatherGrid,
-                         WeatherHourly)
+from core.models import (Clock, CropClass, Field, FieldCropYear, Observation, Risk, Threat, WeatherDaily,
+                         WeatherGrid, WeatherHourly)
 from engine import predict
 from engine.catalog import RULES
 from engine.compute import field_context
@@ -579,3 +579,69 @@ class SatelliteStageTests(TestCase):
         r = crop_check(maize_like, 1110, 2025, date(2025, 6, 30))
         self.assertFalse(r["consistent"])
         self.assertIn("wiosną goła gleba", r["text"])
+
+
+class SnapshotTests(EngineTestBase):
+    """clock_moved() copies precomputed rows (engine.RiskSnapshot): same result as computing, no computing."""
+    wet_days = {date(2025, 6, d) for d in (12, 13, 17, 18, 19, 24)}
+
+    def setUp(self):
+        copy_forecast(self.grid, date(2025, 6, 1), date(2025, 7, 20))
+        predict(start=date(2025, 6, 1), end=date(2025, 7, 31))  # the seed
+
+    def state(self):
+        return {(r.field_id, r.threat_id, r.date): (r.score, r.explanation) for r in Risk.objects.all()}
+
+    def truth(self, today):
+        """Risk as a full recompute at `today` writes it (snapshots out of the way)."""
+        from engine.models import RiskSnapshot
+        saved = list(RiskSnapshot.objects.all())
+        RiskSnapshot.objects.all().delete()
+        Clock.objects.update(today=today)
+        predict(start=date(2025, 6, 1), end=date(2025, 7, 31))
+        out = self.state()
+        RiskSnapshot.objects.all().delete()
+        RiskSnapshot.objects.bulk_create(saved)
+        return out
+
+    def move(self, new):
+        from engine import clock_moved
+        from core import clock
+        old = clock.today()
+        Clock.objects.update(today=new)
+        return clock_moved(old, new)
+
+    def test_moves_copy_and_match_a_full_recompute(self):
+        from unittest import mock
+        from engine import precompute_dates
+        self.assertGreater(precompute_dates(date(2025, 6, 10), date(2025, 6, 25)), 0)
+        seen = []
+        with mock.patch("engine.compute.compute_rows", side_effect=AssertionError("computed")):
+            for new in (date(2025, 6, 18), date(2025, 6, 16), date(2025, 6, 25), date(2025, 6, 10), date(2025, 6, 15)):
+                res = self.move(new)
+                self.assertEqual(sorted(res.field_ids), sorted(f.id for f in Field.objects.all()))
+                seen.append((new, self.state()))
+        for new, got in seen:
+            self.assertEqual(got, self.truth(new), f"clock moved to {new}")
+
+    def test_without_snapshots_it_computes_and_keeps_them(self):
+        from engine.models import RiskSnapshot
+        RiskSnapshot.objects.all().delete()
+        self.move(date(2025, 6, 18))
+        self.assertEqual(self.state(), self.truth(date(2025, 6, 18)))
+        Clock.objects.update(today=date(2025, 6, 18))
+        self.move(date(2025, 6, 15))
+        Clock.objects.update(today=date(2025, 6, 15))
+        from unittest import mock
+        with mock.patch("engine.compute.compute_rows", side_effect=AssertionError("computed")):
+            self.move(date(2025, 6, 18))  # both directions were stored on the first moves
+
+    def test_a_report_drops_stale_snapshots(self):
+        from engine import precompute_dates
+        precompute_dates(date(2025, 6, 10), date(2025, 6, 25))
+        Observation.objects.create(field=self.wheat, observed_on=date(2025, 6, 14), kind="symptoms",
+                                   threat=Threat.objects.get(code="wheat.septoria_leaf_blotch"), severity=0.9, text="plamy")
+        predict(field_ids=[self.wheat.id], start=date(2025, 6, 14))  # what the assistant calls after the report
+        res = self.move(date(2025, 6, 20))
+        self.assertIn(self.wheat.id, res.field_ids)
+        self.assertEqual(self.state(), self.truth(date(2025, 6, 20)))

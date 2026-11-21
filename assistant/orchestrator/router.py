@@ -5,7 +5,8 @@ detection of field names, crop and threats. Priority:
   pending draft + yes/no -> potwierdzenie
   "pokaż / wykres / trend / jak się zmieniało" -> wykres
   "widzę / zauważyłem / pojawiły się / znalazłem / zapisz obserwację" -> obserwacja
-  "wszystkie pola / co najpilniejsze / gospodarstwo" (or >= 2 fields compared) -> podsumowanie_farmy
+  "wszystkie pola / moich polach / co najpilniejsze / gospodarstwo" (or >= 2 fields compared, or "raport"
+      with no field selected or named) -> podsumowanie_farmy
   complex (>= 2 fields, several threats, explicit date ranges) and ASSISTANT_AGENT_MODE=1 -> zlozone
   field reference ("to pole", a field name, a selected field) + risk / what-to-do words -> pytanie_o_pole
   nothing agricultural -> poza_zakresem
@@ -31,7 +32,10 @@ OBSERVATION = [r"\bwidze\b", r"zauwazyl", r"pojawil\w* sie", r"znalazl", r"zapis
                r"nie oral|bez orki"]
 OBSERVATION_STATEMENT = [r"\bsasiad\w*"]   # only when it is a statement, not a question
 FARM = [r"wszystkie pola", r"wszystkich pol", r"najpilniejsz", r"gospodarstw", r"ktore pole", r"na ktorym polu",
-        r"ktore (\w+ ){0,2}pola\b", r"\bmoje pola\b", r"\bmoich pol\b", r"\bpol\w* (sa )?najbardziej", r"podsumuj", r"przeglad pol", r"cala farm", r"wszystkich uprawach", r"\bna polach\b", r"\bmoich polach\b"]
+        r"podsumuj", r"przeglad pol", r"cala farm", r"wszystkich uprawach",
+        r"\bmoich pol", r"\bmoje pola\b", r"\bmoich upraw", r"\bmoje uprawy", r"\bnaszych pol", r"\bnasze pola\b",
+        r"\bw gospodarstwie", r"ktore (\w+ ){0,2}pola\b", r"\bpol\w* (sa )?najbardziej"]
+FARM_IF_NO_FIELD = [r"\braport", r"\bpodsumowani", r"\bzestawieni"]   # "raport ryzyk" with no field selected or named
 # only when no field is in context: "co dziś robić?", "od czego zacząć?" = which field first
 FARM_NO_FIELD = [r"od czego (\w+ ){0,2}zacz", r"\bco (\w+ ){0,3}(robic|zrobic)\b", r"\bsytuac", r"\bplan\w* na (dzis|dzisiaj|dzien|tydzien)",
                  r"gdzie (\w+ ){0,2}(jechac|isc|zaczac|najpierw|zajrzec)", r"\bco (slychac|nowego)", r"\bczym (\w+ ){0,2}zajac"]
@@ -149,7 +153,9 @@ def route(message: str, selected_field=None, state=None) -> Route:
     complex_q = len(named) >= 2 or (len(threats) >= 2 and _any(COMPARE, t)) or bool(_any(DATE_RANGE, t))
     if agent and complex_q:
         return Route("zlozone", reason="complex question (agent mode)", **base)
-    if p := (_any(FARM, t) or (len(named) >= 2 and "compare") or (field_id is None and not _any(FIELD_REF, t) and _any(FARM_NO_FIELD, t))):
+    if p := (_any(FARM, t) or (len(named) >= 2 and "compare")
+             or (field_id is None and _any(FARM_IF_NO_FIELD, t))
+             or (field_id is None and not _any(FIELD_REF, t) and _any(FARM_NO_FIELD, t))):
         return Route("podsumowanie_farmy", reason=f"farm word {p}", **base)
     # 5. question about a field
     field_ref = field_id is not None or bool(_any(FIELD_REF, t))

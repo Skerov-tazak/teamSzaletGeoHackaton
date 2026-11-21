@@ -5,6 +5,7 @@ Decision engine (Bartek). Public entry points:
     predict(field_ids=None, start=None, end=None) -> PredictResult   # int (rows written) with .field_ids
     clock_moved(old, new) -> PredictResult                            # after the demo date moves
     precompute_season(season=None) -> PredictResult                   # once, in the demo seed
+    precompute_dates(first=None, last=None) -> int                    # optional: date moves become copies
 
 Imported lazily so that `engine.satellite` and the training scripts work without Django.
 """
@@ -28,6 +29,13 @@ def precompute_season(*args, **kwargs):
     from engine.compute import precompute_season as _precompute
 
     return _precompute(*args, **kwargs)
+
+
+def precompute_dates(*args, **kwargs):
+    """Computes ahead what moving the demo date needs. See engine.compute.precompute_dates."""
+    from engine.compute import precompute_dates as _precompute_dates
+
+    return _precompute_dates(*args, **kwargs)
 
 
 def what_if(*args, **kwargs):
