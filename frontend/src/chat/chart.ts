@@ -27,6 +27,23 @@ const TIME_LOCALE_PL = {
 };
 const NUMBER_LOCALE_PL = { decimal: ",", thousands: "\u00a0", grouping: [3], currency: ["", " zł"] };
 
+// Vega views keep timers and listeners until finalised: release the ones whose message left the page (F-13k).
+const views: { container: HTMLElement; finalize: () => void }[] = [];
+
+/** Finalises the charts no longer on the page (call after replacing the message list). */
+export function releaseDetachedCharts(): void {
+  for (let k = views.length - 1; k >= 0; k--) {
+    if (!views[k].container.isConnected) {
+      try {
+        views[k].finalize();
+      } catch {
+        // already gone
+      }
+      views.splice(k, 1);
+    }
+  }
+}
+
 export async function renderChart(container: HTMLElement, spec: ChartSpec): Promise<void> {
   if (hasDataUrl(spec)) return; // never fetch chart data from a URL
   try {
@@ -34,13 +51,14 @@ export async function renderChart(container: HTMLElement, spec: ChartSpec): Prom
     const dark =
       document.documentElement.dataset.theme === "dark" ||
       (document.documentElement.dataset.theme !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
-    await embed(container, { ...spec, width: "container", background: "transparent" } as Parameters<typeof embed>[1], {
+    const result = await embed(container, { ...spec, width: "container", background: "transparent" } as Parameters<typeof embed>[1], {
       actions: false,
       renderer: "svg",
       theme: dark ? "dark" : undefined,
       timeFormatLocale: TIME_LOCALE_PL,
       formatLocale: NUMBER_LOCALE_PL,
     });
+    views.push({ container, finalize: () => result.finalize() });
   } catch {
     container.replaceChildren();
     container.classList.add("chart-failed");

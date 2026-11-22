@@ -611,3 +611,31 @@ body {
 @media (max-width: 1500px) and (min-width: 861px) { .chat-title > span:not(.chat-badge) { display: none; } }
 /* phones: "Połączono" needs no row of its own; errors still show */
 @media (max-width: 860px) { .platform-status[data-state="ok"] { display: none; } }
+
+/* --- phones: one view at a time (main.ts initPhoneTabs) ------------------------------------------- */
+.phone-tabs { display: none; }
+@media (max-width: 860px) {
+  .phone-tabs {
+    display: flex;
+    gap: 6px;
+    padding: 6px var(--gap) 0;
+    background: var(--bg, transparent);
+  }
+  .phone-tabs button {
+    flex: 1;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink-2);
+    border-radius: 999px;
+    padding: 7px 0;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .phone-tabs button[aria-selected="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+  .app-main { overflow: hidden; }
+  .app-main[data-tab="map"] .chat-area { display: none; }
+  .app-main[data-tab="chat"] .map-area { display: none; }
+  .app-main[data-tab] .map-area { flex: 1 1 auto; }
+  .app-main[data-tab] .chat-area { flex: 1 1 auto; min-height: 0; }
+}

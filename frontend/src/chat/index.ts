@@ -8,6 +8,7 @@ import { ApiError, errorMessage } from "../api/client";
 import type { ChatMessage } from "../api/types";
 import type { AppContext } from "../context";
 import { h, icon, ICONS } from "../dom";
+import { releaseDetachedCharts } from "./chart";
 import { type MessageHooks, renderMessage } from "./render";
 
 const NEW_CONVERSATION = "";
@@ -185,6 +186,7 @@ export function initChat(container: HTMLElement, ctx: AppContext): void {
 
   const startNew = () => {
     loadToken++;
+    queueMicrotask(releaseDetachedCharts);
     conversationId = null;
     lastMessageId = null;
     actionGroups = [];
@@ -205,6 +207,7 @@ export function initChat(container: HTMLElement, ctx: AppContext): void {
       const detail = await ctx.api.getConversation(id);
       if (token !== loadToken) return;
       list.replaceChildren();
+      releaseDetachedCharts();
       for (const message of detail.messages) appendMessage(message); // history: no events
       if (!detail.messages.length) showEmptyHint();
       scrollToEnd();

@@ -396,6 +396,9 @@
 .fup-map .fup-chart .axis { stroke: var(--fup-ink-3); stroke-opacity: 0.5; }
 .fup-map .fup-chart .tick { font-size: 11px; fill: var(--fup-ink-3); }
 .fup-map .fup-chart .future { fill: var(--fup-ink); opacity: 0.05; }
+.fup-map .fup-chart .viewed { stroke: var(--fup-accent); stroke-width: 1.5; stroke-dasharray: 3 3; }
+.fup-map .fup-chart .viewed-tag { font-size: 10px; font-weight: 700; fill: var(--fup-accent); }
+.fup-map .fup-chart svg:focus-visible { outline: 2px solid var(--fup-accent); outline-offset: 2px; border-radius: 6px; }
 .fup-map .fup-chart .today { stroke: var(--fup-ink); stroke-width: 1.2; stroke-dasharray: 3 3; }
 .fup-map .fup-chart .today-tag rect { fill: var(--fup-ink); }
 .fup-map .fup-chart .today-tag text { font-size: 10.5px; font-weight: 700; fill: var(--fup-surface-solid); }

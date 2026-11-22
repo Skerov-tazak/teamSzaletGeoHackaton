@@ -1,5 +1,7 @@
 // Season chart of one field: risk score (0–1) per threat over time. Solid up to today (season so far),
-// dashed for the coming days, the agreed level cut-offs as named bands, crosshair + tooltip.
+// dashed for the coming days, the agreed level cut-offs as named bands, crosshair + tooltip (pointer, or the
+// arrow keys once the chart has the focus), a marker on the coming day the map shows, and a redraw when the
+// panel changes width.
 
 import { CUT_HIGH, CUT_MEDIUM, LEVEL_LABEL, addDays, daysBetween, esc, levelOf, monthShort, num, shortDate } from "./format";
 
@@ -21,7 +23,30 @@ function el<K extends keyof SVGElementTagNameMap>(name: K, attrs: Record<string,
   return node;
 }
 
-export function renderSeasonChart(host: HTMLElement, series: ChartSeries[], from: string, to: string, today: string): void {
+const redraws = new WeakMap<HTMLElement, { width: number; draw: () => void; observer: ResizeObserver }>();
+
+/** Redraw at the new width when the host is resized (one observer per host). */
+function watchWidth(host: HTMLElement, draw: () => void): void {
+  const known = redraws.get(host);
+  if (known) {
+    known.draw = draw;
+    known.width = host.clientWidth;
+    return;
+  }
+  const entry = { width: host.clientWidth, draw, observer: new ResizeObserver(() => {
+    const w = host.clientWidth;
+    if (w > 0 && Math.abs(w - entry.width) > 8) {
+      entry.width = w;
+      entry.draw();
+    }
+  }) };
+  entry.observer.observe(host);
+  redraws.set(host, entry);
+}
+
+export function renderSeasonChart(host: HTMLElement, series: ChartSeries[], from: string, to: string, today: string,
+                                  viewDate: string = today): void {
+  watchWidth(host, () => renderSeasonChart(host, series, from, to, today, viewDate));
   host.replaceChildren();
   host.classList.add("fup-chart");
   const W = Math.max(280, Math.round(host.clientWidth || 360));   // drawn at its real width: text stays 10-11 px
@@ -31,7 +56,8 @@ export function renderSeasonChart(host: HTMLElement, series: ChartSeries[], from
   const x = (d: string) => M.left + (daysBetween(from, d) / span) * iw;
   const y = (s: number) => M.top + (1 - s) * ih;
 
-  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": "Ryzyko w sezonie" }, host);
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", tabindex: 0,
+    "aria-label": "Ryzyko w sezonie. Strzałki w lewo i w prawo pokazują wartości kolejnych dni." }, host);
 
   // named level bands (the agreed cut-offs), labelled inside the plot
   const bands: [number, number, keyof typeof LEVEL_LABEL][] = [[CUT_HIGH, 1, "high"], [CUT_MEDIUM, CUT_HIGH, "medium"], [0, CUT_MEDIUM, "low"]];
@@ -71,6 +97,13 @@ export function renderSeasonChart(host: HTMLElement, series: ChartSeries[], from
     t.textContent = "dziś";
   }
 
+  // the coming day the map shows (day strip), if it is not today
+  if (viewDate > today && viewDate >= from && viewDate <= to) {
+    el("line", { x1: x(viewDate), x2: x(viewDate), y1: M.top, y2: M.top + ih, class: "viewed" }, svg);
+    const t = el("text", { x: Math.min(x(viewDate) + 4, M.left + iw - 24), y: M.top + 11, class: "viewed-tag" }, svg);
+    t.textContent = `+${daysBetween(today, viewDate)}`;
+  }
+
   // lines: solid to today, dashed after
   const path = (pts: { date: string; score: number }[]) =>
     pts.map((p, k) => `${k ? "L" : "M"}${x(p.date).toFixed(1)},${y(p.score).toFixed(1)}`).join("");
@@ -94,11 +127,9 @@ export function renderSeasonChart(host: HTMLElement, series: ChartSeries[], from
   const hit = el("rect", { x: M.left, y: 0, width: iw, height: H, fill: "transparent" }, svg);
   const byDate = series.map((s) => new Map(s.points.map((p) => [p.date, p.score])));
 
-  hit.addEventListener("pointermove", (ev) => {
-    const box = svg.getBoundingClientRect();
-    const px = ((ev.clientX - box.left) / box.width) * W;
-    const day = addDays(from, Math.round(((px - M.left) / iw) * span));
-    if (day < from || day > to) return;
+  let cursor = viewDate >= from && viewDate <= to ? viewDate : today;
+  const show = (day: string, clientX: number | null) => {
+    cursor = day;
     cross.setAttribute("x1", String(x(day)));
     cross.setAttribute("x2", String(x(day)));
     cross.setAttribute("visibility", "visible");
@@ -123,18 +154,40 @@ export function renderSeasonChart(host: HTMLElement, series: ChartSeries[], from
     tip.innerHTML = `<div class="tip-date">${shortDate(day)}${when}</div>${rows.join("") || '<div class="tip-row">brak danych</div>'}`;
     tip.hidden = false;
     const hostBox = host.getBoundingClientRect();
-    const left = ev.clientX - hostBox.left;
+    const svgBox = svg.getBoundingClientRect();
+    const left = clientX != null ? clientX - hostBox.left : svgBox.left - hostBox.left + (x(day) / W) * svgBox.width;
     const onRight = left < hostBox.width / 2;
     tip.style.left = onRight ? `${left + 14}px` : "";
     tip.style.right = onRight ? "" : `${hostBox.width - left + 14}px`;
     const pointsHigh = n ? ys / n < M.top + ih / 2 : false;   // the points sit in the upper half: tooltip goes low
     tip.style.top = pointsHigh ? "" : `${M.top}px`;
     tip.style.bottom = pointsHigh ? `${hostBox.height - (M.top + ih) + 4}px` : "";
-  });
-  hit.addEventListener("pointerleave", () => {
+  };
+  const hide = () => {
     cross.setAttribute("visibility", "hidden");
     marks.forEach((m) => m.setAttribute("visibility", "hidden"));
     tip.hidden = true;
+  };
+  hit.addEventListener("pointermove", (ev) => {
+    const box = svg.getBoundingClientRect();
+    const px = ((ev.clientX - box.left) / box.width) * W;
+    const day = addDays(from, Math.round(((px - M.left) / iw) * span));
+    if (day >= from && day <= to) show(day, ev.clientX);
+  });
+  hit.addEventListener("pointerleave", hide);
+  // keyboard: the same crosshair, one day per arrow (a week with Shift), Home/End, Esc hides it
+  svg.addEventListener("focus", () => show(cursor, null));
+  svg.addEventListener("blur", hide);
+  svg.addEventListener("keydown", (ev) => {
+    const steps: Record<string, number> = { ArrowLeft: -1, ArrowRight: 1 };
+    let day: string | null = null;
+    if (ev.key in steps) day = addDays(cursor, steps[ev.key] * (ev.shiftKey ? 7 : 1));
+    else if (ev.key === "Home") day = from;
+    else if (ev.key === "End") day = to;
+    else if (ev.key === "Escape") return hide();
+    if (day == null) return;
+    ev.preventDefault();
+    show(day < from ? from : day > to ? to : day, null);
   });
 
   // legend: identity never by colour alone

@@ -40,6 +40,27 @@ async function showPlatformStatus(api: Api, element: HTMLElement, events?: Event
   }
 }
 
+/**
+ * Phones: the map and the chat do not fit one above the other (the chat's input ended below the screen), so a
+ * tab bar shows one of them. The chat sending field:focus (or a click on a source) switches to the map; selecting
+ * a field leaves the user where they are. Hidden on wider screens (style.css).
+ */
+function initPhoneTabs(main: HTMLElement, events: EventBus): void {
+  const tabs = (["map", "chat"] as const).map((tab) =>
+    h("button", { type: "button", role: "tab", "data-tab": tab, "aria-controls": tab },
+      tab === "map" ? "Mapa" : "Asystent"),
+  );
+  const bar = h("nav", { class: "phone-tabs", role: "tablist", "aria-label": "Widok" }, ...tabs);
+  const show = (tab: "map" | "chat") => {
+    main.dataset.tab = tab;
+    for (const button of tabs) button.setAttribute("aria-selected", String(button.dataset.tab === tab));
+  };
+  for (const button of tabs) button.addEventListener("click", () => show(button.dataset.tab as "map" | "chat"));
+  events.on("field:focus", () => show("map"));
+  main.before(bar);
+  show("map");
+}
+
 async function start(): Promise<void> {
   const status = byId("platform-status");
   const main = byId("app-main");
@@ -90,6 +111,7 @@ async function start(): Promise<void> {
 
   initChat(byId("chat"), ctx);
   initMap(byId("map"), ctx);
+  initPhoneTabs(main, events);
   // after the chat listens: it learns whether it can answer; checked again every minute
   void showPlatformStatus(api, status, events);
   window.setInterval(() => void showPlatformStatus(api, status, events), HEALTH_EVERY_MS);

@@ -213,8 +213,8 @@ export function renderPanel(host: HTMLElement, data: PanelData, state: PanelStat
     `<section class="sec"><h4>Zagrożenia <span class="when">${esc(when)}</span></h4>` +
     `<ul class="threats">${raised.map((r) => threatRow(r, state.open.has(r.threat.code), lead)).join("")}${lowGroup}</ul></section>` +
     `<section class="sec"><div class="sec-row"><h4>Ryzyko w sezonie</h4><div class="seg" role="group" aria-label="Zakres wykresu">` +
-    `<button data-range="recent" class="${state.range === "recent" ? "on" : ""}">3 miesiące</button>` +
-    `<button data-range="season" class="${state.range === "season" ? "on" : ""}">sezon</button></div></div>` +
+    `<button data-range="recent" class="${state.range === "recent" ? "on" : ""}" aria-pressed="${state.range === "recent"}">3 miesiące</button>` +
+    `<button data-range="season" class="${state.range === "season" ? "on" : ""}" aria-pressed="${state.range === "season"}">sezon</button></div></div>` +
     `<div class="chart-host"></div><p class="chart-note">Trzy najwyższe zagrożenia tego dnia. Linia przerywana: ${forecastDays === 1 ? "najbliższy dzień" : `najbliższe ${forecastDays} dni`} z prognozy.</p></section>` +
     `${about(detail)}</div>`;
 
@@ -234,6 +234,6 @@ export function renderPanel(host: HTMLElement, data: PanelData, state: PanelStat
   const to = series.to;
   const recent = addDays(today, -90) > series.from ? addDays(today, -90) : series.from;
   const from = state.range === "season" ? seasonStart(picked, series.from, today) : recent;
-  if (picked.length) renderSeasonChart(chartHost, picked, from, to, today);
+  if (picked.length) renderSeasonChart(chartHost, picked, from, to, today, viewDate);
   else chartHost.innerHTML = '<p class="muted">Brak danych do wykresu.</p>';
 }
