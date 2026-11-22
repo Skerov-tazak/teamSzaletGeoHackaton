@@ -83,7 +83,9 @@ if [[ "$RESET" == 1 || "$HAS_CLOCK" != 1 ]]; then
     if ! python manage.py scenario switch demo_2024 --reset-chat --strict-data; then
         warn "The organisers' data is missing in DATA_DIR (README → Demo data). Loading the scenario on SYNTHETIC"
         warn "weather, soil and crop history instead: the numbers will differ from docs/demo-script.md."
-        python manage.py scenario switch demo_2024 --reset-chat
+        SYNTH_FLAG=""  # newer `scenario` is strict by default and needs this flag to generate data
+        python manage.py scenario switch --help 2>/dev/null | grep -q -- --allow-synthetic-fallback && SYNTH_FLAG="--allow-synthetic-fallback"
+        python manage.py scenario switch demo_2024 --reset-chat $SYNTH_FLAG
     fi
     step "Precomputing the date cache (about 1 min; date arrows then take ~0.3 s)"
     python manage.py engine_precompute_dates
