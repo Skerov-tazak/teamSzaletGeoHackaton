@@ -1,5 +1,5 @@
 """
-LLM adapter: one OpenAI-compatible client for Gemini and Groq, fallback between providers,
+LLM adapter: one OpenAI-compatible client for Gemini, Groq and OpenAI, fallback between providers,
 usage logging, and a FakeLLM for tests (tests never call a real API).
 
 Config (.env, "Assistant" section): LLM_PROVIDERS=gemini,groq, {P}_BASE_URL, {P}_API_KEY, {P}_MODEL,
@@ -128,7 +128,7 @@ RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
 
 
 class OpenAICompatLLM:
-    """One OpenAI-compatible endpoint (Gemini's /v1beta/openai/, Groq's /openai/v1)."""
+    """One OpenAI-compatible endpoint (Gemini's /v1beta/openai/, Groq's /openai/v1, OpenAI's /v1)."""
 
     def __init__(self, name: str, base_url: str, api_key: str, model: str, timeout: float | None = None):
         from openai import OpenAI
@@ -136,6 +136,10 @@ class OpenAICompatLLM:
         self.name, self.model = name, model
         self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=0)
         self._json_mode_supported = True
+        # newer OpenAI models (gpt-5 and later) reject max_tokens and any temperature but the default:
+        # learned from the first 400 and kept for this provider
+        self._token_param = "max_tokens"
+        self._send_temperature = True
         # reasoning models (gpt-oss, Gemini 3.x) spend output tokens on thinking first; keep it short
         self._reasoning_effort = os.getenv("LLM_REASONING_EFFORT", "low") or None
 
@@ -143,7 +147,9 @@ class OpenAICompatLLM:
                  temperature: float = 0.2, tools: list | None = None, **_) -> LLMResult:
         import openai
         max_tokens = max_tokens or max_tokens_out()
-        kwargs: dict = {"model": self.model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature}
+        kwargs: dict = {"model": self.model, "messages": messages, self._token_param: max_tokens}
+        if self._send_temperature:
+            kwargs["temperature"] = temperature
         if self._reasoning_effort:
             kwargs["reasoning_effort"] = self._reasoning_effort
         if tools:
@@ -159,6 +165,16 @@ class OpenAICompatLLM:
         try:
             resp = self.client.chat.completions.create(**kwargs)
         except openai.BadRequestError as e:
+            # checked first: in JSON mode the fallback below would otherwise blame response_format for these
+            err, param = str(e), getattr(e, "param", None)
+            if self._token_param == "max_tokens" and (param == "max_tokens" or "max_completion_tokens" in err):
+                log.info("%s wants max_completion_tokens instead of max_tokens; switching", self.name)
+                self._token_param = "max_completion_tokens"
+                return self.complete(messages, json_mode=json_mode, max_tokens=max_tokens, temperature=temperature, tools=tools)
+            if "temperature" in kwargs and (param == "temperature" or "temperature" in err.lower()):
+                log.info("%s accepts only the default temperature (%s); sending without it", self.name, e)
+                self._send_temperature = False
+                return self.complete(messages, json_mode=json_mode, max_tokens=max_tokens, temperature=temperature, tools=tools)
             if "reasoning_effort" in kwargs and "reason" in str(e).lower():  # not a reasoning model / not supported
                 log.info("%s rejected reasoning_effort (%s); sending without it", self.name, e)
                 self._reasoning_effort = None
@@ -267,8 +283,9 @@ class FakeLLM:
 
 # ----------------------------------------------------------------------------- factory
 DEFAULT_BASE_URL = {"gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
-                    "groq": "https://api.groq.com/openai/v1"}
-DEFAULT_MODEL = {"groq": "openai/gpt-oss-120b"}  # Gemini model names change: pick one with `manage.py llm_models`
+                    "groq": "https://api.groq.com/openai/v1",
+                    "openai": "https://api.openai.com/v1"}
+DEFAULT_MODEL = {"groq": "openai/gpt-oss-120b"}  # Gemini/OpenAI model names change: pick one with `manage.py llm_models`
 
 
 def provider_configs() -> list[dict]:

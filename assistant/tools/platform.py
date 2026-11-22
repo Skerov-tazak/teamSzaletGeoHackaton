@@ -278,6 +278,7 @@ class WeatherIn(BaseModel):
 Pogoda dzienna dla pola (punkt siatki pogodowej najbliższy polu): obserwacje do dziś i prognoza
 na kolejne dni (oznaczone source=observed/forecast). Jednostki w polu `units` (°C, mm/dzień, %).
 Zakresy dłuższe niż 31 dni są agregowane tygodniowo (średnie; opady sumowane).
+Opad (total_precipitation): z modelu pogody, a gdy go brak — z satelity IMERG, jak w silniku.
 """, WeatherIn)
 def get_weather(field_id: int, date_from=None, date_to=None, variables=None) -> dict:
     from core.models import WeatherDaily, WeatherForecastDaily

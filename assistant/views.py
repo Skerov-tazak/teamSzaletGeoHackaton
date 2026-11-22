@@ -24,11 +24,12 @@ def message_json(m: Message) -> dict:
         "id": m.id,
         "role": m.role,
         "text": m.text,
-        "citations": m.citations if m.role == Message.Role.ASSISTANT else [],
+        "citations": m.citations if assistant else [],
         "focus_field_id": m.focus_field_id,
         "updated_field_ids": meta.get("updated_field_ids", []),
-        "chart": meta.get("chart") if assistant else None,  # Vega-Lite spec or null (docs/interfaces.md -> Chat)
-        "pending_action": meta.get("pending_action") if assistant else None,  # the window enables it on the last message only
+        # proposals 6 and 7 (docs/interfaces.md -> Chat): always present, null when unused, kept in meta
+        "chart": meta.get("chart") if assistant else None,
+        "pending_action": meta.get("pending_action") if assistant else None,
         "created_at": m.created_at.isoformat().replace("+00:00", "Z"),
     }
 
@@ -44,8 +45,9 @@ MessageOut = inline_serializer("ChatMessage", fields={
     "citations": serializers.ListField(child=serializers.DictField()),
     "focus_field_id": serializers.IntegerField(allow_null=True),
     "updated_field_ids": serializers.ListField(child=serializers.IntegerField()),
-    "chart": serializers.DictField(allow_null=True, help_text="Vega-Lite v5 spec, or null."),
-    "pending_action": serializers.DictField(allow_null=True, help_text='{"type": "confirm_observation", "draft": {...}} or null.'),
+    "chart": serializers.DictField(allow_null=True, help_text="Vega-Lite v5 spec, data inline; null when none"),
+    "pending_action": serializers.DictField(
+        allow_null=True, help_text='e.g. {"type": "confirm_observation", "draft": {"draft_id", "field_id", …}}; null when none'),
     "created_at": serializers.DateTimeField()})
 
 
@@ -79,14 +81,18 @@ class ChatView(OpenAPIView):
                                 status=status.HTTP_404_NOT_FOUND)
         else:
             conv = None
-        # no LLM configured: say so instead of storing a conversation whose answers are all errors
+        # no LLM configured: say so instead of storing a conversation whose answers are all errors. Messages the
+        # router answers without the model ("Zapisz" / "tak" under a draft, greetings, thanks) still go through.
         from .answer import default_llm
+        from .orchestrator import router
         from .orchestrator.llm import LLMError
+        from .orchestrator.state import State
         from .status import NO_LLM
-        try:
-            default_llm()
-        except LLMError:
-            return Response({"detail": NO_LLM}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        if router.route(d["message"], field, State(conv)).type not in ("potwierdzenie", "poza_zakresem"):
+            try:
+                default_llm()
+            except LLMError:
+                return Response({"detail": NO_LLM}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         if conv is None:
             conv = Conversation.objects.create(title=Conversation.title_from(d["message"]))
         Message.objects.create(conversation=conv, role=Message.Role.USER, text=d["message"], field=field)

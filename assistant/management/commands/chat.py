@@ -17,6 +17,12 @@ from pathlib import Path
 from django.core.management.base import BaseCommand, CommandError
 
 SESSIONS_DIR = Path(__file__).resolve().parents[3] / "logs" / "chat_sessions"
+
+
+def chart_title(chart: dict) -> str:
+    """The chart's title as one line (Vega-Lite allows a list of lines)."""
+    text = chart.get("title", {}).get("text")
+    return " — ".join(text) if isinstance(text, list) else str(text)
 HELP = ("Komendy: /pole <nazwa|id|brak> — zaznacz pole jak na mapie · /pola — lista pól · /nowa — nowa rozmowa · "
         "/prompt — pokaż ostatni prompt · /szczegoly — trasa, tokeny, cytaty (wł./wył.) · /koniec")
 
@@ -113,7 +119,7 @@ class Command(BaseCommand):
         if reply.focus_field_id or reply.updated_field_ids:
             w(f"  focus_field_id={reply.focus_field_id} updated_field_ids={reply.updated_field_ids}")
         if reply.chart is not None:
-            w(f"  wykres: {reply.chart.get('title', {}).get('text')} ({len(reply.chart.get('data', {}).get('values', []))} punktów)")
+            w(f"  wykres: {chart_title(reply.chart)} ({len(reply.chart.get('data', {}).get('values', []))} punktów)")
             if o["chart_out"]:
                 with open(o["chart_out"], "w") as f:
                     json.dump(reply.chart, f, ensure_ascii=False, indent=1)
@@ -193,7 +199,7 @@ class Command(BaseCommand):
             for line in cits:
                 w("   " + line)
             if last.chart is not None:
-                w(f"   [wykres: {last.chart.get('title', {}).get('text')} — zapisany w Message.meta]")
+                w(f"   [wykres: {chart_title(last.chart)} — zapisany w Message.meta]")
             if last.focus_field_id and (field is None or last.focus_field_id != field.id):
                 f = Field.objects.filter(pk=last.focus_field_id).first()
                 w(f"   [mapa: przybliż pole {f.name if f else last.focus_field_id}]")

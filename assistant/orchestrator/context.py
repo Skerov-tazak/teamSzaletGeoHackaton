@@ -202,7 +202,7 @@ def weather_lines(field_id: int) -> list[str]:
         return "brak danych" if x is None else f"{str(x).replace('.', ',')} {unit}"
 
     for d in w["days"]:
-        rain = v(d["total_precipitation"], "mm") + (" (satelita)" if d.get("precipitation_source") else "")
+        rain = v(d["total_precipitation"], "mm")  # observed rain is IMERG (satellite) anyway
         temp = ("brak danych" if d["min_temperature"] is None or d["max_temperature"] is None
                 else f"{str(d['min_temperature']).replace('.', ',')}–{str(d['max_temperature']).replace('.', ',')} °C")
         out.append(f"- {d['date']} {'prognoza' if d['source'] == 'forecast' else 'obserwacja'}: {temp}, opad {rain}, "
@@ -240,7 +240,7 @@ THRESHOLD_WORDS = re.compile(r"%|\bprog|\bszt\b|osobnik|na 1 m|na roslin|na lisc
 # "rozsądny", "inspekt" matched "inspektor" (PIORiN) and "palenie" matched "zapalenie".
 NOT_FIELD = re.compile(r"\bszklarn|\btunel\w* foliow|\bpod oslon(a|ami)\b|\binspekt(y|ach|ow)?\b|\bogrod(u|zie|y|ach|ow)?\b|"
                        r"\bogrodk|\bdoniczk|\brozsad(a|y|e|zie|ami)?\b|\bwietrzeni\w*|\bwietrzyc\b|\bcyrkulacj\w* powietrza|"
-                       r"\bspal\w* (resztk|reszt|slom|liscie|roslin)|\bpalenie (resztek|slomy|lisci|roslin)|"
+                       r"\bspal\w* (resztk|reszt|slom|liscie|roslin)|\bpaleni[aeu]\b|\bpalic\b|"
                        r"\bzbiera\w* (recznie|reka)")
 SENT_SPLIT = re.compile(r"(?<=[.;!?])\s+")
 # advice that can only be done after harvest or before sowing: kept, but marked as next season's once the crop grows
