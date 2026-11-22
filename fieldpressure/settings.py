@@ -124,6 +124,11 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    # No logins, no tokens, no CSRF (docs/interfaces.md -> General rules). /admin/ keeps Django's own login.
+    "DEFAULT_AUTHENTICATION_CLASSES": [],
+    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
+    # DRF's handler, plus 503 {"detail"} when the Clock row is missing (core.clock.ClockNotSetError).
+    "EXCEPTION_HANDLER": "core.api_errors.exception_handler",
 }
 
 SPECTACULAR_SETTINGS = {
@@ -131,6 +136,11 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "Platform API used by the frontend, the map and the assistant.",
     "VERSION": "0.1.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    # Readable names for the generated TypeScript types (frontend/src/api/schema.d.ts).
+    "ENUM_NAME_OVERRIDES": {
+        "ThreatCategory": "core.models.Threat.Category",
+        "RiskLevel": "core.serializers.LEVEL_CHOICES",
+    },
 }
 
 

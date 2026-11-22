@@ -118,10 +118,10 @@ def phenology_anchors(series: pd.DataFrame | None, crop: int, season: int) -> li
         # heading in Poland: mid-May to mid-June; an earlier or weaker peak is not a wheat heading
         pk = peak_between(pd.Timestamp(season, 5, 1), pd.Timestamp(season, 6, 30))
         if pk and pk[2] >= 0.7:
-            out.append(Anchor(pk[1].date(), pk[0].date(), 55, f"NDVI peak {pk[2]:.2f} on {pk[0].date()} (heading)"))
+            out.append(Anchor(pk[1].date(), pk[0].date(), 55, f"szczyt NDVI {pk[2]:.2f} dnia {pk[0].strftime('%d.%m.%Y')} (kłoszenie)"))
             low = s[(s.index > pk[0]) & (s < 0.5)]
             if not low.empty:
-                out.append(Anchor(low.index[0].date(), low.index[0].date(), 87, f"NDVI below 0.5 on {low.index[0].date()} (yellow ripeness)"))
+                out.append(Anchor(low.index[0].date(), low.index[0].date(), 87, f"NDVI poniżej 0,5 dnia {low.index[0].strftime('%d.%m.%Y')} (dojrzałość woskowa)"))
     elif crop == MAIZE:
         # emergence = the rise after the spring minimum (bare soil after ploughing and sowing); a green
         # cover crop or weeds before ploughing must not count
@@ -131,10 +131,10 @@ def phenology_anchors(series: pd.DataFrame | None, crop: int, season: int) -> li
             up = s[(s.index > low_day) & (s.index <= pd.Timestamp(season, 7, 15)) & (s >= max(0.35, low + 0.15))]
             if low < 0.3 and not up.empty:
                 out.append(Anchor(up.index[0].date(), up.index[0].date(), 13,
-                                  f"NDVI rose from bare soil ({low:.2f} on {low_day.date()}) to {up.iloc[0]:.2f} on {up.index[0].date()} (young plants)"))
+                                  f"NDVI wzrosło z gołej gleby ({low:.2f} dnia {low_day.strftime('%d.%m.%Y')}) do {up.iloc[0]:.2f} dnia {up.index[0].strftime('%d.%m.%Y')} (młode rośliny)"))
         pk = peak_between(pd.Timestamp(season, 7, 1), pd.Timestamp(season, 9, 15))
         if pk and pk[2] >= 0.6:
-            out.append(Anchor(pk[1].date(), pk[0].date(), 65, f"NDVI peak {pk[2]:.2f} on {pk[0].date()} (flowering)"))
+            out.append(Anchor(pk[1].date(), pk[0].date(), 65, f"szczyt NDVI {pk[2]:.2f} dnia {pk[0].strftime('%d.%m.%Y')} (kwitnienie)"))
     return out
 
 
@@ -156,10 +156,10 @@ def crop_check(series: pd.DataFrame | None, crop: int, season: int, today: date)
     msgs, ok = [], True
     if crop == WHEAT and len(spring) >= 2:
         if spring.median() < 0.45:
-            ok = False; msgs.append(f"bare in spring (median NDVI {spring.median():.2f} from mid-March to mid-May): winter wheat is green then")
+            ok = False; msgs.append(f"wiosną goła gleba (mediana NDVI {spring.median():.2f} od połowy marca do połowy maja), a pszenica ozima jest wtedy zielona")
         if len(summer) >= 2 and summer.median() > 0.6:
-            ok = False; msgs.append(f"green in late summer (median NDVI {summer.median():.2f}): wheat is harvested by then")
+            ok = False; msgs.append(f"zielono pod koniec lata (mediana NDVI {summer.median():.2f}), a pszenica jest już wtedy zebrana")
     if crop == MAIZE and len(spring) >= 2 and spring.median() > 0.7:
-        ok = False; msgs.append(f"dense green in spring (median NDVI {spring.median():.2f}): maize is only sown then")
+        ok = False; msgs.append(f"wiosną gęsta zieleń (mediana NDVI {spring.median():.2f}), a kukurydza jest wtedy dopiero siana")
     return {"consistent": ok, "issues": msgs, "scenes_used": int(len(s)),
-            "text": "Satellite curve fits the crop." if ok else "Satellite curve does not fit the crop: " + "; ".join(msgs) + ". Please confirm the crop."}
+            "text": "Krzywa z satelity pasuje do uprawy." if ok else "Krzywa z satelity nie pasuje do uprawy: " + "; ".join(msgs) + ". Potwierdź uprawę."}

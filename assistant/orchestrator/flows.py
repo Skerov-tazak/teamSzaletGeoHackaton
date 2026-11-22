@@ -33,12 +33,57 @@ class FlowResult:
 
 
 # ----------------------------------------------------------------------------- the one LLM call
+SENTENCE_END = re.compile(r"[.!?…](\s*\[[^\]]+\])*[)\"”]?\s*$")
+
+
+def fix_bold(text: str) -> str:
+    """Remove nested **bold** (e.g. „**Lustracja **Za Stodołą** dziś**” -> „**Lustracja Za Stodołą dziś**”):
+    Markdown cannot nest it and shows the asterisks. Line by line; a marker opens when followed by a
+    non-space and preceded by a space or the line start."""
+    out = []
+    for line in text.split("\n"):
+        res, depth, i = [], 0, 0
+        while i < len(line):
+            if line.startswith("**", i):
+                prev = line[i - 1] if i else " "
+                nxt = line[i + 2] if i + 2 < len(line) else " "
+                opens = not nxt.isspace() and (prev.isspace() or prev in "([„\"-–" or depth == 0)
+                if opens and depth == 0:
+                    res.append("**"); depth = 1
+                elif opens:
+                    depth += 1                      # nested opener: drop
+                elif depth > 1:
+                    depth -= 1                      # its closer: drop
+                else:
+                    res.append("**"); depth = max(0, depth - 1)
+                i += 2
+                continue
+            res.append(line[i]); i += 1
+        out.append("".join(res))
+    return "\n".join(out)
+
+
+def finish_sentence(text: str) -> str:
+    """An answer cut by the output limit ends mid-sentence: drop the unfinished tail — back to the last
+    whole sentence (with its [citations]) or the last whole line (list item). Call only for cut answers."""
+    t = text.rstrip()
+    if not t or SENTENCE_END.search(t):
+        return t
+    ends = [m.end() for m in re.finditer(r"[.!?…](\s*\[[^\]]+\])*(?=\s)", t)]
+    ends += [m.start() for m in re.finditer(r"\n", t)]
+    cut = max(ends, default=0)
+    if cut < len(t) * 0.4:
+        return t
+    return t[:cut].rstrip()
+
+
 def ask_llm(llm: LLM, kind: str, context_lines, sources, question, history, instructions="",
             max_tokens: int | None = None, conversation_id=None) -> tuple[str, dict]:
     messages, info = build_messages(context_lines, sources, history, question, instructions)
     res: LLMResult = llm.complete(messages, max_tokens=max_tokens)
     calls = [log_usage(res, kind=kind, extra={"conversation_id": conversation_id})]
     text = strip_think(res.text)
+    text = fix_bold(ctx.drop_off_field(finish_sentence(text) if res.truncated else text))
     doses = guard.find_doses(text)
     if doses:
         log.warning("dose in answer (%s): %s — regenerating once", kind, doses)
@@ -46,6 +91,7 @@ def ask_llm(llm: LLM, kind: str, context_lines, sources, question, history, inst
         res2 = llm.complete(retry, max_tokens=max_tokens)
         calls.append(log_usage(res2, kind=kind + ":regenerate", extra={"conversation_id": conversation_id}))
         text = strip_think(res2.text)
+        text = finish_sentence(text) if res2.truncated else text
         if guard.find_doses(text):
             log.warning("dose again after regeneration — safe message")
             text = guard.SAFE_MESSAGE
@@ -90,6 +136,50 @@ def general(route: Route, question: str, history, llm: LLM, conv_id=None) -> Flo
 
 
 # ----------------------------------------------------------------------------- question about a field
+INTENTS = [
+    ("action", re.compile(r"\bco (\w+ ){0,3}(robic|zrobic|zrobie|robie|radzisz|polecasz)|\bjak (\w+ ){0,2}(zmniejszyc|ograniczyc|"
+                          r"chronic|ochronic|zapobiec|uratowac|ratowac|walczyc|zwalczyc)|zmniejsz|ogranicz|zapobieg|\bochron|"
+                          r"\bco dalej|\bco teraz|\bjakie (dzialania|kroki)")),
+    ("symptoms", re.compile(r"objaw|jak (to )?wyglada|rozpozn|po czym (\w+ )?pozna|jak (\w+ )?sprawdzic|na co patrzec")),
+    ("why", re.compile(r"dlaczego|czemu|\bskad\b|z jakiego powodu|\bpowod|na czerwono|na zolto")),
+]
+FOCUS = {
+    "action": ("Rolnik pyta, CO ZROBIĆ. Pierwsze zdanie = najważniejsze działanie dziś, pogrubione. Potem lista "
+               "punktowana działań: co i gdzie obejrzeć przy lustracji, próg dla obecnej fazy (jeśli jest w kontekście), okno zabiegu i kiedy dzwonić do "
+               "doradcy, metody niechemiczne wykonalne teraz na polu (tylko ze źródeł). Powody ryzyka najwyżej "
+               "w pół zdania, bez opisu objawów."),
+    "symptoms": ("Rolnik pyta o OBJAWY. Zacznij od opisu objawów z metodyki (z cytatem), najważniejszy objaw pogrubiony: na jakim organie, jak "
+                 "wyglądają, z czym ich nie pomylić. Na końcu jedno zdanie, co zrobić, jeśli je zobaczy."),
+    "why": ("Rolnik pyta DLACZEGO. Zacznij od pogrubionego głównego powodu z silnika (pogoda, faza, przedplon — liczby z kontekstu), "
+            "potem jedno zdanie z metodyki z cytatem i jedno zdanie, co zrobić teraz."),
+    "why_action": ("Rolnik pyta DLACZEGO i CO ZROBIĆ. Najpierw powody z silnika w 1–2 zdaniach (liczby z kontekstu), "
+                   "potem lista punktowana działań, najważniejsze pogrubione: lustracja (co i gdzie obejrzeć, próg dla obecnej fazy, jeśli jest), okno zabiegu, "
+                   "kiedy dzwonić do doradcy. Objawy z metodyki najwyżej jednym zdaniem z cytatem."),
+    "general": ("Odpowiedz wprost na pytanie w pierwszym zdaniu. Potem: dlaczego (powody z silnika), co mówi "
+                "metodyka (z cytatem), co zrobić teraz."),
+}
+
+
+def question_intent(question: str) -> str:
+    t = domain.fold(question)
+    found = [name for name, pat in INTENTS if pat.search(t)]
+    if "why" in found and "action" in found:
+        return "why_action"
+    return found[0] if found else "general"
+
+
+def field_instructions(question: str, follow_up: bool) -> str:
+    out = [FOCUS[question_intent(question)],
+           "3–6 zdań, bez nagłówków i bez podsumowań na końcu. Głównie najgroźniejsze zagrożenie; drugie tylko "
+           "jednym–dwoma zdaniami, jeśli też jest wysokie lub średnie. Nie wymieniaj pozostałych zagrożeń, "
+           "chyba że rolnik o nie pyta.",
+           "Rozbieżność silnika i metodyki zgłaszaj tylko wtedy, gdy naprawdę jest — inaczej nic o tym nie pisz."]
+    if follow_up:
+        out.append("To dopytanie w tej samej rozmowie: NIE powtarzaj powodów ani objawów z poprzedniej odpowiedzi "
+                   "(<historia>), odpowiedz tylko na nowe pytanie.")
+    return " ".join(out)
+
+
 def _pick_field(route: Route) -> tuple[int | None, str]:
     if route.field_id:
         return route.field_id, route.field_source
@@ -104,25 +194,25 @@ def field_question(route: Route, question: str, history, llm: LLM, conv_id=None)
     if field_id is None:
         return FlowResult("Nie mam jeszcze danych o polach gospodarstwa, więc nie mogę ocenić ryzyka.")
     lines = ctx.season_lines()
-    risk_lines, focus, risk_cits = ctx.field_risk_context(field_id, route.threats or None)
+    risk_lines, focus, risk_cits = ctx.field_risk_context(field_id, route.threats or None, max_threats=2)
     lines += risk_lines
+    if ctx.asks_about_weather(question):
+        lines += ctx.weather_lines(field_id)
     if how == "highest_risk":
         lines.append("Uwaga: rolnik nie wskazał pola — wybrano pole o najwyższym ryzyku dziś; powiedz na początku, "
                      "którego pola dotyczy odpowiedź.")
     crop = route.crop or ctx.crop_of_code(call("get_field", field_id=field_id)["crop_code"])
     top = [t for t in focus][:2]
-    queries = [(ctx.threat_query(t["threat"], crop), crop, 3) for t in top]
+    queries = [(ctx.threat_query(t["threat"], crop), crop, 3, t["threat"]) for t in top]
     if route.threats or len(question.split()) > 6:  # a specific question adds its own search
         queries.append((question, crop, 3))
     sources, err = ctx.guide_sources(queries, budget=ctx.SOURCES_TOKEN_BUDGET, max_n=ctx.MAX_SOURCES)
     sources = ctx.risk_condition_sources(crop, [t["threat"] for t in top]) + sources
-    sources = sources[:ctx.MAX_SOURCES + 1]
+    sources = ctx.adapt_sources(sources[:ctx.MAX_SOURCES + 1], ctx.current_bbch(focus))
+    lines += ctx.phase_rule_lines(focus)
     if err:
         lines.append(err)
-    instructions = ("Struktura odpowiedzi (bez nagłówków, 4–8 zdań): (a) dlaczego pole jest zagrożone — tylko powody "
-                    "z silnika; (b) co mówi metodyka o tym zagrożeniu — z cytatem; (c) co zrobić teraz — lustracja, "
-                    "metody niechemiczne, kiedy skontaktować się z doradcą; (d) jeśli dane silnika i metodyka się "
-                    "rozjeżdżają, powiedz to.")
+    instructions = field_instructions(question, bool(history))
     if asks_for_dose(question):
         instructions += " " + DOSE_INSTRUCTION
     text, meta = ask_llm(llm, route.type, lines, sources, question, history, instructions, conversation_id=conv_id)
@@ -152,12 +242,14 @@ def farm_summary(route: Route, question: str, history, llm: LLM, conv_id=None) -
         crop = ctx.crop_of_code(next(f["crop_code"] for f in s["fields"] if f["id"] == p["field_id"]))
         crops.setdefault(p["threat"], crop)
     threats = list(crops.items())[:2]
-    sources, err = ctx.guide_sources([(ctx.threat_query(t, c), c, 2) for t, c in threats], budget=1600, max_n=4)
+    sources, err = ctx.guide_sources([(ctx.threat_query(t, c), c, 2, t) for t, c in threats], budget=1600, max_n=4)
     if err:
         lines.append(err)
     instructions = ("Omów TYLKO pola z listy „Najpilniejsze pary”, od najpilniejszego. Przy każdym: zagrożenie, powód "
                     "z silnika i JEDNO konkretne działanie (np. lustracja, metoda niechemiczna), z cytatem metodyki, jeśli "
-                    "pasuje. Pozostałe pola wspomnij jednym zdaniem na końcu (bez wymyślania powodów).")
+                    "pasuje. Każde pole to osobny punkt listy zaczynający się od pogrubionej nazwy pola (najbardziej zagrożone "
+                    "pierwsze), 1–2 zdania na pole, całość najwyżej 7 zdań. Pozostałe pola wspomnij jednym zdaniem na końcu "
+                    "(bez wymyślania powodów). Bez podsumowań i bez uwag o zgodności silnika z metodyką.")
     text, meta = ask_llm(llm, route.type, lines, sources, question, history, instructions, conversation_id=conv_id)
     if picked:  # a follow-up ("co mam zrobić?") continues with the most urgent field
         meta["field_id"] = picked[0]["field_id"]

@@ -203,7 +203,7 @@ def observation(route: Route, question: str, history, llm: LLM, state, selected_
     if threat:  # one guide passage about symptoms, so the farmer can compare with what they see
         from .context import guide_sources
         crop = domain.crop_pl(next(f["crop_code"] for f in fields if f["id"] == field_id))
-        sources, _ = guide_sources([(f"{threat.name} objawy", crop, 2)], budget=350, max_n=1)
+        sources, _ = guide_sources([(f"{threat.name} objawy", crop, 2, threat.name)], budget=350, max_n=1)
         if sources:
             snippet = symptom_snippet(sources[0]["text"], threat.name)
             text += f"\n\nObjawy według metodyki, do porównania z tym, co widzisz: „{snippet}” [{sources[0]['chunk_id']}]"

@@ -43,4 +43,50 @@ Risk scores are 0–1. "Season so far" is up to today; "coming days" are today +
 - **Plain TypeScript, no framework.** Map libraries (Leaflet, MapLibre, …) are fine: install them with `npm install` in [`frontend/`](../../), and esbuild bundles them into `static/frontend/dist/main.js`.
 - **API types are generated** from the backend's schema, so they always match it; don't write them by hand.
 - **Colours and the "why" panel** come from `explanation` version 1 ([database.md → Explanation, version 1](../../../docs/database.md#explanation-version-1)): `level` for the colour (`low` / `medium` / `high`, cut-offs 0.33 / 0.66, agreed), `summary`, the `drivers` sorted by `effect` (their `label`), `action.text` and, for `treat`, `action.spray_window.date`, `growth_stage.name` and `confidence`. Ignore keys you don't know.
-- *Still open:* the explanation texts are still English (the engine switches to Polish).
+- The explanation texts are Polish (engine v0.11), shown as they are.
+
+## Development
+
+Team notes (what is built, how to run it, what each of us still has to do): [docs/map-and-engine-notes.md](../../../docs/map-and-engine-notes.md).
+
+The module above is built: [`index.ts`](index.ts) (`initMap`), [`panel.ts`](panel.ts) (field panel and "why"),
+[`chart.ts`](chart.ts) (season chart), [`map.css`](map.css). It follows this README and interfaces.md exactly;
+nothing outside `map/` is needed except [`../events.ts`](../events.ts), the `EventBus` copied verbatim from
+interfaces.md.
+
+**In the page:** `cd frontend && npm run build`, then `python manage.py runserver`: `main.ts` mounts the map next to
+the chat with the real platform API (`core/views.py`). On the assistant's synthetic farm: `python manage.py assistant_dev_seed`.
+
+**On its own, without the platform API** (the stand-in page and mock API from before the API existed):
+
+```bash
+python manage.py engine_dev_seed --season 2024 --today 2024-06-15 --crop-from-map --fields-per-crop 2
+python manage.py predict --season
+cd frontend && npm install && npm run map:dev     # or map:watch
+python manage.py engine_mock_api                  # http://127.0.0.1:8001/
+```
+
+`engine_mock_api` (development only, not wired into Django's URLs) answers the agreed endpoints with exactly the
+agreed shapes and rules (cut-off at today + 7, `{"detail"}` errors), from the real database; `PUT /api/clock/`
+calls `engine.clock_moved()`. [`dev/`](dev/) is a stand-in page: it builds the `AppContext`, has the demo date
+control (what `main.ts` will do) and buttons that send the chat's events. Its tests: `engine/test_mock_api.py`.
+
+**Contract details the module keeps:**
+
+- From `explanation` it reads exactly the map's keys (database.md → "Who reads what"): `level`, `summary`,
+  `drivers` (`label`, `effect`; sorted by `effect`, `null` = context), `action` (`type`, `text`,
+  `spray_window.date`), `growth_stage.name`, `confidence`. Threat names come from the API's `threat.name`.
+- Every rule of `map.css` is scoped under `.fup-map`; the layout uses container queries (the map's own width).
+- Responses that arrive after the day or the demo date changed are dropped; a season series is cached per today.
+- `ctx.clock` is read at each use; a `field:focus` that arrives before the fields are drawn is applied after.
+- Closing the field panel also sends `field:selected { fieldId: null }` (no field selected any more).
+
+**Wired to the platform (21 Nov, merge of `feat/map`):**
+
+- **Types:** [`contract.ts`](contract.ts) re-exports the generated API types (`api/types.ts`, from `api/schema.d.ts`).
+  Only the explanation is typed there, since the schema passes it through untyped; `readExplanations()` reads each
+  one as version 1 and, for rows that lack a key (the assistant's dev seed has no `level`), takes the level from the
+  score with the agreed cut-offs, as the API does.
+- **`ctx.api`:** `api/client.ts` has the six calls of `MapApi` under the same names; `main.ts` passes its full
+  `AppContext`, of which `contract.ts`'s `AppContext` is the part the map uses.
+- **`level` in `/api/risks/?date=`** (decision 10) is always sent; the map uses it.

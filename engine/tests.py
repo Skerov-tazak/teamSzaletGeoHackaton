@@ -9,8 +9,8 @@ from datetime import date, datetime, timedelta, timezone as dt_tz
 import pandas as pd
 from django.test import TestCase
 
-from core.models import (Clock, CropClass, Field, FieldCropYear, Risk, Threat, WeatherDaily, WeatherGrid,
-                         WeatherHourly)
+from core.models import (Clock, CropClass, Field, FieldCropYear, Observation, Risk, Threat, WeatherDaily,
+                         WeatherGrid, WeatherHourly)
 from engine import predict
 from engine.catalog import RULES
 from engine.compute import field_context
@@ -142,7 +142,7 @@ class PredictTests(EngineTestBase):
         rows = Risk.objects.filter(field=self.maize)
         self.assertTrue(rows.exists())
         self.assertEqual(max(r.score for r in rows), 0.0)
-        self.assertIn("not sown", rows.first().explanation["summary"])
+        self.assertIn("nie jest jeszcze zasiana", rows.first().explanation["summary"])
 
     def test_range_across_season_boundary(self):
         n = predict(field_ids=[self.wheat.id], start=date(2025, 7, 25), end=date(2025, 7, 31))
@@ -189,7 +189,7 @@ class ObservationTests(EngineTestBase):
         fr = [d for d in seen.explanation["drivers"] if d["factor"] == "farmer_report"]
         self.assertEqual(len(fr), 1)
         self.assertGreater(fr[0]["effect"], 0.5)
-        self.assertIn("farmer reported septoria leaf blotch", seen.explanation["summary"].lower())
+        self.assertIn("rolnik zgłosił na tym polu: septorioza paskowana", seen.explanation["summary"].lower())
 
     def test_report_does_not_change_earlier_days(self):
         from engine.observations import Report
@@ -226,7 +226,7 @@ class ObservationTests(EngineTestBase):
         r1 = self.run_day("maize.frit_fly", day, self.maize, [late])
         self.assertLess(r1.explanation["growth_stage"]["bbch"], r0.explanation["growth_stage"]["bbch"])
         self.assertEqual(r1.explanation["growth_stage"]["sowing_assumed"], "2025-05-20")
-        self.assertIn("farmer", r1.explanation["growth_stage"]["method"])
+        self.assertIn("rolnika", r1.explanation["growth_stage"]["method"])
 
 
 class AssistantObservationTests(EngineTestBase):
@@ -314,7 +314,7 @@ class OtherCropTests(EngineTestBase):
         wet = Risk.objects.get(field=f, threat__code="potato.late_blight", date=date(2025, 6, 22))
         self.assertLess(dry, 0.3)
         self.assertGreaterEqual(wet.score, 0.6)
-        self.assertIn("late blight", wet.explanation["summary"].lower())
+        self.assertIn("zaraza ziemniaka", wet.explanation["summary"].lower())
 
     def test_rotation_pest_needs_a_host_in_the_last_seasons(self):
         day = date(2025, 7, 1)
@@ -324,7 +324,7 @@ class OtherCropTests(EngineTestBase):
         hi = Risk.objects.get(field=after_beet, threat__code="sugar_beet.beet_cyst_nematode", date=day)
         lo = Risk.objects.get(field=after_wheat, threat__code="sugar_beet.beet_cyst_nematode", date=day)
         self.assertGreater(hi.score, lo.score * 5)
-        self.assertIn("host crop", hi.explanation["summary"])
+        self.assertIn("roślina żywicielska", hi.explanation["summary"])
 
     def test_beet_season_runs_into_autumn(self):
         from engine.compute import crop_season_segments
@@ -347,7 +347,7 @@ class FieldRecordTests(TestCase):
         self.assertEqual({r.kind for r in reps}, {"field_fact"})
         self.assertEqual(len(reps), 3)
         self.assertTrue(all(r.field_id == 7 for r in reps))
-        self.assertTrue(reps[1].label().startswith("Field record"))
+        self.assertTrue(reps[1].label().startswith("Dane z karty pola"))
         self.assertEqual(sowing_override(reps, (date(2024, 7, 3), date(2025, 8, 31))), (date(2024, 9, 25), date(2024, 9, 25)))
         self.assertIsNone(sowing_override(reps, (date(2023, 7, 3), date(2024, 8, 31))))   # not last season's sowing
         self.assertEqual(from_field(SimpleNamespace(id=1)), [])                           # columns absent: nothing
@@ -367,7 +367,7 @@ class ConsistencyTests(EngineTestBase):
         dmg = NS(pk=3, date=date(2025, 6, 1), category="uszkodzenie", details={}, note="coś połamało", field_id=3, threat_id=None)
         rep = _to_report(dmg, "date")
         self.assertEqual((rep.kind, rep.details["type"]), ("event", "damage"))
-        self.assertIn("Crop damage", rep.label())
+        self.assertIn("Uszkodzenie uprawy", rep.label())
         num = NS(pk=4, date=date(2025, 6, 1), category="choroba", severity=0.8, details={}, note="", field_id=3, threat_id=None)
         self.assertEqual(_to_report(num, "date").severity, 0.8)
 
@@ -401,7 +401,7 @@ class ConsistencyTests(EngineTestBase):
         clock_moved(date(2025, 6, 17), date(2025, 6, 20))                   # now in the past
         r = Risk.objects.get(field=self.wheat, threat=r.threat, date=day)
         self.assertNotIn("forecast_lead_days", r.explanation)
-        self.assertFalse([n for n in r.explanation["notes"] if n.startswith("Day +")])
+        self.assertFalse([n for n in r.explanation["notes"] if n.startswith("Dzień +")])
         c.today = date(2025, 6, 15); c.save()
 
     def test_clock_save_has_no_side_effects(self):
@@ -501,7 +501,7 @@ class PureFunctionTests(TestCase):
         e = {"confidence": 0.6, "notes": []}
         adjust_for_lead(e, 5); adjust_for_lead(e, 5)
         self.assertAlmostEqual(e["confidence"], round(0.6 * 0.7, 2))
-        self.assertEqual(len([n for n in e["notes"] if n.startswith("Day +")]), 1)
+        self.assertEqual(len([n for n in e["notes"] if n.startswith("Dzień +")]), 1)
 
 
 class FarmFeatureTests(EngineTestBase):
@@ -578,4 +578,70 @@ class SatelliteStageTests(TestCase):
         maize_like = pd.DataFrame({"date": days, "ndvi": [0.2] * 9 + [0.5] * (len(days) - 9)})
         r = crop_check(maize_like, 1110, 2025, date(2025, 6, 30))
         self.assertFalse(r["consistent"])
-        self.assertIn("bare in spring", r["text"])
+        self.assertIn("wiosną goła gleba", r["text"])
+
+
+class SnapshotTests(EngineTestBase):
+    """clock_moved() copies precomputed rows (engine.RiskSnapshot): same result as computing, no computing."""
+    wet_days = {date(2025, 6, d) for d in (12, 13, 17, 18, 19, 24)}
+
+    def setUp(self):
+        copy_forecast(self.grid, date(2025, 6, 1), date(2025, 7, 20))
+        predict(start=date(2025, 6, 1), end=date(2025, 7, 31))  # the seed
+
+    def state(self):
+        return {(r.field_id, r.threat_id, r.date): (r.score, r.explanation) for r in Risk.objects.all()}
+
+    def truth(self, today):
+        """Risk as a full recompute at `today` writes it (snapshots out of the way)."""
+        from engine.models import RiskSnapshot
+        saved = list(RiskSnapshot.objects.all())
+        RiskSnapshot.objects.all().delete()
+        Clock.objects.update(today=today)
+        predict(start=date(2025, 6, 1), end=date(2025, 7, 31))
+        out = self.state()
+        RiskSnapshot.objects.all().delete()
+        RiskSnapshot.objects.bulk_create(saved)
+        return out
+
+    def move(self, new):
+        from engine import clock_moved
+        from core import clock
+        old = clock.today()
+        Clock.objects.update(today=new)
+        return clock_moved(old, new)
+
+    def test_moves_copy_and_match_a_full_recompute(self):
+        from unittest import mock
+        from engine import precompute_dates
+        self.assertGreater(precompute_dates(date(2025, 6, 10), date(2025, 6, 25)), 0)
+        seen = []
+        with mock.patch("engine.compute.compute_rows", side_effect=AssertionError("computed")):
+            for new in (date(2025, 6, 18), date(2025, 6, 16), date(2025, 6, 25), date(2025, 6, 10), date(2025, 6, 15)):
+                res = self.move(new)
+                self.assertEqual(sorted(res.field_ids), sorted(f.id for f in Field.objects.all()))
+                seen.append((new, self.state()))
+        for new, got in seen:
+            self.assertEqual(got, self.truth(new), f"clock moved to {new}")
+
+    def test_without_snapshots_it_computes_and_keeps_them(self):
+        from engine.models import RiskSnapshot
+        RiskSnapshot.objects.all().delete()
+        self.move(date(2025, 6, 18))
+        self.assertEqual(self.state(), self.truth(date(2025, 6, 18)))
+        Clock.objects.update(today=date(2025, 6, 18))
+        self.move(date(2025, 6, 15))
+        Clock.objects.update(today=date(2025, 6, 15))
+        from unittest import mock
+        with mock.patch("engine.compute.compute_rows", side_effect=AssertionError("computed")):
+            self.move(date(2025, 6, 18))  # both directions were stored on the first moves
+
+    def test_a_report_drops_stale_snapshots(self):
+        from engine import precompute_dates
+        precompute_dates(date(2025, 6, 10), date(2025, 6, 25))
+        Observation.objects.create(field=self.wheat, observed_on=date(2025, 6, 14), kind="symptoms",
+                                   threat=Threat.objects.get(code="wheat.septoria_leaf_blotch"), severity=0.9, text="plamy")
+        predict(field_ids=[self.wheat.id], start=date(2025, 6, 14))  # what the assistant calls after the report
+        res = self.move(date(2025, 6, 20))
+        self.assertIn(self.wheat.id, res.field_ids)
+        self.assertEqual(self.state(), self.truth(date(2025, 6, 20)))

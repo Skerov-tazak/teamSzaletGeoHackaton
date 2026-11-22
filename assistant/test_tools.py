@@ -153,7 +153,7 @@ class ObservationToolTests(ToolTestCase):
         self.assertEqual(r["reassessment"]["status"], "ok")
         self.assertEqual(calls[0]["field_ids"], [self.wheat.id])
         self.assertEqual(calls[0]["start"], dt.date(2024, 5, 14))
-        self.assertEqual(calls[0]["end"], dt.date(2024, 5, 31))  # last precomputed day, not only today + 7
+        self.assertNotIn("end", calls[0])  # the engine's default end covers the precomputed days
 
         def boom(**kw):
             raise RuntimeError("engine down")

@@ -27,9 +27,9 @@ import pandas as pd
 from engine.catalog import BARLEY, MAIZE, OTHER_CEREALS, POTATO, RAPESEED, SUGAR_BEET, WHEAT
 
 STAGE_NAMES = [
-    (-1, "not sown yet"), (0, "sown, germinating"), (9, "emergence"), (10, "leaf development"), (20, "tillering"),
-    (30, "stem elongation"), (51, "heading / tasseling"), (61, "flowering"), (71, "grain development"),
-    (83, "ripening"), (89, "fully ripe"), (92, "harvest / over-ripe"),
+    (-1, "przed siewem"), (0, "siew, kiełkowanie"), (9, "wschody"), (10, "rozwój liści"), (20, "krzewienie"),
+    (30, "strzelanie w źdźbło"), (51, "kłoszenie"), (61, "kwitnienie"), (71, "rozwój ziarniaków"),
+    (83, "dojrzewanie"), (89, "dojrzałość pełna"), (92, "zbiór / przejrzałość"),
 ]
 
 # (GDD, BBCH) breakpoints, linear in between.
@@ -115,25 +115,25 @@ class StageEstimate:
 
 
 MAIZE_STAGE_NAMES = [
-    (-1, "not sown yet"), (0, "sown, germinating"), (9, "emergence"), (10, "leaf development"),
-    (30, "stem elongation"), (51, "tasseling"), (63, "flowering (silking)"), (71, "grain filling"),
-    (83, "ripening"), (87, "physiological maturity"), (89, "fully ripe"),
+    (-1, "przed siewem"), (0, "siew, kiełkowanie"), (9, "wschody"), (10, "rozwój liści"),
+    (30, "wzrost łodygi"), (51, "wiechowanie"), (63, "kwitnienie (znamiona)"), (71, "nalewanie ziarna"),
+    (83, "dojrzewanie"), (87, "dojrzałość fizjologiczna"), (89, "dojrzałość pełna"),
 ]
 
 
 RAPESEED_STAGE_NAMES = [
-    (-1, "not sown yet"), (0, "sown, germinating"), (9, "emergence"), (10, "leaf development (rosette)"),
-    (30, "stem elongation"), (50, "flower buds"), (60, "flowering"), (70, "pod development"), (80, "ripening"),
-    (89, "fully ripe"), (92, "harvest / over-ripe"),
+    (-1, "przed siewem"), (0, "siew, kiełkowanie"), (9, "wschody"), (10, "rozwój liści (rozeta)"),
+    (30, "wzrost pędu"), (50, "pąkowanie"), (60, "kwitnienie"), (70, "rozwój łuszczyn"), (80, "dojrzewanie"),
+    (89, "dojrzałość pełna"), (92, "zbiór / przejrzałość"),
 ]
 SUGAR_BEET_STAGE_NAMES = [
-    (-1, "not sown yet"), (0, "sown, germinating"), (10, "emergence, cotyledons"), (11, "leaf development"),
-    (31, "canopy closing"), (39, "canopy closed"), (40, "root growth"), (49, "root harvestable"),
+    (-1, "przed siewem"), (0, "siew, kiełkowanie"), (10, "wschody, liścienie"), (11, "rozwój liści"),
+    (31, "zakrywanie międzyrzędzi"), (39, "zakryte międzyrzędzia"), (40, "wzrost korzenia"), (49, "korzeń gotowy do zbioru"),
 ]
 POTATO_STAGE_NAMES = [
-    (-1, "not planted yet"), (0, "planted, sprouting"), (9, "emergence"), (10, "leaf development"),
-    (21, "side shoots"), (31, "rows closing"), (40, "tuber formation"), (51, "flower buds"), (60, "flowering"),
-    (70, "berries, tuber bulking"), (91, "haulm senescence"), (97, "haulm dead"),
+    (-1, "przed sadzeniem"), (0, "sadzenie, kiełkowanie"), (9, "wschody"), (10, "rozwój liści"),
+    (21, "pędy boczne"), (31, "zwieranie rzędów"), (40, "zawiązywanie bulw"), (51, "pąkowanie"), (60, "kwitnienie"),
+    (70, "jagody, przyrost bulw"), (91, "zasychanie naci"), (97, "zaschnięta nać"),
 ]
 CROP_STAGE_NAMES = {MAIZE: MAIZE_STAGE_NAMES, RAPESEED: RAPESEED_STAGE_NAMES, SUGAR_BEET: SUGAR_BEET_STAGE_NAMES,
                     POTATO: POTATO_STAGE_NAMES}
@@ -184,14 +184,14 @@ def bbch_series(crop: int, daily_temp: pd.Series, season: int, sowing: date | No
         out.loc[t.index < sowing, "bbch"] = -1
         out["gdd"] = gdd.values
     out["sowing"] = sowing.date()
-    out["method"] = "degree days, sowing date from the farmer" if given else "degree days, typical sowing date"
+    out["method"] = "suma temperatur, data siewu od rolnika" if given else "suma temperatur, typowa data siewu"
     out["confidence"] = 0.85 if given else STAGE_CONFIDENCE_GDD
     return out
 
 
 def estimate(crop: int, stages: pd.DataFrame, day: date) -> StageEstimate:
     row = stages.loc[pd.Timestamp(day)]
-    return StageEstimate(bbch=float(row.bbch), name=stage_name(row.bbch, crop), method="degree days (GDD), typical sowing date",
+    return StageEstimate(bbch=float(row.bbch), name=stage_name(row.bbch, crop), method="suma temperatur, typowa data siewu",
                          sowing=row.sowing, gdd=float(row.gdd), confidence=STAGE_CONFIDENCE_GDD)
 
 
@@ -229,6 +229,6 @@ def calibrate(stages: pd.DataFrame, crop: int, anchors) -> pd.DataFrame:
             use &= out.index >= pd.Timestamp(on.year, 1, 1)
         shifted = np.interp(stages.loc[use, "gdd"].to_numpy() - delta, gdds, bbchs)
         out.loc[use, "bbch"] = np.maximum(shifted, 0)
-        out.loc[use, "method"] = f"degree days calibrated to the satellite: {a.what}"
+        out.loc[use, "method"] = f"suma temperatur skalibrowana zdjęciami satelitarnymi: {a.what}"
         out.loc[use, "confidence"] = STAGE_CONFIDENCE_SATELLITE
     return out

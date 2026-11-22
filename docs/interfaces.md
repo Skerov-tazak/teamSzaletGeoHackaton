@@ -1,6 +1,6 @@
 # Interfaces
 
-Field Under Pressure · owners: Jan + Szymek · last updated 20 Nov 2026
+Field Under Pressure · owners: Jan + Szymek · last updated 21 Nov 2026
 
 How the components talk to each other: the frontend modules, the events between map and chat, the platform API, the chat, the assistant's data access and the decision engine. The tables behind all of this are in [database.md](database.md).
 
@@ -8,20 +8,21 @@ How the components talk to each other: the frontend modules, the events between 
 
 | Piece | Status | Built by |
 |-------|--------|----------|
-| [Event bus](#events-between-map-and-chat) (`frontend/src/events.ts`) | To build | Jan + Szymek |
-| [Page and app context](#frontend-modules) (`main.ts`, `api/`) | To build | Jan + Szymek |
-| [Map module](#the-map-module) (`initMap`) | To build | Kuba |
-| [Platform API](#platform-api) | `GET /api/health/` exists; the rest to build | Jan + Szymek |
-| [Demo date control](#clock) (`PUT /api/clock/` + header control) | To build | Jan + Szymek |
+| [Event bus](#events-between-map-and-chat) (`frontend/src/events.ts`) | Built | Jan + Szymek |
+| [Page and app context](#frontend-modules) (`main.ts`, `api/`) | Built | Jan + Szymek |
+| [Map module](#the-map-module) (`initMap`) | Built (`feat/map`, merged and wired to the platform API) | Kuba (built by Bartek) |
+| [Platform API](#platform-api) | Built, except the weather endpoint (shape not defined) | Jan + Szymek |
+| [Demo date control](#clock) (`PUT /api/clock/` + header control) | Built | Jan + Szymek |
 | [Chat tables](#chat-tables) (`Conversation`, `Message`) | Exists | Jan + Szymek (first version), then Ola |
-| [Chat endpoints, placeholder answer](#chat) | To build | Jan + Szymek |
-| [`answer()`](#the-answer-function), MCP tools, RAG | To build | Ola |
+| [Chat endpoints](#chat) | Built (Ola, `assistant/views.py`). Not yet sending the agreed `chart` and `pending_action` keys | Ola |
+| [Chat window](#chat) (`frontend/src/chat/`) | Built, including charts and the observation buttons (shown once the endpoint sends the keys) | Jan + Szymek |
+| [`answer()`](#the-answer-function), MCP tools, RAG | Built | Ola |
 | [Read-only database user](#free-form-lookups-read-only-sql) | To build | Jan + Szymek |
-| [Observation table](#writing-observations) (`core.Observation`) | Exists. The assistant still writes its interim `assistant.Observation`: it switches over and moves those rows in one change | Jan + Szymek (schema), Ola (writes), Bartek (reads) |
+| [Observation table](#writing-observations) (`core.Observation`) | Exists; the assistant writes it (its migration 0003 moved the interim rows) | Jan + Szymek (schema), Ola (writes), Bartek (reads) |
 | [`as_of` on the query helpers](#as_of-on-the-helpers) | Exists | Jan + Szymek |
-| [`predict()`](#decision-engine) | To build | Bartek |
-| [API without authentication](#general-rules) | To build (settings change) | Jan + Szymek |
-| [API cut-off at today + 7](#no-data-after-the-forecast) | To build (part of every date-based endpoint) | Jan + Szymek |
+| [`predict()`](#decision-engine), `clock_moved()` | Built | Bartek |
+| [API without authentication](#general-rules) | Built (`REST_FRAMEWORK` settings) | Jan + Szymek |
+| [API cut-off at today + 7](#no-data-after-the-forecast) | Built (`core/api_dates.py`, every date-based endpoint) | Jan + Szymek |
 
 ## General rules
 
@@ -31,7 +32,8 @@ How the components talk to each other: the frontend modules, the events between 
 - **GeoJSON** coordinates are **[lon, lat]**, EPSG:4326.
 - **Nothing after the forecast.** The API never returns data dated after today + 7; see [below](#no-data-after-the-forecast).
 - **Errors** use Django REST Framework's format: `{"detail": "..."}` with a 4xx status.
-- **TypeScript types are generated, not written.** `openapi-typescript` turns `/api/schema/` into `frontend/src/api/schema.d.ts` (one npm script). If the backend changes, regenerate; the type checker shows what broke.
+- **No demo date:** while the `Clock` row is missing, every endpoint that needs today answers `503 {"detail": "The demo date is not set: set it in /admin/ or run the seed."}`.
+- **TypeScript types are generated, not written.** Both files are committed: `frontend/openapi.yml` (`python manage.py spectacular --file frontend/openapi.yml`) and `frontend/src/api/schema.d.ts` (`cd frontend && npm run api:types`). If the backend changes, regenerate both; the type checker shows what broke. `python manage.py test core` fails if `openapi.yml` is stale, and `npm run build` fails if `schema.d.ts` is.
 
 ### No data after the forecast
 
@@ -149,9 +151,9 @@ Built by Jan + Szymek with Django REST Framework. Once an endpoint exists, its e
 // PUT /api/clock/   body: {"today": "2024-06-01"}   → returns the same shape as GET
 ```
 
-The demo date control in the page header sends the `PUT`; on success `main.ts` updates `ctx.clock` and sends `date:changed`. Risks for the whole season are precomputed by the seed (see [Decision engine](#decision-engine)), so moving the date is instant.
+The demo date control in the page header sends the `PUT`; on success `main.ts` updates `ctx.clock` in place and sends `date:changed`. Any valid date is accepted: a date without data shows empty results. An invalid one is `400 {"detail": "today must be YYYY-MM-DD"}`.
 
-The decision engine (`feat/decision-engine`) listens for the Clock row being **saved**, to update the "days ahead" stored in coming-day risks. So the endpoint (and any script) changes the date with `clock.save()`, never `Clock.objects.update(...)`, which skips that. The review proposes replacing this signal with an explicit `clock_moved(old, new)` call that recomputes only the changed window ([engine-predict-review.md](engine-predict-review.md#4-moving-the-demo-date-rewrites-the-rest-of-the-season)).
+Moving the date recomputes the days whose inputs change: `engine.clock_moved(old, new)` rewrites the risks of (min(old, new), max(old, new) + 7] ([engine-predict-review.md](engine-predict-review.md#4-moving-the-demo-date-rewrites-the-rest-of-the-season)). The engine has no signal, so every date change goes through **`core.clock.set_today(new)`**, which saves the row and calls `clock_moved` in one transaction (if the engine fails, the date stays): `PUT /api/clock/` and the admin's clock page use it; from the terminal, `python manage.py engine_set_date D`. Never change the date with `Clock.objects.update(...)` or a bare `clock.save()`. The recompute takes about a second per few days moved, so the date control shows that it is busy.
 
 ### Threats
 
@@ -192,21 +194,24 @@ The decision engine (`feat/decision-engine`) listens for the Clock row being **s
   "crop_history": [
     {"year": 2023, "classes": [{"code": 1130, "name": "Maize", "share": 0.92}, {"code": 0, "name": "No cropland", "share": 0.08}]}
   ],
-  "soil": {"ph": 6.4, "soil_texture": "silt loam", "clay": 18.2, "sand": 21.0, "silt": 60.8, "om": 24.1, "cec": 14.3, "bulk_density": 1.32}
+  "soil": {"ph": 6.4, "soil_texture": "silt loam", "clay": 0.182, "sand": 0.21, "silt": 0.608, "om": 24.1, "cec": 14.3, "bulk_density": 1.32}
 }
 ```
 
-`soil` holds the root-zone columns of [SoilCell](database.md#soilcell), averaged over the field's cells, in the same units.
+`soil` holds the root-zone columns of [SoilCell](database.md#soilcell), averaged over the field's cells, in the same units (`clay`, `sand`, `silt` are fractions 0–1). A column that is empty in every cell stays `null`; `soil_texture` is the most common class (ties: alphabetical). `soil` is `null` when the field has no soil cells. `crop_history` has one entry per year, oldest first, its `classes` by share, largest first. An unknown id is `404`.
 
 ### Risks
 
 ```json
 // GET /api/risks/?date=2024-05-15        (date defaults to today; at most today + 7)
-{"date": "2024-05-15", "risks": [{"field_id": 3, "threat_code": "wheat.septoria_leaf_blotch", "score": 0.72}]}
+{"date": "2024-05-15", "risks": [{"field_id": 3, "threat_code": "wheat.septoria_leaf_blotch", "score": 0.72, "level": "high"}]}
 ```
+
+`level` is copied from the row's `explanation.level`, so the map colours by level without the explanations. For rows whose explanation has no level (the assistant's dev seed), it comes from the score with the cut-offs below.
 
 ```json
 // GET /api/fields/3/risks/?from=2024-04-01&to=2024-05-22     (to is cut off at today + 7)
+// defaults: from = 1 September of the year before the demo's year (covers winter wheat), to = today + 7
 {
   "field_id": 3, "from": "2024-04-01", "to": "2024-05-22",
   "threats": [{"threat_code": "wheat.septoria_leaf_blotch", "points": [{"date": "2024-04-01", "score": 0.1}]}]
@@ -252,7 +257,7 @@ Scores are 0–1 (an index, not a probability). Days up to today are the season 
 
 ## Chat
 
-Chats are stored like in any chat app. The HTTP endpoints, the tables and a placeholder answer are built by Jan + Szymek, so the chat window works before the assistant is ready. Ola replaces the placeholder with [`answer()`](#the-answer-function).
+Chats are stored like in any chat app. The endpoints and [`answer()`](#the-answer-function) are built by Ola in `assistant/`; the chat window (`frontend/src/chat/`) by Jan + Szymek.
 
 ### Endpoints
 
@@ -270,13 +275,15 @@ Chats are stored like in any chat app. The HTTP endpoints, the tables and a plac
   "message": {
     "id": 57,
     "role": "assistant",
-    "text": "Markdown answer…",
+    "text": "Markdown answer… [1]",
     "citations": [
-      {"type": "guide", "document": "metodyka_-_PSZENICA_-_www.pdf", "page": 34},
+      {"type": "guide", "document": "metodyka_-_PSZENICA_-_www.pdf", "page": 34, "printed_page": 32, "section": "5.2 Choroby", "ref": 1},
       {"type": "risk", "field_id": 3, "threat_code": "wheat.septoria_leaf_blotch", "date": "2024-05-15"}
     ],
     "focus_field_id": null,
     "updated_field_ids": [],
+    "chart": null,
+    "pending_action": null,
     "created_at": "2024-05-15T10:42:00Z"
   }
 }
@@ -286,16 +293,49 @@ Chats are stored like in any chat app. The HTTP endpoints, the tables and a plac
 |---------|---------|
 | `POST /api/chat/` | sends a message, returns the assistant's answer (above) |
 | `GET /api/chat/conversations/` | `[{id, title, updated_at}]`, newest first. The title is the start of the first message |
-| `GET /api/chat/conversations/{id}/` | `{id, title, messages: [...]}`, each message in the shape above (user messages have empty `citations`) |
+| `GET /api/chat/conversations/{id}/` | `{id, title, messages: [...]}`, each message in the shape above (user messages have empty `citations` and `null` `chart` / `pending_action`) |
 
-**Citations - for Ola to confirm.** Two types:
+`chart` and `pending_action` (Ola's proposals 6 and 7, accepted on 21 Nov) are always present, each `null` when unused, also in the conversation history (they are stored in `Message.meta`). **To do (Ola):** `message_json` in `assistant/views.py` does not send them yet; until it does, the chat window treats the missing keys as `null`.
 
-- `guide`: a passage of a guide PDF. `document` is the file name in `field-under-pressure-materials/metodyki/`, `page` is the page number (1-based).
-- `risk`: a risk row the answer relies on (`field_id`, `threat_code`, `date`). The chat shows it as a link; clicking it sends `field:focus`.
+**Not in this version:** streaming. The answer appears all at once after a "thinking…" indicator.
 
-**Not in this version:** charts (maybe a separate endpoint later) and streaming. The answer appears all at once after a "thinking…" indicator.
+**In the browser:** the user's message appears immediately, then "Myślę…", then the answer; sending is disabled meanwhile, and an error replaces the indicator and keeps the typed text. The markdown is turned into HTML and sanitised (DOMPurify) before it goes into the page; the model's output is never inserted as raw HTML. `focus_field_id` → `field:focus`; non-empty `updated_field_ids` → `risks:updated`. Readers ignore keys they don't know.
 
-**In the browser:** the user's message appears immediately, then the indicator, then the answer. The markdown is turned into HTML and sanitised (DOMPurify) before it goes into the page; the model's output is never inserted as raw HTML. `focus_field_id` → `field:focus`; `updated_field_ids` → `risks:updated`.
+#### Citations
+
+- `guide`, a PDF passage: `document` (the file name in `field-under-pressure-materials/metodyki/`), `page` (PDF page, 1-based, so `file.pdf#page=N` opens it), `printed_page` (the number printed in the book, may be `null`), `section` (the chapter path), `ref` (the number of the `[n]` marker in the text). Shown as "{document}, s. {printed_page, else page}", with `section` as the tooltip.
+- `guide`, a spreadsheet row: `{"type": "guide", "document": "ryzyka_zebrane.xlsx", "sheet": "pszenica", "row": 19, "ref": 2}`, without `page`. Shown as "{document}, arkusz {sheet}, wiersz {row}".
+- `risk`: a risk row the answer relies on (`field_id`, `threat_code`, `date`); no `ref` and no marker in the text. The chat shows it as a link; clicking it sends `field:focus`.
+
+The `[n]` markers in the text link to the citation with that `ref`.
+
+#### `pending_action`: confirming an observation
+
+The assistant never saves a farmer's report straight away. It drafts it, asks, and saves only after a yes. The draft lives on the server, in the conversation's state; the message only shows it.
+
+```json
+"pending_action": {
+  "type": "confirm_observation",
+  "draft": {"draft_id": "a1b2c3d4e5f6", "field_id": 3, "field": "Pole północne", "date": "2024-05-15", "…": "…"}
+}
+```
+
+1. The farmer describes what they see. The answer describes the draft in its text, ends with "Zapisać tę obserwację? (tak / nie)", and carries `pending_action` as above.
+2. The chat window shows **Zapisz** and **Anuluj** under that message.
+3. A click sends an ordinary message, exactly as if the farmer had typed it: `POST /api/chat/ {"conversation_id": 12, "message": "Zapisz", "field_id": <draft.field_id>}` (or `"Anuluj"`). No new endpoint and no new request field; typing "tak" / "nie" keeps working.
+4. **Zapisz:** the server saves the pending draft as an observation, with an idempotency key made from the conversation and `draft_id`, so a second click or a repeated "tak" never saves it twice. Then it runs `predict()` for the field, and the reply lists the recomputed fields in `updated_field_ids` (→ `risks:updated`, the map recolours). **Anuluj:** the draft is dropped.
+5. Any other message drops the pending draft; a new observation replaces it with a new draft.
+
+Rules for the chat window: the buttons are active **only on the last message of the conversation**, and not while a request is running (once a newer message exists, the server no longer holds that draft, so older buttons are disabled, also in a reloaded history). From `draft` the window uses only `draft_id` and `field_id`; the other keys are for display and may change. An unknown `type` shows only the text.
+
+#### `chart`: charts in the chat
+
+- A **Vega-Lite v5** spec (`"$schema": "https://vega.github.io/schema/vega-lite/v5.json"`), at most one per message, shown under the answer text. Built in code by the assistant's chart tools (risk over time, weather against risk, the farm on one day), never written by the model.
+- Data is inline (`data.values`), never a URL; the chat window does not draw a spec with a data `url` anywhere.
+- `"width": "container"`: the chart takes the message's width (the window sets it).
+- Polish titles and axis labels with units; solid line = season so far, dashed = coming days, a dashed "dziś" line, level lines at 0.33 and 0.66. No data after today + 7 (the tools use the same cut-off as the API).
+- The answer text stands on its own: it states the chart's key numbers (computed in code), so nothing is lost if the chart cannot be drawn.
+- The browser draws it with `vega-embed` (Polish date and number formats), loaded only when a message has a chart, with its actions menu off.
 
 ### Chat tables
 
