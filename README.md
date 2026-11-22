@@ -1,7 +1,13 @@
-# Field Under Pressure — team Szalet
+<div align="center">
+
+<img src="logo/cropilot-logo-wektorowe-svg.svg" alt="Cropilot" width="420"/>
+
+# Cropilot - Field Under Pressure - Team Szalet🔥
 
 Farmer dashboard for maize and winter wheat: a map of a farm's fields and their crop risks, plus an AI assistant grounded in the official crop-protection guides. See [architecture_overview.md](architecture_overview.md) for the components and how they fit together.
 
+[![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![Django](https://img.shields.io/badge/Django-5.2-092E20?logo=django&logoColor=white)](https://www.djangoproject.com/) [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/) [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/) [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://www.docker.com/) [![Leaflet](https://img.shields.io/badge/Maps-Leaflet-1B873F?logo=leaflet&logoColor=white)](https://leafletjs.com/) [![Qdrant](https://img.shields.io/badge/Vector%20DB-Qdrant-DC382D?logo=qdrant&logoColor=white)](https://qdrant.tech/) [![Hackathon](https://img.shields.io/badge/Hackathon-Field%20Under%20Pressure%202026-FF6B35)](https://geo-hackathon.g.location360.ag/)
+</div>
 Hackathon: [Field Under Pressure](https://geo-hackathon.g.location360.ag/), 20–22 Nov 2026.
 
 ## Team
