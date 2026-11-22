@@ -758,3 +758,32 @@ class PromptBlockCitationTests(SimpleTestCase):
     def test_prompt_block_names_are_not_citations(self):
         text, cits, _ = citations.finalize("Jutro opad 7 mm [kontekst]. Warunki sprzyjają chorobom [silnik] [brak fragmentów metodyk].", {})
         self.assertEqual(text, "Jutro opad 7 mm. Warunki sprzyjają chorobom.")
+
+
+class ConfirmationWordsTests(WorldTestCase):
+    """A pending draft: only yes/no words confirm or cancel; "Nie widzę objawów" is a new report (kind absence)."""
+
+    def route_with_draft(self, message):
+        s = State(self.conv())
+        s.set_draft({"draft_id": "d1", "field_id": self.wheat.id, "field": self.wheat.name, "date": "2024-05-14",
+                     "note": "plamy"})
+        return router.route(message, self.wheat, s)
+
+    def test_long_yes_still_saves(self):
+        self.assertEqual(self.route_with_draft("Tak, zapisz tę obserwację, proszę").type, "potwierdzenie")
+
+    def test_nie_widze_objawow_is_a_report_not_a_cancel(self):
+        r = self.route_with_draft("Nie widzę objawów")
+        self.assertEqual(r.type, "obserwacja")
+        self.assertNotEqual(r.reason, "draft pending + correction")
+
+    def test_cancel_words(self):
+        for m in ("nie", "Nie zapisuj tego", "anuluj"):
+            with self.subTest(m=m):
+                self.assertEqual(self.route_with_draft(m).reason, "draft pending + no")
+
+    def test_clean_field_in_other_words_is_a_report(self):
+        from assistant.orchestrator.observations import detect_kind
+        r = router.route("Na polu Długie nie ma żadnych objawów", None, State(None))
+        self.assertEqual(r.type, "obserwacja")
+        self.assertEqual(detect_kind("Na polu Długie nie ma żadnych objawów", dt.date(2024, 5, 27))[0], "absence")

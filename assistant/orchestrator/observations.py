@@ -52,7 +52,7 @@ def detect_kind(text: str, today: dt.date) -> tuple[str, dict]:
     if re.search(r"sasiad|u sasiada|w okolicy|we wsi", t):
         facts["distance_m"] = 300 if re.search(r"za drog|obok|przez miedz|zaraz", t) else 1500 if re.search(r"we wsi|w okolicy", t) else 1000
         return "neighbour", facts
-    if re.search(r"czyst|nic nie (ma|znalazl|widac)|nie widze|brak objaw|zdrowe|bez objaw", t):
+    if re.search(r"czyst|nic nie (ma|znalazl|widac)|nie widze|brak objaw|zdrowe|bez objaw|nie ma (zadnych |zadnego )?(objaw|plam|szkodnik|mszyc|chorob)|nie znalazl", t):
         return "absence", facts
     return "symptoms", facts
 

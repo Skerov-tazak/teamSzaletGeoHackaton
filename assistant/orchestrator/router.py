@@ -31,6 +31,15 @@ OBSERVATION = [r"\bwidze\b", r"zauwazyl", r"pojawil\w* sie", r"znalazl", r"zapis
                r"\b(przeszedl|przeszlam|obszedl|obeszlam|sprawdzil)\w*", r"\bgrad\b", r"wylegl|polegl", r"zalal\w*|podtopi",
                r"nie oral|bez orki"]
 OBSERVATION_STATEMENT = [r"\bsasiad\w*"]   # only when it is a statement, not a question
+# "the field is clean" in other words than "nie widzę": a report too (kind absence), not a question
+ABSENCE = [r"\bnie ma (zadnych |zadnego )?(objaw|plam|szkodnik|mszyc|chorob)", r"\bbrak objaw", r"\bpole (jest )?czyste",
+           r"\bnic nie (znalazl|ma\b|widac)", r"\bnie znalazl\w* (zadnych |nic)"]
+# words that only say yes / no / save, with nothing new for the draft ("Tak, zapisz tę obserwację proszę")
+CONFIRM_FILLER = {"tak", "zapisz", "zapisuj", "potwierdzam", "ok", "okej", "dobrze", "jasne", "oczywiscie", "prosze",
+                  "to", "te", "ta", "ja", "tego", "tej", "go", "obserwacje", "zgloszenie", "zgadza", "sie", "wszystko", "zgodnie",
+                  "moze", "byc"}
+CANCEL_FILLER = {"nie", "anuluj", "zapisuj", "rezygnuje", "odrzuc", "stop", "trzeba", "dziekuje", "jednak", "to", "te",
+                 "ta", "tego", "tej", "go", "obserwacji", "obserwacje", "zgloszenie", "zapisywac", "prosze"}
 FARM = [r"wszystkie pola", r"wszystkich pol", r"najpilniejsz", r"gospodarstw", r"ktore pole", r"na ktorym polu",
         r"podsumuj", r"przeglad pol", r"cala farm", r"wszystkich uprawach",
         r"\bmoich pol", r"\bmoje pola\b", r"\bmoich upraw", r"\bmoje uprawy", r"\bnaszych pol", r"\bnasze pola\b",
@@ -188,20 +197,23 @@ def route(message: str, selected_field=None, state=None) -> Route:
     # 1. pending observation draft: only a short yes/no confirms; "tak, ale to było na polu Klin" or
     # "nie, to było wczoraj" corrects the draft; "Zapisz obserwację: na Górce widzę mszyce" is a new report
     if state is not None and state.draft:
-        first, n_words = (t.split(" ")[0] if t else ""), len(t.split())
-        short = n_words <= 3 and not named and not threats
-        if short and (t in CONFIRM_YES or first in {"tak", "zapisz", "potwierdzam"}):
+        words = t.split()
+        first = words[0] if words else ""
+        # a confirmation says only yes/no (any length: "Tak, zapisz tę obserwację, proszę"); "Nie widzę objawów"
+        # starts with "nie" but is a new report, not a cancel
+        if t in CONFIRM_YES or (first in {"tak", "zapisz", "potwierdzam", "ok", "okej"} and set(words) <= CONFIRM_FILLER):
             return Route("potwierdzenie", reason="draft pending + yes", **base)
-        if short and (t in CONFIRM_NO or first in {"nie", "anuluj"}):
+        if t in CONFIRM_NO or (first in {"nie", "anuluj"} and set(words) <= CANCEL_FILLER):
             return Route("potwierdzenie", reason="draft pending + no", **base)
-        if first in {"tak", "nie"} and not state.draft.get("saved_observation_id"):
+        if first in {"tak", "nie"} and not state.draft.get("saved_observation_id") and not (
+                _any(OBSERVATION, t) or _any(ABSENCE, t)):  # "nie, to było wczoraj": a correction of the draft
             return Route("obserwacja", reason="draft pending + correction", previous_draft=dict(state.draft), **base)
     # 2. chart
     if p := _any(CHART, t):
         return Route("wykres", reason=f"chart word {p}", **base)
     # 3. observation (a question to the assistant, "czy pryskałeś?", is not a report)
     asked = message.strip().endswith("?") and QUESTION_TO_ASSISTANT.search(t)
-    if not asked and (p := _any(OBSERVATION, t)):
+    if not asked and (p := _any(OBSERVATION, t) or _any(ABSENCE, t)):
         return Route("obserwacja", reason=f"observation word {p}", **base)
     if not message.strip().endswith("?") and (p := _any(OBSERVATION_STATEMENT, t)):
         return Route("obserwacja", reason=f"observation statement {p}", **base)
