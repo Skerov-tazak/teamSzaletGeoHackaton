@@ -11,10 +11,8 @@ only the engine writes the Risk table.
 """
 from __future__ import annotations
 
-import json
 import math
 import random
-import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -33,39 +31,6 @@ DEV_FIELDS = [
     ("Kukurydza Zachód", CROP_MAIZE, 15.2, (19.935, 50.025)),
     ("Kukurydza Wschód", CROP_MAIZE, 10.9, (19.970, 50.027)),
 ]
-
-# English slugs for the codes of the threats we create (only when no real Threat exists).
-CODE_HINTS = {
-    "septorioza paskowana": "septoria_leaf_blotch", "rdza brunatna": "brown_rust", "rdza żółta": "yellow_rust",
-    "mączniak prawdziwy": "powdery_mildew", "fuzarioza kłosów": "fusarium_head_blight",
-    "łamliwość źdźbła": "eyespot", "brunatna plamistość": "tan_spot", "septorioza plew": "glume_blotch",
-    "fuzarioza kolb": "fusarium_ear_rot", "fuzarioza łodyg": "fusarium_stalk_rot", "zgorzel siewek": "seedling_blight",
-    "omacnica": "european_corn_borer", "drobna plamistość": "northern_leaf_spot", "żółta plamistość": "eyespot_maize",
-    "rdza kukurydzy": "common_rust", "szalonych wiech": "crazy_top", "mszyce": "aphids", "stonka": "rootworm",
-    "ploniarka": "frit_fly", "drutowce": "wireworms", "pędraki": "white_grubs",
-}
-
-
-def _slug(text: str) -> str:
-    low = text.lower()
-    for k, v in CODE_HINTS.items():
-        if k in low:
-            return v
-    t = low.translate(str.maketrans("ąćęłńóśźż", "acelnoszz"))
-    return re.sub(r"[^a-z0-9]+", "_", t).strip("_")[:40]
-
-
-def _category(threat_type: str, name: str) -> str:
-    low = name.lower()
-    if threat_type == "szkodnik" or any(w in low for w in ("mszyc", "stonk", "omacnic", "ploniark", "drutow",
-                                                           "pędrak", "rolnic", "wciornast", "ślimak", "dzik")):
-        return "pest"
-    if "bakter" in low:
-        return "bacterial"
-    if any(w in low for w in ("mozaika", "karłowato", "wirus")):
-        return "viral"
-    return "fungal"
-
 
 @dataclass
 class DevWorld:
@@ -120,21 +85,6 @@ def _risk(threat, weather: list[dict], day_idx: int) -> tuple[float, dict]:
     return score, {"summary": summary, "factors": factors, "source": "dev_seed (syntetyczne)"}
 
 
-def _threat_rows(crop_sheet: str) -> list[dict]:
-    from assistant.rag import config
-    if config.RISK_JSON.exists():
-        rows = json.loads(config.RISK_JSON.read_text())
-    else:  # parse in memory (no side effects on the RAG index files)
-        import openpyxl
-
-        from assistant.rag.excel_parse import parse_sheet
-        wb = openpyxl.load_workbook(config.EXCEL_FILE, data_only=True)
-        rows = [r for ws in wb.worksheets for r in parse_sheet(ws)]
-    return [r for r in rows if r["kind"] == "row" and r["crop"] == crop_sheet
-            and r["threat_type"] in ("choroba", "szkodnik") and "," not in r["threat"]]
-
-
-@transaction.atomic
 def build(start: date = date(2024, 4, 1), end: date = date(2024, 8, 31), today: date | None = date(2024, 5, 15),
           fields=DEV_FIELDS, seed: int = 7, max_threats_per_crop: int | None = None) -> DevWorld:
     """Create (or replace) the synthetic world. Returns what was created."""
@@ -147,26 +97,15 @@ def build(start: date = date(2024, 4, 1), end: date = date(2024, 8, 31), today: 
         CROP_WHEAT: CropClass.objects.get_or_create(code=CROP_WHEAT, defaults={"name": "Wheat"})[0],
         CROP_MAIZE: CropClass.objects.get_or_create(code=CROP_MAIZE, defaults={"name": "Maize"})[0],
     }
-    prefix = {CROP_WHEAT: "wheat", CROP_MAIZE: "maize"}
-    threats = {CROP_WHEAT: [], CROP_MAIZE: []}
-    for code, sheet in ((CROP_WHEAT, "pszenica"), (CROP_MAIZE, "kukurydza")):
-        rows = _threat_rows(sheet)[: max_threats_per_crop or None]
-        for r in rows:
-            existing = Threat.objects.filter(crop=crops[code], name__iexact=r["threat"]).first()
-            if existing:
-                threats[code].append(existing)
-                continue
-            tcode, n = f"{prefix[code]}.{_slug(r['threat'])}", 2
-            while Threat.objects.filter(code=tcode).exists():
-                tcode, n = f"{prefix[code]}.{_slug(r['threat'])}_{n}", n + 1
-            t = Threat.objects.create(
-                code=tcode, crop=crops[code], name=r["threat"],
-                category=_category(r["threat_type"], r["threat"]),
-                temperature_text=r["temperature_raw"] or "", temp_min_c=r["temp_min_c"], temp_max_c=r["temp_max_c"],
-                humidity_text=r["humidity_raw"] or "", other_factors=r["other_factors"] or "",
-                source=DEV_SOURCE,
-            )
-            threats[code].append(t)
+    # The engine's threats (engine/catalog.py, by code): the dev farm never invents codes of its own. It used to
+    # create one per spreadsheet row ("wheat.czern_zboz", "maize.fusarium_ear_rot_2", "maize.eyespot_maize"), which
+    # stayed next to the engine's 76 after a scenario switch (104 threats, a "bakterie" filter, duplicate names).
+    import io
+
+    from django.core.management import call_command
+    call_command("engine_load_threats", stdout=io.StringIO())
+    threats = {code: list(Threat.objects.filter(crop=crops[code]).order_by("code")[: max_threats_per_crop or None])
+               for code in (CROP_WHEAT, CROP_MAIZE)}
 
     grid = WeatherGrid.objects.create(grid_id=f"{DEV_GRID_PREFIX}G1", lat=50.03, lon=19.95, time_zone="Europe/Warsaw")
     days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
