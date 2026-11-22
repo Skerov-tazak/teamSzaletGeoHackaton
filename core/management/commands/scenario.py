@@ -82,6 +82,11 @@ class Command(BaseCommand):
             action="store_true",
             help="Włącza generator syntetyczny w razie braku wymaganych plików źródłowych w DATA_DIR.",
         )
+        switch_parser.add_argument(
+            "--strict-data",
+            action="store_true",
+            help="Bez danych syntetycznych (domyślnie i tak). Zostaje, bo używają go README, skrypt demo i start.sh.",
+        )
 
     def handle(self, *args: Any, **options: Any) -> None:
         """Kieruje wywołanie do odpowiedniej metody obsługującej wybraną podkomendę.
@@ -190,6 +195,8 @@ class Command(BaseCommand):
         self.stdout.write(f"Przełączanie bazy na scenariusz '{options['slug']}'...")
         report = self.manager.switch_to(slug=options["slug"], options=switch_options)
 
+        if report.weather_reloaded_reason:
+            self.stdout.write(self.style.WARNING(f"--keep-weather pominięte: {report.weather_reloaded_reason}."))
         self.stdout.write(
             self.style.SUCCESS(
                 f"Gotowe! Załadowano '{report.scenario_slug}' (Clock.today = {report.clock_today}):\n"
@@ -197,6 +204,11 @@ class Command(BaseCommand):
                 f"  - Pogoda (daily/hourly):{report.weather_daily_rows} / {report.weather_hourly_rows}\n"
                 f"  - Prognozy 7-dniowe:    {report.forecast_rows}\n"
                 f"  - Obserwacje rolnika:   {report.observations_created}\n"
-                f"  - Wiersze ryzyk (Risk): {report.risk_rows_written}"
+                f"  - Wiersze ryzyk (Risk): {report.risk_rows_written}\n"
+                f"  - Cache zmiany daty:    {report.date_cache_bundles} paczek"
             )
         )
+        if report.synthetic_sources:
+            self.stdout.write(self.style.WARNING(
+                "UWAGA: dane SYNTETYCZNE (brak plików w DATA_DIR): " + ", ".join(report.synthetic_sources)
+                + ". Liczby będą inne niż w docs/demo-script.md."))

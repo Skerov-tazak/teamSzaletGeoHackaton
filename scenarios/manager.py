@@ -8,7 +8,8 @@ zegara symulacji (`core.Clock`) oraz uruchamianie prekomputacji ryzyk (`engine.p
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field as dc_field
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -34,6 +35,7 @@ from scenarios.loaders import (
     ObservationLoader,
     ReferenceDataLoader,
     WeatherAndForecastLoader,
+    SYNTHETIC_USED,
 )
 from scenarios.schema import ScenarioDefinition, ScenarioParser, SwitchOptions
 
@@ -86,6 +88,35 @@ class SwitchReport:
     forecast_rows: int
     observations_created: int
     risk_rows_written: int
+    # what DATA_DIR lacked and was generated instead (empty = real data only)
+    synthetic_sources: list[str] = dc_field(default_factory=list)
+    # engine.RiskSnapshot bundles written ahead, so date moves copy rows (engine.precompute_dates)
+    date_cache_bundles: int = 0
+    # why --keep-weather was ignored (the previous scenario had overridden the weather), or None
+    weather_reloaded_reason: str | None = None
+
+
+def _state_path() -> Path:
+    """The last scenario switched in this database (slug, whether it overrode the weather), in logs/ (git-ignored).
+    One file per database: a test switch in another POSTGRES_DB must not speak for the demo's."""
+    from django.db import connection
+
+    return Path(settings.BASE_DIR) / "logs" / f"scenario_state_{connection.settings_dict['NAME']}.json"
+
+
+def _read_state() -> dict:
+    try:
+        return json.loads(_state_path().read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_state(state: dict) -> None:
+    try:
+        _state_path().parent.mkdir(parents=True, exist_ok=True)
+        _state_path().write_text(json.dumps(state))
+    except OSError:
+        pass
 
 
 class ScenarioRepository:
@@ -273,6 +304,17 @@ class ScenarioManager:
         effective_options = options or SwitchOptions()
         raw_definition = self.repository.get_scenario(slug)
         definition = ScenarioParser.apply_overrides(raw_definition, effective_options)
+        SYNTHETIC_USED.clear()
+
+        # --keep-weather keeps the stored weather, including what the previous scenario overrode (a heat wave, a
+        # wet week): its overrides would leak into this scenario. Reload the weather in that case.
+        keep_weather = effective_options.keep_weather
+        reload_reason = None
+        previous = _read_state()
+        if keep_weather and previous.get("weather_overrides"):
+            keep_weather = False
+            reload_reason = (f"poprzedni scenariusz ('{previous.get('slug')}') nadpisywał pogodę, "
+                             "więc pogoda jest ładowana od nowa")
 
         # Synchronizacja tabel referencyjnych przed otwarciem głównej transakcji scenariuszowej
         self.reference_loader.ensure_crop_classes()
@@ -284,7 +326,7 @@ class ScenarioManager:
 
         with transaction.atomic():
             self.cleaner.clear_scenario_data(
-                keep_weather=effective_options.keep_weather,
+                keep_weather=keep_weather,
                 reset_chat=effective_options.reset_chat,
             )
 
@@ -322,6 +364,12 @@ class ScenarioManager:
             if not effective_options.skip_predict:
                 risk_rows_written = self._run_engine_precompute(definition)
 
+        _write_state({"slug": definition.slug, "weather_overrides": bool(definition.weather_overrides)})
+        bundles = 0
+        if not effective_options.skip_predict:  # date moves then copy precomputed rows (about 0.3 s instead of 2-5 s)
+            from engine import precompute_dates
+            bundles = int(precompute_dates())
+
         return SwitchReport(
             scenario_slug=definition.slug,
             clock_today=definition.window.clock_today.isoformat(),
@@ -331,6 +379,9 @@ class ScenarioManager:
             forecast_rows=forecast_rows,
             observations_created=observations_created,
             risk_rows_written=risk_rows_written,
+            synthetic_sources=sorted(SYNTHETIC_USED),
+            date_cache_bundles=bundles,
+            weather_reloaded_reason=reload_reason,
         )
 
     @staticmethod

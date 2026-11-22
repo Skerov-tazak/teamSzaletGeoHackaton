@@ -1,12 +1,12 @@
 {
-  "title": "Presja septoriozy paskowanej liści pszenicy (czerwiec)",
-  "description": "Wysoka wilgotność i opady w czerwcu oraz potwierdzone objawy septoriozy na Polu Północnym.",
+  "title": "Presja septoriozy paskowanej liści pszenicy (koniec maja)",
+  "description": "Wysoka wilgotność i opady w drugiej połowie maja oraz potwierdzone objawy septoriozy na Polu Północnym.",
   "region": "Opolskie",
   "window": {
     "season": 2025,
     "season_start": "2024-09-01",
     "season_end": "2025-07-31",
-    "clock_today": "2025-06-15",
+    "clock_today": "2025-05-27",
     "include_previous_season": true
   },
   "fields": [
@@ -74,10 +74,10 @@
   ],
   "weather_overrides": [
     {
-      "start_date": "2025-06-08",
-      "end_date": "2025-06-14",
+      "start_date": "2025-05-18",
+      "end_date": "2025-05-24",
       "values": {
-        "avg_temperature": 18.5,
+        "avg_temperature": 15.5,
         "avg_relative_humidity": 91.0,
         "imerg_total_precipitation": 14.5
       }
@@ -86,7 +86,7 @@
   "observations": [
     {
       "kind": "symptoms",
-      "observed_on": "2025-06-13",
+      "observed_on": "2025-05-25",
       "field_name": "Pole Północne (Pszenica)",
       "category": "disease",
       "threat_code": "wheat.septoria_leaf_blotch",
@@ -95,7 +95,7 @@
     },
     {
       "kind": "absence",
-      "observed_on": "2025-06-14",
+      "observed_on": "2025-05-26",
       "field_name": "Pole Zachodnie (Kukurydza)",
       "text": "Lustracja kukurydzy — brak objawów chorób i szkodników."
     }
