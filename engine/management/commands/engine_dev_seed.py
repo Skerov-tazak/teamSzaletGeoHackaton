@@ -111,7 +111,7 @@ class Command(BaseCommand):
             self.load_soil(D, region, {c for f in made for c in f.h3_cells})
             Clock(today=today).save()
         call_command("engine_load_threats")
-        self.stdout.write(self.style.SUCCESS(f"Dev farm ready. Clock = {today}. Run: python manage.py predict --season"))
+        self.stdout.write(self.style.SUCCESS(f"Dev farm ready. Clock = {today}. Run: python manage.py engine_predict --season"))
 
     # --- fields ---------------------------------------------------------------------------------
     def parcels(self, D: Path, bbox, year: int, n: int, codes=(1110, 1130)) -> list[dict]:

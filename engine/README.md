@@ -24,7 +24,7 @@ It is a **rule-based (expert) system** whose rules are stored in [`catalog.py`](
 # prerequisites: the data in "Data to load" (check: python manage.py engine_check_data)
 python manage.py engine_load_threats                 # Threat rows for every rule (creates missing codes; keeps existing rows)
 python manage.py engine_fetch_ndvi --season 2025     # optional: satellite curves per field (needs network)
-python manage.py predict --season                    # demo: previous season, then this one to its end
+python manage.py engine_predict --season                    # demo: previous season, then this one to its end
 python manage.py engine_set_date 2025-06-20          # move the demo date (recomputes the days that change)
 python manage.py engine_summary --date 2025-06-05    # fields ranked by urgency, with reasons
 python manage.py test engine                         # synthetic data, no downloads needed
@@ -84,7 +84,7 @@ too). `precompute_dates(first=None, last=None)` / `python manage.py engine_preco
 the cache ahead for a range of demo dates (default: the Clock's date - 7 … + 30; about 50 s for 8 fields), so the date
 control's arrows take about 0.3 s instead of 1–4 s. `predict()` drops the bundles a report or a crop change makes
 stale (that field, from `start` on). The cache is valid within one season; a move to another season computes. Copies
-equal a full recompute row for row (`engine.tests.SnapshotTests`).
+equal a full recompute row for row (`engine.tests.test_engine.SnapshotTests`).
 
 ### `precompute_season()` — the demo seed
 
@@ -94,7 +94,7 @@ from engine import precompute_season
 precompute_season(season=None)    # default: the clock's season -> PredictResult
 ```
 
-Computes the previous season first (this season's carry-over reads its peaks from `Risk`), then this season to its end (maize to 31 December, clipped to the last day with weather). The seed calls only this. From the shell: `python manage.py predict --season`.
+Computes the previous season first (this season's carry-over reads its peaks from `Risk`), then this season to its end (maize to 31 December, clipped to the last day with weather). The seed calls only this. From the shell: `python manage.py engine_predict --season`.
 
 ### `what_if()` — dry run for the assistant
 
@@ -153,7 +153,7 @@ Report(observed_on: date, kind: str, threat_code: str | None = None, severity: f
 
 | Command | What |
 |---|---|
-| `predict [--fields 1 2] [--start D] [--end D] [--season]` | `predict()` from the shell; `--season` = `precompute_season()`. Prints the rows and the field ids. |
+| `engine_predict [--fields 1 2] [--start D] [--end D] [--season]` | `predict()` from the shell; `--season` = `precompute_season()`. Prints the rows and the field ids. |
 | `engine_set_date D` | Save the Clock and call `clock_moved()`. |
 | `engine_precompute_dates [--from D] [--to D]` | `precompute_dates()`: fill the cache so date moves copy instead of compute (default: Clock - 7 … + 30). |
 | `engine_load_threats [--overwrite]` | Create the missing `Threat` rows of all 76 rules (existing rows kept unless `--overwrite`; rows without a rule listed) and the engine's `CropClass` rows if missing. |
@@ -162,7 +162,6 @@ Report(observed_on: date, kind: str, threat_code: str | None = None, severity: f
 | `engine_check_data [--season Y]` | Check that every table / file the engine needs is loaded; lists what is missing per field. |
 | `engine_dev_seed` | **Development only**: demo farm + data. The platform's import replaces it. |
 | `engine_dev_seed --season 2024 --today 2024-06-15 --crop-from-map` | **Development only**: the demo farm of 2024, all seven crops, crop from the 2024 crop map (no satellite, no network), Polish field names. |
-| `engine_mock_api [--port 8001]` | **Development only**: the platform API's agreed endpoints and shapes from the database, plus the map's dev page (frontend/src/map/README.md). |
 
 ## When and how to run it
 
@@ -191,7 +190,7 @@ python manage.py engine_load_threats            # or the platform's Threat fixtu
 python manage.py engine_fetch_ndvi --season 2024
 python manage.py engine_fetch_ndvi --season 2025   # both optional (network)
 python manage.py engine_check_data              # must end with "Everything the engine requires is present."
-python manage.py predict --season               # last season first (carry-over), then this one to its end
+python manage.py engine_predict --season               # last season first (carry-over), then this one to its end
 ```
 
 Last season goes first because this season reads last season's risks: a pathogen that peaked on the field carries over in the residue.

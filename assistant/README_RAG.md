@@ -17,7 +17,7 @@ uv run python manage.py rag_ingest --doc pszenica_doradcy --rebuild
 uv run python manage.py rag_ingest --all-crops           # + 10 pozostałych PDF (jęczmień, owies, …)
 uv run python manage.py rag_search "w jakiej temperaturze rozwija się septorioza paskowana" --crop pszenica --k 5
 uv run python manage.py rag_search --risk pszenica "rdza brunatna"
-uv run python manage.py test assistant                   # testy RAG (assistant/test_rag.py) + testy czatu
+uv run python manage.py test assistant                   # testy RAG (assistant/tests/test_rag.py) + testy czatu
 uv run python assistant/eval/run_eval.py                 # ewaluacja wyszukiwania
 ```
 

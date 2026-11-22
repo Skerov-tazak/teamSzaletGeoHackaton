@@ -51,25 +51,13 @@ Team notes (what is built, how to run it, what each of us still has to do): [doc
 
 The module above is built: [`index.ts`](index.ts) (`initMap`), [`panel.ts`](panel.ts) (field panel and "why"),
 [`chart.ts`](chart.ts) (season chart), [`map.css`](map.css). It follows this README and interfaces.md exactly;
-nothing outside `map/` is needed except [`../events.ts`](../events.ts), the `EventBus` copied verbatim from
-interfaces.md.
+outside `map/` it uses [`../events.ts`](../events.ts) (the `EventBus` of interfaces.md) and the generated API
+types through [`contract.ts`](contract.ts).
 
 **In the page:** `cd frontend && npm run build`, then `python manage.py runserver`: `main.ts` mounts the map next to
-the chat with the real platform API (`core/views.py`). On the assistant's synthetic farm: `python manage.py assistant_dev_seed`.
-
-**On its own, without the platform API** (the stand-in page and mock API from before the API existed):
-
-```bash
-python manage.py engine_dev_seed --season 2024 --today 2024-06-15 --crop-from-map --fields-per-crop 2
-python manage.py predict --season
-cd frontend && npm install && npm run map:dev     # or map:watch
-python manage.py engine_mock_api                  # http://127.0.0.1:8001/
-```
-
-`engine_mock_api` (development only, not wired into Django's URLs) answers the agreed endpoints with exactly the
-agreed shapes and rules (cut-off at today + 7, `{"detail"}` errors), from the real database; `PUT /api/clock/`
-calls `engine.clock_moved()`. [`dev/`](dev/) is a stand-in page: it builds the `AppContext`, has the demo date
-control (what `main.ts` will do) and buttons that send the chat's events. Its tests: `engine/test_mock_api.py`.
+the chat with the real platform API (`core/views.py`), on the demo scenario (`python manage.py scenario switch
+demo_2024`) or, without the datasets, on the assistant's synthetic farm (`python manage.py assistant_dev_seed`).
+(The stand-in page and mock API used before the platform API existed were removed on 22 Nov.)
 
 **Contract details the module keeps:**
 

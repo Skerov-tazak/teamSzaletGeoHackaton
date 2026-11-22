@@ -274,7 +274,7 @@ class ScenarioSwitchIntegrationTests(TestCase):
     @patch("scenarios.loaders.call_command")
     def test_cli_list_status_and_switch_commands(self, _mock_call_command, _mock_precompute) -> None:
         """Komenda `python manage.py scenario` poprawnie obsługuje `list`, `validate`, `switch` i `status`."""
-        from core.management.commands.scenario import Command as ScenarioCommand
+        from scenarios.management.commands.scenario import Command as ScenarioCommand
 
         cmd = ScenarioCommand(manager=self.manager)
         out = io.StringIO()

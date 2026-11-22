@@ -5,6 +5,7 @@ All environment-specific values come from .env (see .env.example).
 """
 
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -47,6 +48,7 @@ INSTALLED_APPS = [
     "engine",  # decision engine (Bartek)
     "assistant",  # AI assistant (Ola)
     "frontend",  # web app + map (Szymek + Janek, map: Kuba)
+    "scenarios",  # demo scenarios and `manage.py scenario` (no models)
 ]
 
 MIDDLEWARE = [
@@ -154,3 +156,17 @@ MATERIALS_DIR = BASE_DIR / "field-under-pressure-materials"
 
 # Downloaded hackathon datasets (kept outside git).
 DATA_DIR = (BASE_DIR / os.environ.get("DATA_DIR", "../field-under-pressure-data")).resolve()
+
+# Tests (`manage.py test`): only errors from the app's loggers, no progress bars, so the test output shows the tests.
+if sys.argv[1:2] == ["test"]:
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+    os.environ.setdefault("TQDM_DISABLE", "1")
+    LOGGING = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "handlers": {"console": {"class": "logging.StreamHandler"}},
+        "root": {"handlers": ["console"], "level": "ERROR"},
+        # the API tests send bad requests on purpose
+        "loggers": {"django.request": {"level": "CRITICAL", "propagate": False}},
+    }

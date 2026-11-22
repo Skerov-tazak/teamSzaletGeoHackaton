@@ -8,9 +8,7 @@
     "watch": "npm run bundle -- --watch",
     "typecheck": "tsc --noEmit",
     "api:types": "openapi-typescript openapi.yml -o src/api/schema.d.ts",
-    "api:check": "node scripts/check-api-types.mjs",
-    "map:dev": "esbuild src/map/dev/harness.ts --bundle --format=esm --sourcemap --target=es2020 --loader:.png=file --outdir=static/frontend/dist/map-dev",
-    "map:watch": "npm run map:dev -- --watch"
+    "api:check": "node scripts/check-api-types.mjs"
   },
   "dependencies": {
     "dompurify": "^3.4.18",

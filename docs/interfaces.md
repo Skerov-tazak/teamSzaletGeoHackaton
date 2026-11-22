@@ -429,7 +429,7 @@ It works through the days in order, each one **as of that day**: only the weathe
 |------|------|
 | After the seed / import | `predict()` over the whole season, so moving the demo date is instant |
 | After an observation is recorded | `predict(field_ids=[field.id], start=observation_date)` |
-| By hand | a management command, e.g. `python manage.py predict` |
+| By hand | a management command, e.g. `python manage.py engine_predict` |
 
 ### `as_of` on the helpers
 

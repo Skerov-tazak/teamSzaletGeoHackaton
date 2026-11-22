@@ -7,7 +7,7 @@ from datetime import date, timedelta
 
 from core.models import Clock, Observation, Risk, Threat, WeatherDaily, WeatherForecastDaily, WeatherHourly
 from engine import predict
-from engine.tests import EngineTestBase
+from engine.tests.test_engine import EngineTestBase
 
 TODAY = date(2025, 6, 15)
 SEASON_LAST_DAY = date(2025, 7, 31)  # last day with weather in the fixture

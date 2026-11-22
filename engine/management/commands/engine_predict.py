@@ -1,4 +1,4 @@
-"""python manage.py predict [--fields 1 2] [--start 2025-03-01] [--end 2025-06-30]"""
+"""python manage.py engine_predict [--fields 1 2] [--start 2025-03-01] [--end 2025-06-30]"""
 
 from datetime import date
 
