@@ -1,43 +1,8 @@
-# Field Under Pressure — Python dependencies (Python 3.10+)
-#   pip install -r requirements.txt
-# Each component owner adds their own packages under their section.
-
-# --- Platform (Szymek + Janek) ---
-Django>=5.2,<6.0
-djangorestframework>=3.16
-drf-spectacular>=0.28        # OpenAPI schema + docs page at /api/docs/
-psycopg[binary]>=3.2         # Postgres driver
-python-dotenv>=1.0           # loads .env
-
-# --- Data handling (import, engine) ---
-pandas>=2.0
-pyarrow>=14.0
-duckdb>=1.0
-h3>=4.0                      # soil is indexed with H3 level 10
-shapely>=2.0                 # field polygons -> grid cells / H3 cells
-openpyxl>=3.1                # reading ryzyka_zebrane.xlsx
-
-# --- Decision engine (Bartek) ---
-rasterio>=1.3                # cropland rasters, Sentinel-2 COG windows
-pystac-client>=0.8           # Earth Search (Sentinel-2 L2A) catalogue
-pyproj>=3.6
-scipy>=1.11
-scikit-learn>=1.4
-lightgbm>=4.0                # crop model
-
-# --- AI assistant (Ola) ---
-# RAG over the guides: assistant/rag (README_RAG.md). Needs Python 3.11+ (pymupdf 2.1).
-# Heavy: torch + the embedding model (~1 GB download on first run).
-pymupdf==2.1                 # PDF text, fonts and tables
-sentence-transformers==6.3.0 # embeddings: sdadas/mmlw-retrieval-roberta-base
-transformers==5.23.0
-torch==2.15.0
-qdrant-client==1.20.0        # vector store (docker compose service "qdrant")
-rank-bm25==0.2.2
-pystempel==2.0.0             # Polish stemmer for BM25
-rapidfuzz==3.14.6            # fuzzy matching of TOC headings and threat names
-pyyaml>=6.0                  # eval questions
-# Assistant: LLM, tools, MCP
-openai==3.57.0               # one client for Gemini + Groq (OpenAI-compatible endpoints)
-mcp==2.3.0                   # MCP server (python manage.py mcp_server)
-pydantic==2.14.4             # tool input/output schemas
+# Field Under Pressure — Python dependencies (Python 3.11+)
+#   pip install -r requirements.txt          everything (what start.sh installs)
+#   pip install -r requirements.lock         the exact versions the app was tested with
+# By component: requirements/base.txt (platform + data), engine.txt, assistant.txt (each includes base).
+# No GPU? Install the CPU build of torch first (~1 GB instead of ~6 GB):
+#   pip install torch==2.15.0 --index-url https://download.pytorch.org/whl/cpu
+-r requirements/engine.txt
+-r requirements/assistant.txt

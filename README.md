@@ -71,9 +71,11 @@ You need Python 3.11+ (the assistant's PDF library needs it; `.python-version` s
    source .venv/bin/activate          # Windows: .venv\Scripts\activate
    python --version                   # must say 3.11 or newer
    pip install -r requirements.txt    # or: uv pip install -r requirements.txt
+   # exact tested versions instead: pip install -r requirements.lock
+   # no GPU? first: pip install torch==2.15.0 --index-url https://download.pytorch.org/whl/cpu   (~1 GB instead of ~6 GB)
    ```
    If `pip install` complains about `pymupdf==2.1` and the error mentions `Python.framework/Versions/3.10` (or any path outside `.venv`), you are using the system `pip`, not the venv's: the venv was created without pip (`uv venv` without `--seed`). Fix: `uv pip install pip`, then `hash -r`.
-3. **Settings:** `cp .env.example .env` (the defaults work as-is for local development).
+3. **Settings:** `cp .env.example .env` (the defaults work as-is for local development; they turn `DJANGO_DEBUG` on). Without `.env`, or anywhere the app is reachable from the network, `DJANGO_DEBUG` is off: no debug pages, static files served by WhiteNoise; set `DJANGO_SECRET_KEY` and `DJANGO_ALLOWED_HOSTS` there.
 4. **Database:** `docker compose up -d` (starts Postgres and Qdrant, the assistant's vector store), then `python manage.py migrate`.
 5. **Admin user** (to browse data at `/admin/`): `python manage.py createsuperuser`.
    The demo date and the farm come from a scenario: see [Running a demo](#running-a-demo). Until one is loaded, anything that needs "today" raises `ClockNotSetError` (the API answers `503`). For frontend work without the datasets, `python manage.py assistant_dev_seed` fills a synthetic farm (5 fields, threats, risks) and sets the date.

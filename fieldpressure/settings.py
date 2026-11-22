@@ -25,8 +25,17 @@ def env_list(name: str, default: str = "") -> list[str]:
 
 # --- Core ---
 
-SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-insecure-key-change-me")
-DEBUG = env_bool("DJANGO_DEBUG", True)
+# DEBUG is off unless .env turns it on (.env.example does, for local work): an app reachable from the network
+# then never shows Django's debug pages (URL lists, settings, tracebacks).
+DEBUG = env_bool("DJANGO_DEBUG", False)
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "")
+if not SECRET_KEY or (not DEBUG and SECRET_KEY == "dev-only-insecure-key-change-me"):
+    import secrets
+    import warnings
+
+    if not DEBUG:
+        warnings.warn("DJANGO_SECRET_KEY is not set: using a random key for this process (admin logins end on restart).")
+    SECRET_KEY = SECRET_KEY if DEBUG and SECRET_KEY else secrets.token_urlsafe(50)
 ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1")
 
 
@@ -53,6 +62,8 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # serves the frontend's static files also with DEBUG off (runserver only serves them with DEBUG on)
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -120,6 +131,7 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+WHITENOISE_USE_FINDERS = True  # straight from the apps' static/ folders: no collectstatic needed for the demo
 
 
 # --- API (Django REST Framework + drf-spectacular) ---
