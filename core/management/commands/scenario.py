@@ -75,12 +75,17 @@ class Command(BaseCommand):
         switch_parser.add_argument(
             "--skip-predict",
             action="store_true",
-            help="Pomija uruchomienie engine.predict() po załadowaniu danych wejściowych.",
+            help="Pomija uruchomienie engine.precompute_season() po załadowaniu danych wejściowych.",
+        )
+        switch_parser.add_argument(
+            "--allow-synthetic-fallback",
+            action="store_true",
+            help="Włącza generator syntetyczny w razie braku wymaganych plików źródłowych w DATA_DIR.",
         )
         switch_parser.add_argument(
             "--strict-data",
             action="store_true",
-            help="Wyłącza generator syntetyczny (wymaga kompletu plików źródłowych w DATA_DIR).",
+            help="Bez danych syntetycznych (domyślnie i tak). Zostaje, bo używają go README, skrypt demo i start.sh.",
         )
 
     def handle(self, *args: Any, **options: Any) -> None:
@@ -184,12 +189,14 @@ class Command(BaseCommand):
             keep_weather=bool(options.get("keep_weather", False)),
             reset_chat=bool(options.get("reset_chat", False)),
             skip_predict=bool(options.get("skip_predict", False)),
-            allow_synthetic_fallback=not bool(options.get("strict_data", False)),
+            allow_synthetic_fallback=bool(options.get("allow_synthetic_fallback", False)),
         )
 
         self.stdout.write(f"Przełączanie bazy na scenariusz '{options['slug']}'...")
         report = self.manager.switch_to(slug=options["slug"], options=switch_options)
 
+        if report.weather_reloaded_reason:
+            self.stdout.write(self.style.WARNING(f"--keep-weather pominięte: {report.weather_reloaded_reason}."))
         self.stdout.write(
             self.style.SUCCESS(
                 f"Gotowe! Załadowano '{report.scenario_slug}' (Clock.today = {report.clock_today}):\n"
@@ -197,6 +204,11 @@ class Command(BaseCommand):
                 f"  - Pogoda (daily/hourly):{report.weather_daily_rows} / {report.weather_hourly_rows}\n"
                 f"  - Prognozy 7-dniowe:    {report.forecast_rows}\n"
                 f"  - Obserwacje rolnika:   {report.observations_created}\n"
-                f"  - Wiersze ryzyk (Risk): {report.risk_rows_written}"
+                f"  - Wiersze ryzyk (Risk): {report.risk_rows_written}\n"
+                f"  - Cache zmiany daty:    {report.date_cache_bundles} paczek"
             )
         )
+        if report.synthetic_sources:
+            self.stdout.write(self.style.WARNING(
+                "UWAGA: dane SYNTETYCZNE (brak plików w DATA_DIR): " + ", ".join(report.synthetic_sources)
+                + ". Liczby będą inne niż w docs/demo-script.md."))

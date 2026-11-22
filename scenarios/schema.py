@@ -128,7 +128,7 @@ class SwitchOptions:
     keep_weather: bool = False
     reset_chat: bool = False
     skip_predict: bool = False
-    allow_synthetic_fallback: bool = True
+    allow_synthetic_fallback: bool = False
 
 
 class ScenarioParser:
@@ -257,8 +257,18 @@ class ScenarioParser:
                 f"[{win.season_start}, {win.season_end}]."
             )
 
+        # the season is named by its harvest year and starts on 1 September of the year before
+        expected_season = win.season_start.year + 1 if win.season_start.month >= 9 else win.season_start.year
+        if win.season != expected_season:
+            raise ScenarioValidationError(
+                f"[{slug}] 'season' ({win.season}) nie pasuje do 'season_start' ({win.season_start}): "
+                f"sezon zaczynający się tego dnia to {expected_season} (rok zbioru)."
+            )
+
         if not definition.fields:
             raise ScenarioValidationError(f"[{slug}] Scenariusz musi definiować co najmniej jedno pole w 'fields'.")
+
+        from engine.catalog import RULES, rules_for_crop
 
         seen_names: set[str] = set()
         for fld in definition.fields:
@@ -267,6 +277,10 @@ class ScenarioParser:
             if fld.name in seen_names:
                 raise ScenarioValidationError(f"[{slug}] Zduplikowana nazwa pola: '{fld.name}'.")
             seen_names.add(fld.name)
+            if not rules_for_crop(fld.crop_code):
+                raise ScenarioValidationError(
+                    f"[{slug}] Pole '{fld.name}': silnik nie ma reguł dla uprawy {fld.crop_code}, więc nie policzy ryzyk."
+                )
 
             geom_type = fld.geometry.get("type")
             coords = fld.geometry.get("coordinates")
@@ -306,6 +320,19 @@ class ScenarioParser:
                 raise ScenarioValidationError(
                     f"[{slug}] Obserwacja #{idx}: odwołanie do nieistniejącego pola '{obs.field_name}'."
                 )
+            if obs.observed_on > win.clock_today:  # a report "from the future" would change the coming days
+                raise ScenarioValidationError(
+                    f"[{slug}] Obserwacja #{idx}: 'observed_on' ({obs.observed_on}) jest po 'clock_today' ({win.clock_today})."
+                )
+            if obs.threat_code:
+                rule = RULES.get(obs.threat_code)
+                if rule is None:
+                    raise ScenarioValidationError(f"[{slug}] Obserwacja #{idx}: nieznany kod zagrożenia '{obs.threat_code}'.")
+                crop = next((f.crop_code for f in definition.fields if f.name == obs.field_name), None)
+                if crop is not None and rule.crop != crop:
+                    raise ScenarioValidationError(
+                        f"[{slug}] Obserwacja #{idx}: '{obs.threat_code}' nie dotyczy uprawy pola '{obs.field_name}' ({crop})."
+                    )
             if obs.severity is not None and not (0.0 <= obs.severity <= 1.0):
                 raise ScenarioValidationError(
                     f"[{slug}] Obserwacja #{idx}: 'severity' ({obs.severity}) musi być w przedziale [0.0, 1.0]."
@@ -314,6 +341,33 @@ class ScenarioParser:
                 raise ScenarioValidationError(
                     f"[{slug}] Obserwacja #{idx}: 'distance_m' ({obs.distance_m}) nie może być ujemne."
                 )
+
+        ScenarioParser._validate_weather_overrides(definition)
+
+    @staticmethod
+    def _validate_weather_overrides(definition: ScenarioDefinition) -> None:
+        """Every override: start_date (or date) and end_date as YYYY-MM-DD, start <= end, known WeatherDaily columns."""
+        from core.models import WeatherDaily
+
+        slug = definition.slug
+        columns = {f.attname for f in WeatherDaily._meta.concrete_fields} - {"id", "grid_id", "date"}
+        for idx, entry in enumerate(definition.weather_overrides or []):
+            start_raw = entry.get("start_date") or entry.get("date")
+            end_raw = entry.get("end_date") or start_raw
+            try:
+                start, end = date.fromisoformat(str(start_raw)), date.fromisoformat(str(end_raw))
+            except ValueError:
+                raise ScenarioValidationError(
+                    f"[{slug}] weather_overrides[{idx}]: daty muszą mieć format YYYY-MM-DD (start_date / end_date)."
+                ) from None
+            if start > end:
+                raise ScenarioValidationError(f"[{slug}] weather_overrides[{idx}]: start_date jest po end_date.")
+            values = entry.get("values")
+            if not isinstance(values, dict) or not values:
+                raise ScenarioValidationError(f"[{slug}] weather_overrides[{idx}]: brak obiektu 'values'.")
+            unknown = sorted(set(values) - columns)
+            if unknown:
+                raise ScenarioValidationError(f"[{slug}] weather_overrides[{idx}]: nieznane kolumny pogody {unknown}.")
 
     @classmethod
     def _parse_window(cls, raw: Any, slug: str) -> SimulationWindow:
@@ -324,7 +378,9 @@ class ScenarioParser:
         season_start = cls._require_date(raw, "season_start", slug)
         season_end = cls._require_date(raw, "season_end", slug)
         clock_today = cls._require_date(raw, "clock_today", slug)
-        include_previous_season = bool(raw.get("include_previous_season", True))
+        include_previous_season = raw.get("include_previous_season", True)
+        if not isinstance(include_previous_season, bool):  # "false" (a string) used to mean True
+            raise ScenarioValidationError(f"[{slug}] 'include_previous_season' musi być true albo false (bez cudzysłowu).")
 
         return SimulationWindow(
             season=season,

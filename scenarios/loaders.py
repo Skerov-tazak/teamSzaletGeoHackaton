@@ -44,6 +44,11 @@ from core.models import (
 from scenarios.exceptions import DataSourceError, ScenarioValidationError
 from scenarios.schema import FieldSpec, ObservationSpec
 
+from zoneinfo import ZoneInfo
+
+LOCAL_TZ = ZoneInfo("Europe/Warsaw")
+MIN_DAYS_PER_YEAR = 300  # fewer stored days than this: the year is (re)loaded, not taken as complete
+
 CLMS_CROP_LEGEND: dict[int, str] = {
     0: "No cropland",
     1110: "Wheat",
@@ -69,6 +74,11 @@ CLMS_CROP_LEGEND: dict[int, str] = {
 }
 
 TO_EPSG_2180 = Transformer.from_crs("EPSG:4326", "EPSG:2180", always_xy=True).transform
+
+
+# What the last switch had to invent because DATA_DIR lacked it ("weather", "soil", "crop history", "weather grid").
+# ScenarioManager.switch_to() clears it and reports it, so a synthetic demo never passes for the real one.
+SYNTHETIC_USED: set[str] = set()
 
 
 def _region_name_variants(region: str) -> list[str]:
@@ -165,6 +175,7 @@ class ReferenceDataLoader:
                 f"Brak pliku siatki pogodowej: {self.data_dir / 'weather' / 'weather_grids.parquet'}"
             )
 
+        SYNTHETIC_USED.add("siatka pogodowa")
         synthetic_id = f"synth_{lat:.2f}_{lon:.2f}"
         WeatherGrid.objects.update_or_create(
             grid_id=synthetic_id,
@@ -331,6 +342,7 @@ class FieldAndSoilLoader:
 
         # Deterministyczny płodozmian zastępczy (2020–2024)
         rotation_alt = CropClass.MAIZE if spec.crop_code == CropClass.WHEAT else CropClass.WHEAT
+        SYNTHETIC_USED.add("historia upraw")
         fallback_rows = [
             FieldCropYear(
                 field=field,
@@ -389,6 +401,7 @@ class FieldAndSoilLoader:
                 f"Brak danych glebowych dla komórek H3 ({len(missing_ids)} brakujących) w regionie '{region}'."
             )
 
+        SYNTHETIC_USED.add("gleba")
         fallback_cells = [
             SoilCell(
                 h3_index_10=cell_id,
@@ -449,9 +462,10 @@ class WeatherAndForecastLoader:
             return (0, 0)
 
         for grid_id in unique_grids:
+            # a year is loaded only when (nearly) all its days are: one leftover row used to count as a whole year
             has_all_years = all(
-                WeatherDaily.objects.filter(grid_id=grid_id, date__year=yr).exists()
-                and WeatherHourly.objects.filter(grid_id=grid_id, date__year=yr).exists()
+                WeatherDaily.objects.filter(grid_id=grid_id, date__year=yr).count() >= MIN_DAYS_PER_YEAR
+                and WeatherHourly.objects.filter(grid_id=grid_id, date__year=yr).count() >= MIN_DAYS_PER_YEAR * 20
                 for yr in years
             )
             if has_all_years:
@@ -466,6 +480,7 @@ class WeatherAndForecastLoader:
                     raise DataSourceError(
                         f"Brak archiwów pogodowych dla grid_id='{grid_id}', region='{region}', lata={years}."
                     )
+                SYNTHETIC_USED.add("pogoda")
                 self._generate_synthetic_weather(grid_id=grid_id, years=years)
 
         if overrides:
@@ -544,18 +559,15 @@ class WeatherAndForecastLoader:
 
     def _try_load_grid_from_archives(self, grid_id: str, region: str, years: list[int]) -> bool:
         """Próbuje wczytać pogodę dzienną i godzinową z paczek ZIP w `DATA_DIR`."""
-        archives_by_year: dict[int, tuple[Path, Path]] = {}
+        dcols = {f.attname for f in WeatherDaily._meta.concrete_fields} - {"id"}
+        hcols = {f.attname for f in WeatherHourly._meta.concrete_fields} - {"id"}
+
         for year in years:
             daily_zip = self._find_weather_zip("daily", year, region)
             hourly_zip = self._find_weather_zip("hourly", year, region)
             if daily_zip is None or hourly_zip is None:
                 return False
-            archives_by_year[year] = (daily_zip, hourly_zip)
 
-        dcols = {f.attname for f in WeatherDaily._meta.concrete_fields} - {"id"}
-        hcols = {f.attname for f in WeatherHourly._meta.concrete_fields} - {"id"}
-
-        for year, (daily_zip, hourly_zip) in archives_by_year.items():
             daily_df = self._read_parquet_from_zip(daily_zip, [grid_id])
             imerg_daily = self._read_imerg_parquet("daily", year, region, [grid_id])
             if not imerg_daily.empty:
@@ -717,7 +729,8 @@ class WeatherAndForecastLoader:
                     hourly_rows.append(
                         WeatherHourly(
                             grid_id=grid_id,
-                            utc_time=datetime.combine(current_day, time(hour, 0), tzinfo=timezone.utc),
+                            # the hour of the local (Europe/Warsaw) day, like the organisers' packages
+                            utc_time=datetime.combine(current_day, time(hour, 0), tzinfo=LOCAL_TZ).astimezone(timezone.utc),
                             date=current_day,
                             temperature=h_temp,
                             dew_point_temperature=round(h_temp - (100.0 - h_rh) / 5.0, 2),
@@ -739,7 +752,15 @@ class WeatherAndForecastLoader:
 
     @staticmethod
     def _apply_weather_overrides(grid_ids: list[str], overrides: list[dict[str, Any]]) -> None:
-        """Nadpisuje wybrane kolumny pogodowe dla zadanych przedziałów dat ze scenariusza."""
+        """
+        Nadpisuje wybrane kolumny pogodowe dla zadanych przedziałów dat ze scenariusza.
+
+        Godziny dostają przesunięcie, a nie stałą wartość: temperatura i wilgotność każdej godziny zmieniają się o
+        różnicę między nową a starą średnią dobową (cykl dobowy zostaje), opad rozkłada się proporcjonalnie do
+        godzin, w których padało (albo na 6 godzin nocnych). Stała 18,5 °C przez całą dobę wypadała poza zakres
+        septoriozy (4-18 °C), więc "tydzień wybuchu" dawał zero godzin infekcji. Powtórne nałożenie tych samych
+        wartości niczego nie zmienia (różnica wynosi 0).
+        """
         valid_daily_cols = {f.attname for f in WeatherDaily._meta.concrete_fields} - {"id", "grid_id", "date"}
 
         for entry in overrides:
@@ -748,35 +769,48 @@ class WeatherAndForecastLoader:
             values = entry.get("values")
             if not start_str or not isinstance(values, dict):
                 continue
-
             start_d = date.fromisoformat(str(start_str))
             end_d = date.fromisoformat(str(end_str))
-            filtered_values = {k: v for k, v in values.items() if k in valid_daily_cols}
+            filtered_values = {k: v for k, v in values.items() if k in valid_daily_cols and v is not None}
+            if not filtered_values:
+                continue
 
-            if "avg_temperature" in filtered_values and filtered_values["avg_temperature"] is not None:
-                avg_t = float(filtered_values["avg_temperature"])
-                filtered_values.setdefault("min_temperature", round(avg_t - 4.0, 2))
-                filtered_values.setdefault("max_temperature", round(avg_t + 4.0, 2))
-                filtered_values.setdefault("midpoint_temperature", avg_t)
-
-            if filtered_values:
-                WeatherDaily.objects.filter(
-                    grid_id__in=grid_ids, date__range=(start_d, end_d)
-                ).update(**filtered_values)
-
-            hourly_updates: dict[str, Any] = {}
-            if "avg_relative_humidity" in filtered_values and filtered_values["avg_relative_humidity"] is not None:
-                hourly_updates["relative_humidity"] = float(filtered_values["avg_relative_humidity"])
-            if "avg_temperature" in filtered_values and filtered_values["avg_temperature"] is not None:
-                hourly_updates["temperature"] = float(filtered_values["avg_temperature"])
-            if "imerg_total_precipitation" in filtered_values and filtered_values["imerg_total_precipitation"] is not None:
-                hourly_updates["imerg_precipitation"] = round(
-                    float(filtered_values["imerg_total_precipitation"]) / 24.0, 3
-                )
-            if hourly_updates:
-                WeatherHourly.objects.filter(
-                    grid_id__in=grid_ids, date__range=(start_d, end_d)
-                ).update(**hourly_updates)
+            for daily in WeatherDaily.objects.filter(grid_id__in=grid_ids, date__range=(start_d, end_d)):
+                hours = list(WeatherHourly.objects.filter(grid_id=daily.grid_id, date=daily.date).order_by("utc_time"))
+                changed: set[str] = set()
+                if "avg_temperature" in filtered_values and daily.avg_temperature is not None:
+                    delta = float(filtered_values["avg_temperature"]) - float(daily.avg_temperature)
+                    for h in hours:
+                        if h.temperature is not None:
+                            h.temperature = round(h.temperature + delta, 2)
+                            changed.add("temperature")
+                    for col in ("min_temperature", "max_temperature"):
+                        if col not in filtered_values and getattr(daily, col) is not None:
+                            setattr(daily, col, round(getattr(daily, col) + delta, 2))
+                if "avg_relative_humidity" in filtered_values and daily.avg_relative_humidity is not None:
+                    delta = float(filtered_values["avg_relative_humidity"]) - float(daily.avg_relative_humidity)
+                    for h in hours:
+                        if h.relative_humidity is not None:
+                            h.relative_humidity = round(min(100.0, max(0.0, h.relative_humidity + delta)), 1)
+                            changed.add("relative_humidity")
+                if "imerg_total_precipitation" in filtered_values and hours:
+                    total = float(filtered_values["imerg_total_precipitation"])
+                    wet = [h for h in hours if (h.imerg_precipitation or 0) > 0]
+                    weights = [float(h.imerg_precipitation) for h in wet] if wet else []
+                    if not wet:  # a dry day made wet: six night hours of rain
+                        wet = hours[2:8] if len(hours) >= 8 else hours
+                        weights = [1.0] * len(wet)
+                    for h in hours:
+                        h.imerg_precipitation = 0.0
+                    s = sum(weights) or 1.0
+                    for h, w in zip(wet, weights):
+                        h.imerg_precipitation = round(total * w / s, 3)
+                    changed.add("imerg_precipitation")
+                for col, value in filtered_values.items():
+                    setattr(daily, col, value)
+                daily.save()
+                if changed:
+                    WeatherHourly.objects.bulk_update(hours, sorted(changed), batch_size=500)
 
 
 class ObservationLoader:
