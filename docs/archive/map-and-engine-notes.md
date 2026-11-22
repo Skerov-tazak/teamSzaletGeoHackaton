@@ -1,14 +1,14 @@
 # Map + engine: notes for the team
 
-> **Historical document (notes of 21 Nov, before the platform API was merged).** Kept for the decisions and their reasons. Current behaviour: [interfaces.md](interfaces.md) (the demo date moves only through `core.clock.set_today()`; chat messages carry `chart` and `pending_action`; engine texts are Polish) and [audit-2026-11-21.md](audit-2026-11-21.md).
+> **Historical document (notes of 21 Nov, before the platform API was merged).** Kept for the decisions and their reasons. Current behaviour: [interfaces.md](../interfaces.md) (the demo date moves only through `core.clock.set_today()`; chat messages carry `chart` and `pending_action`; engine texts are Polish) and [audit-2026-11-21.md](../audit-2026-11-21.md).
 
 Bartek · branch `feat/map` · 21 Nov 2026
 
 What is on `feat/map`, how to run it, and what each of us needs to know or do. The contract is still
-[interfaces.md](interfaces.md) and [database.md](database.md); this page explains how the map and the engine follow
+[interfaces.md](../interfaces.md) and [database.md](../database.md); this page explains how the map and the engine follow
 it, and lists the few points we still have to agree on.
 
-![Map overview](img/map/overview.jpg)
+![Map overview](../img/map/overview.jpg)
 
 ## What is on the branch
 
@@ -52,7 +52,7 @@ Move the demo date with the header control on the dev page, or `python manage.py
 - Handles `field:focus` (zoom, highlight, then `field:selected`), `date:changed` (back to today, reload) and
   `risks:updated` (reload those fields, with a short pulse).
 
-![Field panel](img/map/field-panel.jpg)
+![Field panel](../img/map/field-panel.jpg)
 
 ### What the map reads
 
@@ -69,7 +69,7 @@ observed up to today, then the forecast issued today (daily values only), so tho
 confidence drops by 6 % per day ahead. A live forecast (Open-Meteo, IMGW) can be written into the same table; Open-Meteo
 also has archived real forecasts if we want an honest demo.
 
-![A coming day](img/map/forecast-day.jpg)
+![A coming day](../img/map/forecast-day.jpg)
 
 ## To do / to agree, per person
 
@@ -129,7 +129,7 @@ also has archived real forecasts if we want an honest demo.
 | Level cut-offs | 0.33 / 0.66; `explanation.level` is the truth |
 | Score meaning | an index of how favourable the recent days were, not a probability |
 
-Full engine reference: [engine/README.md](../engine/README.md); history: [engine/CHANGELOG.md](../engine/CHANGELOG.md).
+Full engine reference: [engine/README.md](../../engine/README.md); history: [engine/CHANGELOG.md](../../engine/CHANGELOG.md).
 
 ## Known deviations from the contract (all small, all deliberate)
 

@@ -60,7 +60,7 @@ DD.MM.YYYY; keys, codes, numbers and `threat.name_en` are unchanged. The forecas
 
 ## v0.9: predict() contract from the platform review
 
-Closes the seven gaps in `docs/engine-predict-review.md`; its contract tests are `engine/test_predict_contract.py` (all pass).
+Closes the seven gaps in `docs/archive/engine-predict-review.md`; its contract tests are `engine/test_predict_contract.py` (all pass).
 
 - **Coming days from the forecast:** today + 1 … + 7 use weather observed up to today, then the forecast issued today
   (`features.load_forecast`; daily only, so hourly rules use the daily estimate). Before, they read weather observed

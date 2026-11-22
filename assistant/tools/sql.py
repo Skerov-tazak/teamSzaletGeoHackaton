@@ -10,7 +10,7 @@ Layers of protection (all must pass):
 3. row cap: the query is wrapped as SELECT * FROM (…) q LIMIT n.
 
 Disabled unless ASSISTANT_ENABLE_SQL=1 AND a "readonly" database is configured: today there is no
-separate role, so the tool is off (see INTERFACE_PROPOSALS.md).
+separate role, so the tool is off (see docs/archive/INTERFACE_PROPOSALS.md).
 """
 from __future__ import annotations
 

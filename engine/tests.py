@@ -413,7 +413,7 @@ class ConsistencyTests(EngineTestBase):
 
 
 class ContractExtrasTests(EngineTestBase):
-    """docs/engine-predict-review.md: clock_moved, precompute_season, result field ids, guards."""
+    """docs/archive/engine-predict-review.md: clock_moved, precompute_season, result field ids, guards."""
     wet_days = {date(2025, 6, d) for d in range(18, 24)}
 
     def test_clock_moved_rewrites_only_the_window_and_fixes_coming_days(self):

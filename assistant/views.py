@@ -1,6 +1,6 @@
 """
 Chat endpoints, exactly as agreed in docs/interfaces.md -> Chat (built in the assistant app,
-see INTERFACE_PROPOSALS.md #8). No authentication, no CSRF (single-farm demo).
+see docs/archive/INTERFACE_PROPOSALS.md #8). No authentication, no CSRF (single-farm demo).
 
     POST /api/chat/                       {conversation_id|null, message, field_id|null} -> {conversation_id, message}
     GET  /api/chat/conversations/         [{id, title, updated_at}]

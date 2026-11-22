@@ -7,9 +7,9 @@ Field Under Pressure · owners: Jan + Szymek · state on 21 Nov 2026, branch `fe
 What the agreed documentation says the frontend must do, and how much of it exists. "Agreed" means the
 documents as of 3e96862, before the unagreed frontend commits:
 
-- [docs/interfaces.md](interfaces.md): frontend modules, map–chat events, platform API, chat;
-- [frontend/src/map/README.md](../frontend/src/map/README.md): the map's contract (Kuba);
-- [architecture_overview.md](../architecture_overview.md) and [README.md](../README.md): the product and the setup.
+- [docs/interfaces.md](../interfaces.md): frontend modules, map–chat events, platform API, chat;
+- [frontend/src/map/README.md](../../frontend/src/map/README.md): the map's contract (Kuba);
+- [architecture_overview.md](../../architecture_overview.md) and [README.md](../../README.md): the product and the setup.
 
 Two "built" columns:
 
@@ -104,7 +104,7 @@ Two "built" columns:
 
 ## What the chat sends beyond the agreed contract
 
-Ola's [assistant/INTERFACE_PROPOSALS.md](../assistant/INTERFACE_PROPOSALS.md) lists these as proposals; the
+Ola's [assistant/INTERFACE_PROPOSALS.md](INTERFACE_PROPOSALS.md) lists these as proposals; the
 endpoint already behaves this way, so the chat window has to cope:
 
 - **Guide citations carry extra keys:** `printed_page`, `section`, `ref` (the `[n]` marker in the text).

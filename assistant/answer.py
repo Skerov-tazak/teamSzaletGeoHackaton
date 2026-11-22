@@ -23,7 +23,7 @@ class Reply:
     citations: list[dict] = dataclass_field(default_factory=list)
     focus_field_id: int | None = None
     updated_field_ids: list[int] = dataclass_field(default_factory=list)
-    # --- proposed extensions (assistant/INTERFACE_PROPOSALS.md #6); defaults keep old callers working ---
+    # --- proposed extensions (docs/archive/INTERFACE_PROPOSALS.md #6); defaults keep old callers working ---
     chart: dict | None = None             # Vega-Lite v5 spec
     pending_action: dict | None = None    # e.g. {"type": "confirm_observation", "draft": {...}}
     meta: dict = dataclass_field(default_factory=dict)  # route, LLM usage (stored in Message.meta)

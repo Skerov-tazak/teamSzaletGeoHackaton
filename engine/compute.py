@@ -1,5 +1,5 @@
 """
-The engine's entry points, as agreed in docs/interfaces.md and docs/engine-predict-review.md:
+The engine's entry points, as agreed in docs/interfaces.md and docs/archive/engine-predict-review.md:
 
     predict(field_ids=None, start=None, end=None) -> PredictResult   (an int: rows written, + .field_ids)
     clock_moved(old, new) -> PredictResult                            (the platform calls it when the demo date moves)

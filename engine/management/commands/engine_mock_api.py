@@ -18,7 +18,7 @@ including the general rules (no data after today + 7, `{"detail": ...}` errors),
 Plus the map's development page at / (frontend/src/map/dev/index.html) and /static/frontend/... from
 frontend/static/frontend. It is not wired into Django's URLs and never runs in the demo: once the platform
 API exists, the same page and map run against it unchanged. Where interfaces.md leaves a default open, this
-follows docs/implementation-plan.md (feature-frontend): default `from` = 1 September of the year before the
+follows docs/archive/implementation-plan.md (feature-frontend): default `from` = 1 September of the year before the
 demo year; any valid date is accepted by PUT /api/clock/; a missing Clock row is a 503.
 """
 

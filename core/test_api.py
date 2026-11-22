@@ -1,4 +1,4 @@
-"""Tests of the platform API (docs/interfaces.md -> Platform API, docs/implementation-plan.md -> Part A)."""
+"""Tests of the platform API (docs/interfaces.md -> Platform API, docs/archive/implementation-plan.md -> Part A)."""
 
 import tempfile
 from datetime import date, timedelta

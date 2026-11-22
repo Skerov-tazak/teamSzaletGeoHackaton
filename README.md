@@ -28,7 +28,7 @@ Hackathon: [Field Under Pressure](https://geo-hackathon.g.location360.ag/), 20â€
 | [docs/database.md](docs/database.md) | Every table, column and unit; rules for every component; query helpers |
 | [docs/interfaces.md](docs/interfaces.md) | How the components talk: frontend modules, mapâ€“chat events, platform API, chat, assistant data access, `predict()` |
 | [QUICKSTART.md](QUICKSTART.md) | `./start.sh`: the whole demo set up with one command; what works without LLM keys |
-| [docs/engine-predict-review.md](docs/engine-predict-review.md) | `predict()`: the review that led to its contract (history: the contract is merged and its tests pass) |
+| [docs/archive/engine-predict-review.md](docs/archive/engine-predict-review.md) | `predict()`: the review that led to its contract (history: the contract is merged and its tests pass) |
 | [engine/README.md](engine/README.md) | Decision engine: what it must provide and how it reads and writes data |
 | [assistant/README.md](assistant/README.md) | AI assistant: the `answer()` function, chat tables, MCP rules |
 | [frontend/src/map/README.md](frontend/src/map/README.md) | Map: `initMap()`, events, data endpoints |

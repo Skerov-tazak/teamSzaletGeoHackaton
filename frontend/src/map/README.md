@@ -47,7 +47,7 @@ Risk scores are 0–1. "Season so far" is up to today; "coming days" are today +
 
 ## Development
 
-Team notes (what is built, how to run it, what each of us still has to do): [docs/map-and-engine-notes.md](../../../docs/map-and-engine-notes.md).
+Team notes (what is built, how to run it, what each of us still has to do): [docs/archive/map-and-engine-notes.md](../../../docs/archive/map-and-engine-notes.md).
 
 The module above is built: [`index.ts`](index.ts) (`initMap`), [`panel.ts`](panel.ts) (field panel and "why"),
 [`chart.ts`](chart.ts) (season chart), [`map.css`](map.css). It follows this README and interfaces.md exactly;

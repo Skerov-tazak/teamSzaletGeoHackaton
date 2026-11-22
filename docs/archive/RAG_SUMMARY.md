@@ -2,7 +2,7 @@
 
 State as of 21 Nov 2026, branch `feat/chat-assistant`. The work is in commit `a704ecb` ("feat: implement basic RAG for methodologies") and merge commit `a09fee5` ("Merge branch 'main' into feat/chat-assistant"). One later fix is not committed yet: the venv instructions in `README.md` and `README_RAG.md`.
 
-Usage details are in [README_RAG.md](README_RAG.md). This document records **what was built, how it fits into the app, and which decisions were taken and why**.
+Usage details are in [README_RAG.md](../../assistant/README_RAG.md). This document records **what was built, how it fits into the app, and which decisions were taken and why**.
 
 ---
 

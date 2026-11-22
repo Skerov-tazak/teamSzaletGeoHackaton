@@ -153,7 +153,7 @@ Built by Jan + Szymek with Django REST Framework. Once an endpoint exists, its e
 
 The demo date control in the page header sends the `PUT`; on success `main.ts` updates `ctx.clock` in place and sends `date:changed`. `min_date` / `max_date` are the dates `PUT` accepts: the days a forecast was issued on (the scenario's window, previous season included), else the days with observed weather; both `null` when there is no weather at all (then any date is accepted). A date outside them is `400 {"detail": "today must be between 2022-09-01 and 2024-12-31 (the days with weather)"}`; an invalid one is `400 {"detail": "today must be YYYY-MM-DD"}`. The date control sets them as the picker's limits.
 
-Moving the date recomputes the days whose inputs change: `engine.clock_moved(old, new)` rewrites the risks of (min(old, new), max(old, new) + 7] ([engine-predict-review.md](engine-predict-review.md#4-moving-the-demo-date-rewrites-the-rest-of-the-season)). The engine has no signal, so every date change goes through **`core.clock.set_today(new)`**, which saves the row and calls `clock_moved` in one transaction (if the engine fails, the date stays): `PUT /api/clock/` and the admin's clock page use it; from the terminal, `python manage.py engine_set_date D`. Never change the date with `Clock.objects.update(...)` or a bare `clock.save()`. With the date cache filled (`engine_precompute_dates`, demo date − 7 … + 30) a move copies precomputed rows and takes about 0.3 s; a field changed by a farmer's report since then, or a date outside the cache, is computed (2–5 s); a move into another season recomputes both seasons (about 10 s). The date control shows that it is busy, and asks before a jump of more than a month.
+Moving the date recomputes the days whose inputs change: `engine.clock_moved(old, new)` rewrites the risks of (min(old, new), max(old, new) + 7] ([archive/engine-predict-review.md](archive/engine-predict-review.md#4-moving-the-demo-date-rewrites-the-rest-of-the-season)). The engine has no signal, so every date change goes through **`core.clock.set_today(new)`**, which saves the row and calls `clock_moved` in one transaction (if the engine fails, the date stays): `PUT /api/clock/` and the admin's clock page use it; from the terminal, `python manage.py engine_set_date D`. Never change the date with `Clock.objects.update(...)` or a bare `clock.save()`. With the date cache filled (`engine_precompute_dates`, demo date − 7 … + 30) a move copies precomputed rows and takes about 0.3 s; a field changed by a farmer's report since then, or a date outside the cache, is computed (2–5 s); a move into another season recomputes both seasons (about 10 s). The date control shows that it is busy, and asks before a jump of more than a month.
 
 ### Threats
 
@@ -407,7 +407,7 @@ After recording one, the tool calls `engine.predict(field_ids=[field.id], start=
 
 **Moving from the interim table:** the engine reads both `core.Observation` and the assistant's interim `assistant.Observation`. If rows exist in both, every report counts twice. So the assistant switches its tool to `core.Observation` and moves (copies, then deletes) its interim rows in the same change.
 
-Both gaps found in [engine-predict-review.md](engine-predict-review.md) are fixed: the default `end` is the later of today + 7 and the last day already stored for these fields, so precomputed days get the report's effect too; and `predict()` returns a `PredictResult` (an int plus `.field_ids`) that lists the nearby fields a symptoms report spread to, which the assistant sends in `updated_field_ids`.
+Both gaps found in [archive/engine-predict-review.md](archive/engine-predict-review.md) are fixed: the default `end` is the later of today + 7 and the last day already stored for these fields, so precomputed days get the report's effect too; and `predict()` returns a `PredictResult` (an int plus `.field_ids`) that lists the nearby fields a symptoms report spread to, which the assistant sends in `updated_field_ids`.
 
 ## Decision engine
 
@@ -423,7 +423,7 @@ def predict(field_ids: list[int] | None = None, start: date | None = None, end: 
     """
 ```
 
-It works through the days in order, each one **as of that day**: only the weather observed up to that day, plus the forecast issued that day. The current implementation differs in several places, and some of this wording needs tightening: see [engine-predict-review.md](engine-predict-review.md). It can be called from anywhere:
+It works through the days in order, each one **as of that day**: only the weather observed up to that day, plus the forecast issued that day. The current implementation differs in several places, and some of this wording needs tightening: see [archive/engine-predict-review.md](archive/engine-predict-review.md). It can be called from anywhere:
 
 | When | Call |
 |------|------|

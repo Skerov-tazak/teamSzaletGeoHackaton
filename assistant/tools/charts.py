@@ -1,5 +1,5 @@
 """
-Chart tools: Vega-Lite v5 specs (proposed format, see INTERFACE_PROPOSALS.md) + a `summary` computed
+Chart tools: Vega-Lite v5 specs (proposed format, see docs/archive/INTERFACE_PROPOSALS.md) + a `summary` computed
 in code (max, day of max, level today, trend). The model only comments on the summary; it never
 computes chart numbers.
 """

@@ -1,10 +1,10 @@
 # `predict()`: how it should work vs how it works
 
-> **Historical document (the review that led to predict()'s contract; its contract tests pass now).** Kept for the decisions and their reasons. Current behaviour: [interfaces.md](interfaces.md) (the demo date moves only through `core.clock.set_today()`; chat messages carry `chart` and `pending_action`; engine texts are Polish) and [audit-2026-11-21.md](audit-2026-11-21.md).
+> **Historical document (the review that led to predict()'s contract; its contract tests pass now).** Kept for the decisions and their reasons. Current behaviour: [interfaces.md](../interfaces.md) (the demo date moves only through `core.clock.set_today()`; chat messages carry `chart` and `pending_action`; engine texts are Polish) and [audit-2026-11-21.md](../audit-2026-11-21.md).
 
 For Bartek · from Jan + Szymek (platform) · 21 Nov 2026
 
-We integrated the engine (`feat/decision-engine` at `bb3ece1`) with the platform's database, including the new `core.Observation` table (`core/migrations/0002_observation_and_soil_formats.py`, committed on this branch). The engine itself integrates cleanly: it reads and writes only through the ORM, writes only `Risk`, and picks up reports from `core.Observation` without any change. But `predict()` does not yet behave as the contract in [interfaces.md → Decision engine](interfaces.md#decision-engine) and the shared principles need. This document lists each gap with what should happen, what happens, the evidence, and options for fixing it.
+We integrated the engine (`feat/decision-engine` at `bb3ece1`) with the platform's database, including the new `core.Observation` table (`core/migrations/0002_observation_and_soil_formats.py`, committed on this branch). The engine itself integrates cleanly: it reads and writes only through the ORM, writes only `Risk`, and picks up reports from `core.Observation` without any change. But `predict()` does not yet behave as the contract in [interfaces.md → Decision engine](../interfaces.md#decision-engine) and the shared principles need. This document lists each gap with what should happen, what happens, the evidence, and options for fixing it.
 
 Some gaps come from **our** contract being ambiguous; those are marked, and we will update `interfaces.md` once we agree on the behaviour. Every gap has a test that fails today ([appendix](#appendix-contract-tests)); they run on your own synthetic fixture (`EngineTestBase`: clock 15 June 2025, weather to 31 July 2025, 3 fields). Timings in this document come from that fixture too.
 
@@ -12,7 +12,7 @@ Some gaps come from **our** contract being ambiguous; those are marked, and we w
 
 - **The score for day D is the disease or pest pressure built up by the end of D.** Every feature is a trailing window over days ≤ D ("hours at 15–25 °C with wet leaves in the last N days", rain days, the 7-day mean temperature, degree days since 1 January; `features.py`, `scoring.py`). Farmer reports count from their own date. It is a reading of the state on D, not a forecast.
 - **The spraying window is the only part that looks past D.** It reads the forecast issued on D (D + 1 … D + 7) to suggest a day to spray (`compute.py:244-249`). It goes into the recommended action and **does not change the score**.
-- **Today + 1 … today + 7 (the "coming days", [interfaces.md](interfaces.md#risks)) are a projected risk:** "if the forecast holds, pressure will be high by Thursday". They are computed by filling the trailing windows with the weather known today: observations up to today, then the forecast issued today. That is why their confidence drops by 6 % per day ahead (`compute.py:255`) and why the API's cut-off is today + 7.
+- **Today + 1 … today + 7 (the "coming days", [interfaces.md](../interfaces.md#risks)) are a projected risk:** "if the forecast holds, pressure will be high by Thursday". They are computed by filling the trailing windows with the weather known today: observations up to today, then the forecast issued today. That is why their confidence drops by 6 % per day ahead (`compute.py:255`) and why the API's cut-off is today + 7.
 
 ## Summary
 
@@ -40,7 +40,7 @@ Some gaps come from **our** contract being ambiguous; those are marked, and we w
 - after a farmer report, with the agreed call `predict(field_ids=[field.id], start=observed_on)`. A symptoms report lasts up to 21 days;
 - after the farmer changes the field's crop, with the call from your README, `predict(field_ids=[field.id], start=season start)`.
 
-**Does.** `end` defaults to today + 7 (`compute.py:46`), so only `[start, today + 7]` is deleted and rewritten (`compute.py:54`). The seed precomputes the whole season ([database.md → How the demo is filled](database.md#how-the-demo-is-filled)), so days after today + 7 keep what they had: the pre-report score, or **the old crop's threats**. When the demo date moves forward, those rows come into view.
+**Does.** `end` defaults to today + 7 (`compute.py:46`), so only `[start, today + 7]` is deleted and rewritten (`compute.py:54`). The seed precomputes the whole season ([database.md → How the demo is filled](../database.md#how-the-demo-is-filled)), so days after today + 7 keep what they had: the pre-report score, or **the old crop's threats**. When the demo date moves forward, those rows come into view.
 
 **Evidence.**
 - `ReportRecomputeTests`: the season is precomputed to 31 July, septoria symptoms are reported on 14 June (severity 0.9), then the agreed call runs. 20 June scores ≥ 0.8, but 24 June (day 10, when the symptoms still count fully) stays at **0.0**.
@@ -54,7 +54,7 @@ Some gaps come from **our** contract being ambiguous; those are marked, and we w
 
 ## 2. Fields rewritten by a spreading report are not reported
 
-**Should.** The caller learns **every field** whose rows changed, so the assistant can return them in `updated_field_ids` and the map reloads them ([interfaces.md → Writing observations](interfaces.md#writing-observations)).
+**Should.** The caller learns **every field** whose rows changed, so the assistant can return them in `updated_field_ids` and the map reloads them ([interfaces.md → Writing observations](../interfaces.md#writing-observations)).
 
 **Does.** Symptoms on one field also rewrite fields of the same crop within 3 km (`compute.py:72`), but `predict()` returns only `len(rows)` (`compute.py:60`).
 
@@ -68,7 +68,7 @@ Some gaps come from **our** contract being ambiguous; those are marked, and we w
 
 ## 3. Coming days use observed weather instead of the forecast
 
-**Should.** The shared principle is *historical demo, live-ready: nothing in the design depends on the past season* ([architecture_overview.md](../architecture_overview.md)). A farmer on the demo's today knows the weather up to today and the forecast issued today. So:
+**Should.** The shared principle is *historical demo, live-ready: nothing in the design depends on the past season* ([architecture_overview.md](../../architecture_overview.md)). A farmer on the demo's today knows the weather up to today and the forecast issued today. So:
 
 | Day `d` | Computed from |
 |---------|---------------|
@@ -95,7 +95,7 @@ Some gaps come from **our** contract being ambiguous; those are marked, and we w
 
 **Things to know for the fix.**
 - On forecast days the hourly-based features (infection hours) need your daily fallback (`daily_moisture_estimate`, confidence × 0.7).
-- Forecast precipitation: the demo seed will fill `WeatherForecastDaily.total_precipitation` from the observed day's IMERG value ([database.md](database.md#how-the-demo-is-filled)), so rain is there in the demo. A live forecast would provide its own.
+- Forecast precipitation: the demo seed will fill `WeatherForecastDaily.total_precipitation` from the observed day's IMERG value ([database.md](../database.md#how-the-demo-is-filled)), so rain is there in the demo. A live forecast would provide its own.
 - One possible shape: load observed weather with `as_of=min(end, today)`, then append the rows of `WeatherForecastDaily.objects.current()` for the days after today, marked as forecast; the trailing windows then work unchanged.
 
 ## 4. Moving the demo date rewrites the rest of the season
@@ -133,7 +133,7 @@ Most of the time is per-field setup (loading the season's hourly weather and the
 
 **Should.** Each report counts once.
 
-**Does.** `_query` reads `core.Observation` **and** `assistant.Observation` (`observations.py:144`, `:148`). The agreed move is "copy the interim rows into `core`, then delete them" ([interfaces.md → Writing observations](interfaces.md#writing-observations)), so any moment where both hold the row doubles the effect.
+**Does.** `_query` reads `core.Observation` **and** `assistant.Observation` (`observations.py:144`, `:148`). The agreed move is "copy the interim rows into `core`, then delete them" ([interfaces.md → Writing observations](../interfaces.md#writing-observations)), so any moment where both hold the row doubles the effect.
 
 **Evidence** (`DoubleReadTests`): the same report in both tables (same idempotency key) produces **2** farmer-report drivers.
 

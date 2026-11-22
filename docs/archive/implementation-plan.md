@@ -1,10 +1,10 @@
 # Implementation plan: platform API, then frontend
 
-> **Historical document (the plan of 21 Nov, morning).** Kept for the decisions and their reasons. Current behaviour: [interfaces.md](interfaces.md) (the demo date moves only through `core.clock.set_today()`; chat messages carry `chart` and `pending_action`; engine texts are Polish) and [audit-2026-11-21.md](audit-2026-11-21.md).
+> **Historical document (the plan of 21 Nov, morning).** Kept for the decisions and their reasons. Current behaviour: [interfaces.md](../interfaces.md) (the demo date moves only through `core.clock.set_today()`; chat messages carry `chart` and `pending_action`; engine texts are Polish) and [audit-2026-11-21.md](../audit-2026-11-21.md).
 
 Field Under Pressure · owners: Jan + Szymek (map: Kuba) · draft of 21 Nov 2026, branch `feature-frontend`
 
-How to build what [interfaces.md](interfaces.md) agrees, starting from what exists
+How to build what [interfaces.md](../interfaces.md) agrees, starting from what exists
 ([frontend-status.md](frontend-status.md)). Part A is the platform API in `core`; Part B is the frontend, which
 reads only through that API. [Decisions](#decisions) records what is settled and what is still open;
 [Proposed chat contract](#proposed-chat-contract) was the text for interfaces.md; it is accepted and
@@ -257,7 +257,7 @@ Parts A and B are built on `claude/frontend-backend-api-impl-241034`. Where the 
 
 ## Proposed chat contract
 
-Ola's proposals 5–7 ([assistant/INTERFACE_PROPOSALS.md](../assistant/INTERFACE_PROPOSALS.md)).
+Ola's proposals 5–7 ([assistant/INTERFACE_PROPOSALS.md](INTERFACE_PROPOSALS.md)).
 
 Text for interfaces.md → Chat once accepted. Only the chat response changes; the request and the endpoints stay
 as they are.

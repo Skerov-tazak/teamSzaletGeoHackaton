@@ -2,7 +2,7 @@
 Read-only tools over the platform's data (core models), through the team's query helpers.
 
 Reads use the `default` connection: the `readonly` connection/role does not exist yet
-(see INTERFACE_PROPOSALS.md). These tools never write and never return data after
+(see docs/archive/INTERFACE_PROPOSALS.md). These tools never write and never return data after
 today + FORECAST_DAYS (the demo rule "nothing after the forecast").
 """
 from __future__ import annotations
