@@ -190,7 +190,10 @@ class WeatherHourly(models.Model):
 
     grid = models.ForeignKey(WeatherGrid, on_delete=models.PROTECT, related_name="hourly")
     utc_time = models.DateTimeField(help_text="[UTC] Start of the hour.")
-    date = models.DateField(help_text="Local calendar date (Europe/Warsaw), for fast filtering.")
+    date = models.DateField(
+        help_text="Calendar day of the hour as the organisers' packages give it (UTC+1, so the first hour of a"
+        " summer day belongs to the day before); the engine derives the Europe/Warsaw day from utc_time itself."
+    )
     temperature = measure("°C", "2 m.")
     dew_point_temperature = measure("°C", "2 m.")
     precipitation = measure("mm/hour", "Weather model.")
@@ -394,7 +397,7 @@ class Field(models.Model):
         CropClass,
         on_delete=models.PROTECT,
         related_name="fields",
-        help_text="This season's crop: the largest share in this season's FieldCropYear rows.",
+        help_text="This season's crop: the scenario's crop_code, else the largest share in this season's FieldCropYear rows.",
     )
 
     def soil_cells(self) -> models.QuerySet["SoilCell"]:
@@ -568,7 +571,7 @@ class Risk(models.Model):
     threat = models.ForeignKey(Threat, on_delete=models.PROTECT, related_name="risks")
     date = models.DateField(help_text="The day this risk applies to (local).")
     score = models.FloatField(help_text="[0-1] Risk score.")
-    explanation = models.JSONField(help_text="Why the risk is what it is. Format still open, see docs/database.md.")
+    explanation = models.JSONField(help_text="Why the risk is what it is: explanation version 1 (docs/database.md).")
     computed_at = models.DateTimeField(auto_now=True, help_text="[UTC] When the engine last wrote this row.")
 
     objects = RiskQuerySet.as_manager()
@@ -578,7 +581,11 @@ class Risk(models.Model):
             models.UniqueConstraint(fields=["field", "threat", "date"], name="risk_unique_field_threat_date"),
             models.CheckConstraint(condition=Q(score__gte=0) & Q(score__lte=1), name="risk_score_0_1"),
         ]
-        indexes = [models.Index(fields=["field", "date"], name="risk_field_date")]
+        indexes = [
+            models.Index(fields=["field", "date"], name="risk_field_date"),
+            # GET /api/risks/?date= and the farm ranking filter by the day alone
+            models.Index(fields=["date"], name="risk_date"),
+        ]
 
     def __str__(self) -> str:
         return f"{self.field} · {self.threat} · {self.date}: {self.score:.2f}"
