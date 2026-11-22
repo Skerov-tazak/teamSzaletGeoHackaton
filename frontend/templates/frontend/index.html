@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>Field Under Pressure</title>
+  <title>Cropilot</title>
   <link rel="icon" type="image/svg+xml" href="{% static 'frontend/favicon.svg' %}">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -17,10 +17,8 @@
 <body>
   <header class="app-header">
     <div class="brand">
-      <span class="logo" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><path d="M4 20c0-8 5-14 16-16-1 9-6 15-14 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 19 13 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-      </span>
-      <h1>Field Under Pressure</h1>
+      <img class="logo" src="{% static 'frontend/cropilot-mark.svg' %}" alt="" width="32" height="32">
+      <h1><span class="brand-crop">Crop</span><span class="brand-ilot">ilot</span></h1>
     </div>
     <p id="platform-status" class="platform-status" role="status">Sprawdzanie platformy…</p>
     <div id="date-control" class="date-control" role="group" aria-label="Data demo"></div>

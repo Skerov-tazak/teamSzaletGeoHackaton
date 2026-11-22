@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: Field Under Pressure API
+  title: Cropilot API
   version: 0.1.0
   description: Platform API used by the frontend, the map and the assistant.
 paths:

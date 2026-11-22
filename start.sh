@@ -1,5 +1,5 @@
 #!/bin/bash
-# Field Under Pressure — one-command setup of the demo (docs/demo-script.md).
+# Cropilot (Field Under Pressure hackathon) — one-command setup of the demo (docs/demo-script.md).
 #
 #   ./start.sh            first run: venv, dependencies, Postgres + Qdrant, migrations, the demo scenario
 #                         (demo_2024, 27 May 2024), the date cache, the frontend, the guide index
@@ -20,7 +20,7 @@ die()  { echo -e "${RED}✗ $*${NC}"; exit 1; }
 RESET=0
 [[ "${1:-}" == "--reset" ]] && RESET=1
 
-echo -e "${BLUE}Field Under Pressure — setting up the demo${NC}\n"
+echo -e "${BLUE}Cropilot — setting up the demo${NC}\n"
 
 # --- prerequisites -------------------------------------------------------------------------------
 PY=""

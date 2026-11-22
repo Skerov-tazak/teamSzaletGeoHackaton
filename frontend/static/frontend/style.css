@@ -1,4 +1,4 @@
-/* Field Under Pressure: the page around the map (header, layout, chat).
+/* Cropilot: the page around the map (header, layout, chat).
    Same palette, type and shapes as the map module (src/map/map.css, scoped under .fup-map, bundled into
    dist/main.css): warm off-white / deep green-black surfaces, Inter, 16 px rounded cards, pill buttons whose
    active state is filled with ink. Dark mode follows the system; <html data-theme="light|dark"> forces one. */
@@ -113,17 +113,16 @@ body {
 
 .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .brand h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; }
-.logo {
-  flex: none;
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
-  display: grid;
-  place-items: center;
-  background: var(--accent);
-  color: var(--on-accent);
+.logo { flex: none; width: 32px; height: 32px; display: block; }
+.brand h1 { font-weight: 800; letter-spacing: -0.02em; }
+.brand-crop { color: #0f3d1e; }
+.brand-ilot { color: #2fa84f; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .brand-crop { color: #eaf7ec; }
+  :root:not([data-theme="light"]) .brand-ilot { color: #7ed957; }
 }
-.logo svg { width: 18px; height: 18px; }
+:root[data-theme="dark"] .brand-crop { color: #eaf7ec; }
+:root[data-theme="dark"] .brand-ilot { color: #7ed957; }
 
 .platform-status {
   margin: 0 0 0 auto;

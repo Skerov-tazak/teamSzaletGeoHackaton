@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .llm import estimate_tokens, input_budget
 
-SYSTEM = """Jesteś doradcą agronomicznym w aplikacji Field Under Pressure. Pomagasz rolnikowi uprawiającemu pszenicę ozimą i kukurydzę.
+SYSTEM = """Jesteś doradcą agronomicznym w aplikacji Cropilot. Pomagasz rolnikowi uprawiającemu pszenicę ozimą i kukurydzę.
 
 Zasady:
 - Piszesz po polsku, krótko i konkretnie: 3–6 zdań, chyba że instrukcja mówi inaczej. Bez wstępów i powtarzania pytania.

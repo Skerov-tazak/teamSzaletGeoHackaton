@@ -22,7 +22,7 @@ log = logging.getLogger("assistant.mcp")
 
 SERVER_NAME = "field-under-pressure-assistant"
 INSTRUCTIONS = (
-    "Narzędzia asystenta agronomicznego Field Under Pressure (pszenica, kukurydza). "
+    "Narzędzia asystenta agronomicznego Cropilot (pszenica, kukurydza). "
     "Dane pól, ryzyko z silnika decyzyjnego (powody ryzyka tylko z pola explanation), pogoda, "
     "metodyki IOR z cytatami (cytuj chunk_id). Nigdy nie podawaj nazw środków ochrony roślin ani dawek. "
     "„Dziś” = get_season_date. record_observation: najpierw wywołaj bez confirm, pokaż szkic użytkownikowi, "
