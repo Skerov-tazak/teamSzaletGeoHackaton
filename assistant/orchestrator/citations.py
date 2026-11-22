@@ -56,6 +56,9 @@ def finalize(text: str, allowed: dict[str, dict]) -> tuple[str, list[dict], list
 
     # [silnik:<threat code>] marks a fact from the engine's risk (the answer's risk citations list it): no [n]
     text = re.sub(r"\s*\[silnik:[a-z_]+\.[a-z0-9_]+\]", "", text)
+    # the model sometimes "cites" a prompt block by its name: [kontekst], [źródła], [silnik]
+    text = re.sub(r"\s*\[(kontekst|zrodla|źródła|zródła|silnik|historia|pytanie|brak fragmentów metodyk|brak źródeł)\]", "",
+                  text, flags=re.I)
     out = BRACKET_RE.sub(repl, text)
     out = re.sub(r"(\w)\[(\d[\d, ]*)\]", r"\1 [\2]", out)   # "liści【id】" glued to the word -> "liści [1]"
     out = re.sub(r"[ \t]+([.,;:!?])", r"\1", out)          # "tekst ." after removed refs

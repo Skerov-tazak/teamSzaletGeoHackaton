@@ -380,7 +380,7 @@ def chart(route: Route, question: str, history, llm: LLM, conv_id=None) -> FlowR
     lines = ctx.season_lines() + [f"Podsumowanie wykresu (liczby policzone przez aplikację): {summary}"]
     text, meta = ask_llm(llm, route.type, lines, [], question, [],
                          "Napisz 1–2 zdania komentarza do wykresu, używając WYŁĄCZNIE liczb z podsumowania. "
-                         "Nie cytuj metodyk.", max_tokens=200, conversation_id=conv_id)
+                         "Nie cytuj metodyk.", max_tokens=700, conversation_id=conv_id)  # reasoning models think first
     return FlowResult(note + text, risk_citations=res.get("citations", []), chart=res["chart"],
                       meta=meta | {"chart_summary": res["summary"]})
 

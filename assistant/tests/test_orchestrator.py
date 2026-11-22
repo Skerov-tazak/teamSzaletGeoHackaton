@@ -752,3 +752,9 @@ class AuditRound2Tests(WorldTestCase):
         """A-28d: the context names the weekday and the month, so the answer can too."""
         from assistant.orchestrator.context import pl_day
         self.assertEqual(pl_day("2024-05-29"), "środa, 29 maja")
+
+
+class PromptBlockCitationTests(SimpleTestCase):
+    def test_prompt_block_names_are_not_citations(self):
+        text, cits, _ = citations.finalize("Jutro opad 7 mm [kontekst]. Warunki sprzyjają chorobom [silnik] [brak fragmentów metodyk].", {})
+        self.assertEqual(text, "Jutro opad 7 mm. Warunki sprzyjają chorobom.")
