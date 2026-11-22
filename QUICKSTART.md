@@ -21,7 +21,7 @@ Open <http://localhost:8000>. The demo itself is described in [docs/demo-script.
 6. Loads the demo scenario `demo_2024` (27 May 2024, 8 real parcels near Krapkowice) from the organisers' data in
    `DATA_DIR` (README → Demo data). Without that data it says so and loads the scenario on **synthetic** weather,
    soil and crop history: everything works, but the numbers differ from the demo script.
-7. Precomputes the date cache (`engine_precompute_dates`), so the date arrows take about 0.3 s.
+7. The switch also precomputes the date cache, so the date arrows take about 0.3 s.
 8. Builds the frontend.
 9. Builds the guide index for the chat (`rag_ingest`, 2–4 min) unless the Qdrant collection and the BM25 file exist.
 
@@ -31,8 +31,7 @@ when you ask for one: `ADMIN_PASSWORD=… ./start.sh` (or later `python manage.p
 ## Between demo runs
 
 ```bash
-python manage.py scenario switch demo_2024 --keep-weather --reset-chat   # about 40 s: drops reports and chats
-python manage.py engine_precompute_dates                                 # about 1 min
+python manage.py scenario switch demo_2024 --strict-data --keep-weather --reset-chat   # about 2 min: drops reports and chats
 ```
 
 Then reload the page (Ctrl+Shift+R): field ids change with every switch.

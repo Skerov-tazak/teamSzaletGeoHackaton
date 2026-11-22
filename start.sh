@@ -79,7 +79,7 @@ fi
 # --- the demo farm -------------------------------------------------------------------------------------
 HAS_CLOCK=$(python manage.py shell -c "from core.models import Clock; print(int(Clock.objects.exists()))" 2>/dev/null | tail -1)
 if [[ "$RESET" == 1 || "$HAS_CLOCK" != 1 ]]; then
-    step "Loading the demo scenario demo_2024 (real data from DATA_DIR; about 1.5 min)"
+    step "Loading the demo scenario demo_2024 (real data from DATA_DIR, risks and the date cache; about 2 min)"
     if ! python manage.py scenario switch demo_2024 --reset-chat --strict-data; then
         warn "The organisers' data is missing in DATA_DIR (README → Demo data). Loading the scenario on SYNTHETIC"
         warn "weather, soil and crop history instead: the numbers will differ from docs/demo-script.md."
@@ -87,8 +87,6 @@ if [[ "$RESET" == 1 || "$HAS_CLOCK" != 1 ]]; then
         python manage.py scenario switch --help 2>/dev/null | grep -q -- --allow-synthetic-fallback && SYNTH_FLAG="--allow-synthetic-fallback"
         python manage.py scenario switch demo_2024 --reset-chat $SYNTH_FLAG
     fi
-    step "Precomputing the date cache (about 1 min; date arrows then take ~0.3 s)"
-    python manage.py engine_precompute_dates
 else
     ok "A demo date is set already (./start.sh --reset reloads the scenario)"
 fi
@@ -111,4 +109,4 @@ echo ""
 echo -e "${GREEN}Ready.${NC} Start the server:  ${YELLOW}python manage.py runserver${NC}  →  http://localhost:8000"
 [[ "$LLM_OK" == 1 ]] || warn "No LLM keys in .env: the map and risks work, the chat is off (README → LLM keys)."
 echo "API docs: http://localhost:8000/api/docs/   Demo script: docs/demo-script.md"
-echo "Reset between demo runs: python manage.py scenario switch demo_2024 --keep-weather --reset-chat && python manage.py engine_precompute_dates"
+echo "Reset between demo runs: python manage.py scenario switch demo_2024 --strict-data --keep-weather --reset-chat"

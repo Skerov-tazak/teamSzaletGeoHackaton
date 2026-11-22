@@ -117,8 +117,7 @@ python engine/scripts/clip_cropland.py ../field-under-pressure-data/raw/cropland
 ```bash
 docker compose up -d                                                    # the database
 python manage.py scenario list                                          # the scenarios
-python manage.py scenario switch demo_2024 --strict-data --reset-chat   # ~40 s (small scenarios) to ~2 min (demo_2024)
-python manage.py engine_precompute_dates                                # 1-2 min: date arrows then take ~0.3 s instead of ~5 s
+python manage.py scenario switch demo_2024 --strict-data --reset-chat   # ~1 min (small scenarios) to ~2 min (demo_2024), date cache included
 python manage.py runserver                                              # then open http://localhost:8000
 ```
 
@@ -136,7 +135,6 @@ Clears farmer reports and chats, keeps the weather (~40 s):
 
 ```bash
 python manage.py scenario switch demo_2024 --strict-data --keep-weather --reset-chat
-python manage.py engine_precompute_dates
 ```
 
 ### 4. A separate database per test
@@ -147,7 +145,6 @@ Every command reads the database name from `POSTGRES_DB` (default `fieldpressure
 docker compose exec db createdb -U fieldpressure fieldpressure_demo
 POSTGRES_DB=fieldpressure_demo python manage.py migrate
 POSTGRES_DB=fieldpressure_demo python manage.py scenario switch demo_2024 --strict-data --reset-chat
-POSTGRES_DB=fieldpressure_demo python manage.py engine_precompute_dates
 POSTGRES_DB=fieldpressure_demo python manage.py runserver
 docker compose exec db dropdb -U fieldpressure fieldpressure_demo       # afterwards (stop the server first)
 ```
@@ -161,7 +158,7 @@ docker compose exec db dropdb -U fieldpressure fieldpressure_demo       # afterw
 | Rebuild the assistant's guide index | `python manage.py rag_ingest` |
 | Run the backend | `python manage.py runserver` |
 | Load or switch the demo scenario | `python manage.py scenario switch <name> --strict-data` (see [Running a demo](#running-a-demo)) |
-| Make demo date moves instant (after every switch) | `python manage.py engine_precompute_dates` |
+| Make demo date moves instant for other dates (`scenario switch` does it for its date − 7 … + 30) | `python manage.py engine_precompute_dates --from D --to D` |
 | After pulling main | `python manage.py migrate` (new migrations, e.g. the engine's cache table) |
 | Rebuild TypeScript on every save | `cd frontend && npm run watch` |
 | Type-check TypeScript | `cd frontend && npm run typecheck` |

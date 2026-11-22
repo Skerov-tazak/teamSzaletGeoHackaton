@@ -17,8 +17,7 @@ Gospodarstwo pod Krapkowicami (Opolskie), **27 maja 2024**, scenariusz `demo_202
 docker compose up -d
 python manage.py migrate
 python manage.py rag_ingest                                    # indeks metodyk, ok. 2 min
-python manage.py scenario switch demo_2024 --reset-chat        # ok. 1,5 min (pogoda + przeliczenie dwóch sezonów)
-python manage.py engine_precompute_dates                       # ok. 1 min: strzałki daty kopiują gotowe wyniki (0,3 s)
+python manage.py scenario switch demo_2024 --strict-data --reset-chat   # ok. 2 min: pogoda, dwa sezony ryzyk i cache dat (strzałki 0,3 s)
 cd frontend && npm install && npm run build && cd ..
 python manage.py runserver                                     # z kluczami LLM, patrz niżej
 ```
@@ -27,11 +26,10 @@ Klucze LLM (`GEMINI_API_KEY`, `GROQ_API_KEY`, `GEMINI_MODEL`, `LLM_PROVIDERS`) m
 środowiska serwera: wpisz je do `.env` w repo albo, jeśli leżą w `../.env`, uruchom serwer tak:
 `set -a; . ../.env; set +a; python manage.py runserver`. Sprawdzenie: `python manage.py llm_models`.
 
-**Reset między próbami** (kasuje zgłoszenia i rozmowy, pogody nie ładuje od nowa, ok. 40 s):
+**Reset między próbami** (kasuje zgłoszenia i rozmowy, pogody nie ładuje od nowa, ok. 2 min):
 
 ```bash
-python manage.py scenario switch demo_2024 --keep-weather --reset-chat
-python manage.py engine_precompute_dates
+python manage.py scenario switch demo_2024 --strict-data --keep-weather --reset-chat
 ```
 
 Potem odśwież stronę (Ctrl+Shift+R). Identyfikatory pól zmieniają się przy każdym przełączeniu: odwołuj się do pól
@@ -102,7 +100,7 @@ zmienia kolor z czerwonego na żółty** (zostają mszyce, na które fungicyd ni
 ### 7. (opcjonalnie) Zmiana daty
 
 Strzałka **›** w nagłówku przesuwa datę demo o dzień: silnik kopiuje gotowe wyniki dla nowej daty (ok. 0,3 s,
-po `engine_precompute_dates`; bez niego, i dla pól zmienionych zgłoszeniem w kroku 5–6, liczy 2–5 s), a mapa wraca
+z cache budowanego przy przełączeniu scenariusza; pola zmienione zgłoszeniem w kroku 5–6 liczy od nowa, ok. 1 s), a mapa wraca
 na „dziś”. Wpisaną datę zapisuje Enter albo wyjście z pola; data spoza okna z pogodą (1.09.2022–31.12.2024) nie
 przejdzie, a skok o ponad miesiąc wymaga potwierdzenia. Najlepiej po pokazie, bo zmienia stan pokazany wyżej.
 
