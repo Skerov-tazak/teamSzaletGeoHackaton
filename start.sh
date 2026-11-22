@@ -84,7 +84,7 @@ echo ""
 
 # Run migrations
 echo -e "${BLUE}Running database migrations...${NC}"
-python manage.py migrate --quiet
+python manage.py migrate --verbosity 0
 
 # Create superuser if needed
 echo -e "${BLUE}Ensuring superuser exists...${NC}"
@@ -128,7 +128,7 @@ echo ""
 echo -e "${YELLOW}RAG index setup:${NC}"
 if [ ! -d "assistant/data" ] || [ -z "$(ls -A assistant/data 2>/dev/null)" ]; then
     echo -e "${BLUE}Building RAG index (this may take 2-4 minutes on first run)...${NC}"
-    python manage.py rag_ingest --quiet > /dev/null 2>&1
+    python manage.py rag_ingest --verbosity 0 > /dev/null 2>&1
     echo -e "${GREEN}✓ RAG index built${NC}"
 else
     echo -e "${GREEN}✓ RAG index already exists${NC}"

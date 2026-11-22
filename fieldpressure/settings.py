@@ -132,7 +132,7 @@ REST_FRAMEWORK = {
 }
 
 SPECTACULAR_SETTINGS = {
-    "TITLE": "Field Under Pressure API",
+    "TITLE": "Cropilot API",
     "DESCRIPTION": "Platform API used by the frontend, the map and the assistant.",
     "VERSION": "0.1.0",
     "SERVE_INCLUDE_SCHEMA": False,
