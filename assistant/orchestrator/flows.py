@@ -339,7 +339,9 @@ def farm_summary(route: Route, question: str, history, llm: LLM, conv_id=None, c
     text, meta = ask_llm(llm, route.type, lines, sources, question, history, instructions, conversation_id=conv_id)
     if picked:  # a follow-up ("co mam zrobić?") continues with the most urgent field
         meta["field_id"] = picked[0]["field_id"]
-    return FlowResult(ensure_referral(text, question), sources=sources,
+    # "Które pole jest najbardziej zagrożone?": the map shows the answer's first field (unless one is selected)
+    focus = picked[0]["field_id"] if picked and route.field_source != "selected" else None
+    return FlowResult(ensure_referral(text, question), sources=sources, focus_field_id=focus,
                       risk_citations=[p["citation"] for g in groups for p in g], meta=meta)
 
 

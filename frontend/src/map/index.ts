@@ -317,7 +317,12 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
   }
 
   // --- fields ------------------------------------------------------------------------------------
+  let zoomHooked = false;
   function drawFields(fc: FieldCollection): void {
+    for (const layer of layers.values()) map.removeLayer(layer);  // a reload (the scenario was switched)
+    layers.clear();
+    detailCache.clear();
+    seriesCache.clear();
     fields = fc.features;
     for (const f of fields) {
       const layer = L.geoJSON(f as GeoJSON.Feature, { style: () => styleFor(f.id), bubblingMouseEvents: false } as L.GeoJSONOptions);
@@ -331,7 +336,8 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
     fitAll(false);
     // zoomed out, only the high-risk fields keep their label (map.css: .labels-off .fup-label:not(.lbl-high))
     const toggleLabels = () => container.classList.toggle("labels-off", map.getZoom() < 13);
-    map.on("zoomend", toggleLabels);
+    if (!zoomHooked) map.on("zoomend", toggleLabels);
+    zoomHooked = true;
     toggleLabels();
   }
 
@@ -474,7 +480,12 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
       pendingFocus = fieldId;
       return;
     }
-    if (!layers.has(fieldId)) return;              // not a field of this farm
+    if (!layers.has(fieldId)) {                    // unknown id: the scenario was reloaded since this page opened
+      void reloadFields().then(() => {
+        if (layers.has(fieldId)) onFocus(fieldId);
+      });
+      return;
+    }
     flyTo(fieldId);
     if (selected !== fieldId) select(fieldId, { emit: false });
     events.emit("field:selected", { fieldId });   // the map sends it itself after focusing (interfaces.md)
@@ -519,6 +530,21 @@ export function initMap(container: HTMLElement, ctx: AppContext): void {
   side.list.addEventListener("click", (ev) => {
     if ((ev.target as HTMLElement).closest(".retry")) void boot();
   });
+  /** Fields, threats and colours again (new ids after a scenario switch); the panel closes. */
+  async function reloadFields(): Promise<void> {
+    if (selected != null) select(null, { emit: true });
+    try {
+      const [fc, th] = await Promise.all([api.getFields(), api.getThreats()]);
+      threats.clear();
+      th.forEach((t) => threats.set(t.code, t));
+      drawFields(fc);
+      renderFilter();
+      await loadDay();
+    } catch (e) {
+      fail("Nie udało się odświeżyć pól")(e);
+    }
+  }
+
   async function boot(): Promise<void> {
     container.classList.add("is-loading");
     try {
