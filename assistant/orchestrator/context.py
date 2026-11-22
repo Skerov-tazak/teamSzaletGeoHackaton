@@ -20,9 +20,22 @@ def _fmt(x, nd=2) -> str:
     return f"{x:.{nd}f}".replace(".", ",") if isinstance(x, (int, float)) else str(x)
 
 
+MONTHS_GEN = ["stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca", "lipca", "sierpnia", "września",
+              "października", "listopada", "grudnia"]
+WEEKDAYS_PL = ["poniedziałek", "wtorek", "środa", "czwartek", "piątek", "sobota", "niedziela"]
+
+
+def pl_day(value) -> str:
+    """2024-05-29 -> "środa, 29 maja" (the answer should say dates the way a farmer does; A-28d)."""
+    import datetime as dt
+    d = value if isinstance(value, dt.date) else dt.date.fromisoformat(str(value)[:10])
+    return f"{WEEKDAYS_PL[d.weekday()]}, {d.day} {MONTHS_GEN[d.month - 1]}"
+
+
 def season_lines() -> list[str]:
     d = call("get_season_date")
-    return [f"Data sezonu (dziś): {d['today']}; prognoza do {d['forecast_until']}."]
+    return [f"Data sezonu (dziś): {d['today']} ({pl_day(d['today'])}); prognoza do {d['forecast_until']} "
+            f"({pl_day(d['forecast_until'])})."]
 
 
 def field_line(field: dict) -> str:
@@ -162,7 +175,7 @@ def guide_sources(queries: list[tuple[str, str | None, int]], budget: int = SOUR
             topic = query[3] if len(query) > 3 else None
             found = search(q, crop=crop or "farm", k=k + (3 if topic else 0), include_pesticide_doses=False)
             if topic:  # a passage cited for a threat must be about that threat
-                found = [p for p in found if mentions(p.text + " " + p.section, topic)][:k]
+                found = [p for p in found if about(p.text, p.section, topic)][:k]
             results.append(found)
     except QdrantUnavailable:
         return [], "Wyszukiwarka metodyk jest niedostępna — odpowiadaj bez cytatów z metodyk i powiedz o tym."
@@ -205,7 +218,7 @@ def weather_lines(field_id: int) -> list[str]:
         rain = v(d["total_precipitation"], "mm")  # observed rain is IMERG (satellite) anyway
         temp = ("brak danych" if d["min_temperature"] is None or d["max_temperature"] is None
                 else f"{str(d['min_temperature']).replace('.', ',')}–{str(d['max_temperature']).replace('.', ',')} °C")
-        out.append(f"- {d['date']} {'prognoza' if d['source'] == 'forecast' else 'obserwacja'}: {temp}, opad {rain}, "
+        out.append(f"- {d['date']} ({pl_day(d['date'])}) {'prognoza' if d['source'] == 'forecast' else 'obserwacja'}: {temp}, opad {rain}, "
                    f"wilgotność względna {v(d['avg_relative_humidity'], '%')}, wiatr {v(d['avg_wind_speed'], 'km/h')}")
     return out
 
@@ -217,6 +230,19 @@ def mentions(text: str, topic: str) -> bool:
     t = domain.fold(text)
     stems = [w[:5] if len(w) > 6 else w[:max(3, len(w) - 1)] for w in words]  # rdza/rdzy -> "rdz"
     return bool(stems) and all(re.search(rf"\b{re.escape(s)}", t) for s in stems)
+
+
+def about(text: str, section: str, topic: str) -> bool:
+    """Is a passage about the threat? Prose: the name anywhere (or in the section title). A Markdown table: only
+    a row whose first cell names it — a table of leaf spots lists the threat under "możliwość pomylenia" too (A-26)."""
+    rows = [line for line in text.splitlines() if line.lstrip().startswith("|")]
+    if len(rows) < 2:
+        return mentions(text + " " + section, topic)
+    if mentions(section, topic):
+        return True
+    first_cells = [line.strip().strip("|").split("|")[0] for line in rows]
+    prose = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("|"))
+    return any(mentions(c, topic) for c in first_cells) or mentions(prose, topic)
 
 
 def threat_query(name: str, crop: str | None) -> str:

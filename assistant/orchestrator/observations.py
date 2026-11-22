@@ -36,7 +36,8 @@ def detect_kind(text: str, today: dt.date) -> tuple[str, dict]:
     """Report kind + engine facts from the farmer's words, by rules (no LLM). Default: symptoms."""
     t = domain.fold(text)
     facts: dict = {}
-    if m := re.search(r"\b(grad|wylegl|polegl|polozyl|zalal|zalane|podtop)", t):
+    # "położyło się zboże" is lodging; "położyłem pułapki" is not (A-28e)
+    if m := re.search(r"\b(grad|wylegl|polegl|polozyl(?=\w* (sie|zboz|pszen|lan|kukur|rosl))|zalal|zalane|podtop)", t):
         word = m.group(1)
         facts["type"] = "hail" if word == "grad" else "flood" if word.startswith(("zal", "podtop")) else "lodging"
         return "event", facts
@@ -61,10 +62,11 @@ def parse_pl_date(t: str, today: dt.date, past_season: bool = False) -> dt.date 
     if m := re.search(r"(20\d\d)-(\d\d)-(\d\d)", t):
         return dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
     day = month = None
-    if m := re.search(r"\b(\d{1,2})\s+([a-z]+)", t):
+    for m in re.finditer(r"\b(\d{1,2})\s+([a-z]+)", t):  # "3 dni, 8 października": the first number + month (A-28e)
         mon = next((v for k, v in MONTHS.items() if m.group(2).startswith(k)), None)
         if mon:
             day, month = int(m.group(1)), mon
+            break
     if day is None and (m := re.search(r"\b(\d{1,2})\.(\d{1,2})\b", t)):
         day, month = int(m.group(1)), int(m.group(2))
     if day is None:
@@ -93,6 +95,9 @@ EXTRACT_SYSTEM = ("Wyodrębniasz obserwację rolnika z pola do formularza. Zwrac
                   "brakujących informacji). Nie wymyślaj pól ani zagrożeń spoza list.")
 
 
+WEEKDAYS = ["poniedzial", "wtor", "srod", "czwart", "piat", "sobot", "niedziel"]  # folded stems, Monday first
+
+
 def _relative_date(message: str, today: dt.date) -> dt.date | None:
     t = domain.fold(message)
     if "przedwczoraj" in t:
@@ -102,6 +107,14 @@ def _relative_date(message: str, today: dt.date) -> dt.date | None:
     m = re.search(r"(\d+)\s+dni\s+temu", t)
     if m:
         return today - dt.timedelta(days=int(m.group(1)))
+    m = re.search(r"\b(\d+|dwa|trzy)?\s*tygodni\w*\s+temu|\btydzien\s+temu", t)  # "tydzień temu", "2 tygodnie temu"
+    if m:
+        n = {"dwa": 2, "trzy": 3}.get(m.group(1) or "", int(m.group(1)) if (m.group(1) or "").isdigit() else 1)
+        return today - dt.timedelta(days=7 * n)
+    for k, name in enumerate(WEEKDAYS):  # "w poniedziałek": the last such day before today
+        if re.search(rf"\bw\s+{name}", t):
+            back = (today.weekday() - k) % 7 or 7
+            return today - dt.timedelta(days=back)
     if "dzis" in t or "dzisiaj" in t or "rano" in t:
         return today
     return None

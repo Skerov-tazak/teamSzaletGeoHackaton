@@ -130,14 +130,41 @@ def ensure_referral(text: str, question: str) -> str:
 
 
 # ----------------------------------------------------------------------------- general question
+CROP_CODE = {"pszenica": 1110, "kukurydza": 1130}
+
+
 def general(route: Route, question: str, history, llm: LLM, conv_id=None) -> FlowResult:
     crop = route.crop
+    crop_code = CROP_CODE.get(crop or "")
+    t = domain.fold(question)
+    from .router import RISK_INTENT, _any
+    # "Co nadal grozi pszenicy?": the farm's own risks for that crop, not just the guides (A-24)
+    if crop_code and not route.threats and _any(RISK_INTENT, t):
+        return farm_summary(route, question, history, llm, conv_id, crop_code=crop_code)
+    # "Czy jutro będzie padać?": the weather of the most endangered field (of that crop), said so (A-24)
+    if ctx.asks_about_weather(question):
+        s = call("get_farm_risk_summary")
+        candidates = [f for f in s["fields"] if not crop_code or f.get("crop_code") == crop_code]
+        if candidates:
+            fid = candidates[0]["id"]
+            lines = ctx.season_lines() + ctx.weather_lines(fid) + [
+                f"Rolnik nie wskazał pola: pogoda pochodzi z siatki pola {candidates[0]['name']} (najbardziej zagrożone"
+                + (f" pole uprawy {crop}" if crop_code else "") + "); pola gospodarstwa leżą blisko, powiedz o tym jednym zdaniem."]
+            instructions = ("Odpowiedz na pytanie o pogodę liczbami z kontekstu (dni i wartości), 2–4 zdania; jeśli pogoda "
+                            "sprzyja chorobom albo zabiegom, powiedz to jednym zdaniem.")
+            text, meta = ask_llm(llm, route.type, lines, [], question, history, instructions, conversation_id=conv_id)
+            meta["field_id"] = fid
+            return FlowResult(text, meta=meta)
     sources, err = ctx.guide_sources([(question, crop, 4)], budget=1800, max_n=4)
     if route.threats and crop in ("pszenica", "kukurydza"):
         from core.models import Threat
         names = list(Threat.objects.filter(code__in=route.threats).values_list("name", flat=True))
         sources = ctx.risk_condition_sources(crop, names)[:1] + sources
     lines = ctx.season_lines() + ([f"Uprawa z pytania: {crop}"] if crop else []) + ([err] if err else [])
+    other = domain.crop_in_text(question)
+    if other and other not in domain.CROP_PL:  # rzepak, ziemniak…: no guides here, say so instead of guessing
+        lines.append("Rolnik pyta o uprawę, dla której aplikacja nie ma metodyk (są tylko dla pszenicy i kukurydzy): "
+                     "powiedz to jednym zdaniem i nie odpowiadaj z pamięci.")
     instructions = "Odpowiedz na pytanie na podstawie źródeł, z cytatami."
     if asks_for_dose(question):
         instructions += " " + DOSE_INSTRUCTION
@@ -273,10 +300,16 @@ def compare_fields(route: Route, question: str, history, llm: LLM, conv_id=None)
     return FlowResult(ensure_referral(text, question), sources=sources, risk_citations=risk_cits, meta=meta)
 
 
-def farm_summary(route: Route, question: str, history, llm: LLM, conv_id=None) -> FlowResult:
+def farm_summary(route: Route, question: str, history, llm: LLM, conv_id=None, crop_code: int | None = None) -> FlowResult:
+    """crop_code: only the fields of that crop ("Co grozi pszenicy?")."""
     if len(route.field_ids) >= 2:
         return compare_fields(route, question, history, llm, conv_id)
     s = call("get_farm_risk_summary")
+    if crop_code:
+        ids = {f["id"] for f in s["fields"] if f.get("crop_code") == crop_code}
+        s = s | {"fields": [f for f in s["fields"] if f["id"] in ids],
+                 "leaders": [p for p in s.get("leaders", []) if p["field_id"] in ids],
+                 "most_urgent": [p for p in s["most_urgent"] if p["field_id"] in ids]}
     lines = ctx.season_lines() + ["Najpilniejsze zagrożenia gospodarstwa (silnik; pola z tym samym zagrożeniem razem):"]
     groups = farm_groups(s)
     picked = [g[0] for g in groups]
@@ -324,11 +357,16 @@ def chart(route: Route, question: str, history, llm: LLM, conv_id=None) -> FlowR
     if not fields:
         return FlowResult("Nie mam danych o polach, więc nie mogę narysować wykresu.")
     threat = route.threats[0] if route.threats else None
+    note = ""
     if threat is None:
+        asked = domain.resolve_threats(question)  # a threat of another crop ("septorioza" on a maize field)?
         r = call("get_field_risks", field_id=fields[0])
         if not r["threats"]:
             return FlowResult("Na tym polu nie ma teraz istotnych zagrożeń do pokazania na wykresie.")
         threat = r["threats"][0]["threat_code"]
+        if asked:
+            note = (f"„{asked[0].name}” nie dotyczy uprawy tego pola, więc pokazuję jego najgroźniejsze zagrożenie: "
+                    f"{r['threats'][0]['threat']}.\n\n")
     variable = next((v for k, v in WEATHER_WORDS.items() if k in q), None)
     try:
         if variable:
@@ -343,7 +381,7 @@ def chart(route: Route, question: str, history, llm: LLM, conv_id=None) -> FlowR
     text, meta = ask_llm(llm, route.type, lines, [], question, [],
                          "Napisz 1–2 zdania komentarza do wykresu, używając WYŁĄCZNIE liczb z podsumowania. "
                          "Nie cytuj metodyk.", max_tokens=200, conversation_id=conv_id)
-    return FlowResult(text, risk_citations=res.get("citations", []), chart=res["chart"],
+    return FlowResult(note + text, risk_citations=res.get("citations", []), chart=res["chart"],
                       meta=meta | {"chart_summary": res["summary"]})
 
 

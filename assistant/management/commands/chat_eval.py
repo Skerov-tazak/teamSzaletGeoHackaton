@@ -2,7 +2,7 @@
 
 Runs assistant/eval/chat_scenarios.yaml end to end (router, tools, flows, state, citations, guard).
 Default: FakeLLM (no API). --live: the real LLM from .env; prints the estimated usage and asks first.
-Needs the dev farm (manage.py assistant_dev_seed) and, for guide citations, Qdrant + the RAG index.
+Needs the demo farm (manage.py scenario switch demo_2024; best on a copy of the database: it saves reports) and, for guide citations, Qdrant + the RAG index.
 """
 import logging
 from pathlib import Path
@@ -36,7 +36,7 @@ class Command(BaseCommand):
             keep = set(o["only"].split(","))
             scenarios = [s for s in scenarios if s["id"] in keep]
         if not Field.objects.exists():
-            raise CommandError("Brak pól w bazie. Uruchom: python manage.py sim_farm")
+            raise CommandError("Brak pól w bazie. Uruchom: python manage.py scenario switch demo_2024")
         if o["live"]:
             n_calls = sum(1 for s in scenarios if s.get("expect") != "no_llm")
             self.stdout.write(f"Live: ~{n_calls} wywołań LLM, ~{n_calls * EST_TOKENS_PER_CALL:,} tokenów (szacunek).")
@@ -50,7 +50,7 @@ class Command(BaseCommand):
         for s in scenarios:
             field = Field.objects.filter(name=s["field"]).first() if s.get("field") else None
             if s.get("field") and field is None:
-                raise CommandError(f"Scenariusz {s['id']}: nie ma pola „{s['field']}”. Uruchom: python manage.py sim_farm")
+                raise CommandError(f"Scenariusz {s['id']}: nie ma pola „{s['field']}”. Uruchom: python manage.py scenario switch demo_2024")
             conv = Conversation.objects.create(title=f"[eval] {s['id']}")
             msgs = [s["message"]] + list(s.get("then", []))
             replies, routes = [], []

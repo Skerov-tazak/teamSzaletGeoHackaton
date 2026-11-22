@@ -160,12 +160,12 @@ def route(message: str, selected_field=None, state=None) -> Route:
     if crop_code is None and selected_field is not None:
         crop_code = selected_field.crop_id
     if crop is None and crop_code:
-        crop = domain.crop_pl(crop_code)
+        crop = domain.CROP_PL.get(crop_code)  # None for crops without guides (A-28a)
     matches = domain.resolve_threats(message, crop_code)
     threats = [m.code for m in matches]
     if crop is None and matches:  # "septorioza paskowana" alone -> wheat
         crop_code = crop_code or matches[0].crop_code
-        crop = domain.crop_pl(crop_code)
+        crop = domain.CROP_PL.get(crop_code)  # None for crops without guides (A-28a)
     field_id, field_source = None, ""
     if len(named) == 1:
         field_id, field_source = named[0][0], "named"
@@ -179,7 +179,7 @@ def route(message: str, selected_field=None, state=None) -> Route:
         if last is not None:
             field_id, field_source = last.id, "conversation"
             if crop is None:
-                crop = domain.crop_pl(last.crop_id)
+                crop = domain.CROP_PL.get(last.crop_id)
                 if not threats:
                     threats = [m.code for m in domain.resolve_threats(message, last.crop_id)]
     base = dict(field_id=field_id, field_ids=[f for f, _ in named], crop=crop, threats=threats,

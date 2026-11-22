@@ -1,5 +1,6 @@
 # Chat scenarios for `python manage.py chat_eval` (FakeLLM) and `chat_eval --live` (real LLM).
-# Field names refer to the simulated farm (python manage.py sim_farm).
+# Field names refer to the demo scenario (python manage.py scenario switch demo_2024 --reset-chat).
+# Run it on a copy of the database (POSTGRES_DB=…): the observation scenarios save reports and recompute risks.
 #
 #   message           first message
 #   field             selected field name (or null)
@@ -53,7 +54,7 @@
   must_contain_any: ["lustrac", "obserw", "doradc"]
 
 - id: pole_po_nazwie
-  message: "Czy na polu Kukurydza Krępna grozi fuzarioza kolb?"
+  message: "Czy na polu Klin grozi fuzarioza kolb?"
   route: pytanie_o_pole
   min_citations: 1
   must_contain_any: ["fuzarioz", "kolb"]
@@ -74,12 +75,12 @@
 
 - id: wykres_opady
   message: "Pokaż opady i ryzyko rdzy brunatnej na tym polu"
-  field: "Przy Odrze"
+  field: "Pod Lasem"
   route: wykres
   expect: chart
 
 - id: wykres_trend_kukurydza
-  message: "Jak się zmieniało ryzyko na polu Kukurydza przy Drodze?"
+  message: "Jak się zmieniało ryzyko na polu Górka?"
   route: wykres
   expect: chart
 
@@ -105,7 +106,7 @@
 
 - id: obserwacja_mszyce_zapis
   message: "Wczoraj zauważyłem dużo mszyc na kukurydzy"
-  field: "Kukurydza Krępna"
+  field: "Klin"
   route: obserwacja
   expect: observation_saved
   then: ["tak", "tak"]

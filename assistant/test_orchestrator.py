@@ -698,3 +698,57 @@ class AuditFixTests(WorldTestCase):
         with mock.patch("assistant.status.rag_ready", return_value=True), \
                 mock.patch.dict("os.environ", {"ASSISTANT_LLM": "fake"}):
             self.assertEqual(assistant_status(), {"available": True, "llm": True, "rag": True, "reason": None})
+
+
+class AuditRound2Tests(WorldTestCase):
+    """A-24, A-26, A-28 from docs/audit-2026-11-21.md."""
+
+    def test_crop_risk_question_without_a_field_uses_the_farm(self):
+        """A-24: "Co nadal grozi pszenicy?" gets the farm's wheat risks, not only the guides."""
+        from assistant.orchestrator import flows
+        llm = FakeLLM("Pszenica: ryzyko średnie.")
+        route_ = router.route("Co nadal grozi pszenicy?", None, State(None))
+        flows.general(route_, "Co nadal grozi pszenicy?", [], llm)
+        prompt = llm.calls[0]["messages"][-1]["content"] if isinstance(llm.calls[0], dict) else str(llm.calls[0])
+        self.assertIn("Najpilniejsze zagrożenia gospodarstwa", prompt)
+        self.assertNotIn("Kukurydza", prompt.split("Najpilniejsze")[1].split("Wszystkie pola")[0])
+
+    def test_weather_question_without_a_field_gets_a_fields_weather(self):
+        """A-24: "Czy jutro będzie padać?" answers with the weather of the most endangered field."""
+        from assistant.orchestrator import flows
+        llm = FakeLLM("Jutro bez opadów.")
+        res = flows.general(router.route("Czy jutro będzie padać?", None, State(None)), "Czy jutro będzie padać?", [], llm)
+        prompt = str(llm.calls[0])
+        self.assertIn("Pogoda dla pola", prompt)
+        self.assertIsNotNone(res.meta.get("field_id"))
+
+    def test_table_passages_count_only_rows_about_the_threat(self):
+        """A-26: a table row that only mentions the threat under "możliwość pomylenia" is not about it."""
+        from assistant.orchestrator.context import about
+        table = ("| Choroba | Objawy | Możliwość pomylenia |\n|---|---|---|\n"
+                 "| Rdza brunatna | pomarańczowe skupienia | brunatna plamistość liści |")
+        self.assertFalse(about(table, "Choroby liści", "brunatna plamistość liści"))
+        self.assertTrue(about(table, "Choroby liści", "rdza brunatna"))
+        self.assertTrue(about("Brunatna plamistość liści rozwija się przy…", "", "brunatna plamistość liści"))
+
+    def test_crops_without_guides_are_not_guessed(self):
+        """A-28a: rapeseed has no guides here: no crop for the search, a note for the model."""
+        r = router.route("Jak chronić rzepak przed suchą zgnilizną?", None, State(None))
+        self.assertIsNone(r.crop)
+
+    def test_dates_in_the_farmers_words(self):
+        """A-28e: relative dates and the first day + month of a sentence; "położyłem pułapki" is not lodging."""
+        from assistant.orchestrator.observations import _relative_date, detect_kind, parse_pl_date
+        today = dt.date(2024, 5, 29)  # a Wednesday
+        self.assertEqual(_relative_date("tydzień temu widziałem plamy", today), dt.date(2024, 5, 22))
+        self.assertEqual(_relative_date("2 tygodnie temu", today), dt.date(2024, 5, 15))
+        self.assertEqual(_relative_date("w poniedziałek opryskałem", today), dt.date(2024, 5, 27))
+        from assistant import domain
+        self.assertEqual(parse_pl_date(domain.fold("3 dni, 8 października"), today), dt.date(2023, 10, 8))
+        self.assertNotEqual(detect_kind("położyłem pułapki feromonowe", today)[0], "event")
+        self.assertEqual(detect_kind("położyło się zboże po burzy", today)[0], "event")
+
+    def test_dates_in_the_context_are_polish(self):
+        """A-28d: the context names the weekday and the month, so the answer can too."""
+        from assistant.orchestrator.context import pl_day
+        self.assertEqual(pl_day("2024-05-29"), "środa, 29 maja")
